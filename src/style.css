@@ -1,0 +1,51 @@
+:root { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #e5e9ef; background: #0d1117; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input { font: inherit; }
+button { cursor: pointer; border: 1px solid #303843; border-radius: 8px; background: #1a212b; color: #dde4ed; padding: 10px 16px; font-size: 13px; line-height: 20px; transition: background .12s; }
+button:hover:not(:disabled) { background: #25303d; }
+button:disabled { cursor: default; opacity: .4; }
+button:focus-visible, input:focus-visible { outline: 2px solid #88bdcc; outline-offset: 3px; }
+.app-shell { min-height: 100vh; display: flex; flex-direction: column; }
+.app-header { display: flex; align-items: center; justify-content: space-between; padding: 24px 34px; border-bottom: 1px solid #202630; }
+.brand { display: flex; gap: 11px; align-items: center; font-size: 21px; font-weight: 600; letter-spacing: -.7px; }
+.brand-mark { width: 27px; height: 27px; border: 1px solid #759eab; color: #a9d0dc; font-family: Georgia, serif; font-size: 24px; font-style: italic; text-align: center; line-height: 26px; border-radius: 7px; }
+.build-label { color: #8c97a5; font-size: 11px; letter-spacing: .6px; }
+main { width: min(100%, 616px); margin: auto; padding: 46px 28px 38px; }
+.eyebrow { color: #86b3c2; font-size: 10px; font-weight: 600; letter-spacing: 1.8px; margin-bottom: 17px; }
+h1 { font-size: 35px; letter-spacing: -1.1px; font-weight: 540; line-height: 1.22; margin: 0 0 18px; }
+h2 { font-size: 24px; font-weight: 550; letter-spacing: -.5px; margin: 0 0 12px; }
+.muted { color: #85929f; }
+.intro { color: #9da9b8; font-size: 14px; line-height: 1.7; margin: 0 0 28px; max-width: 490px; }
+form label { display: block; font-size: 12px; font-weight: 550; margin-bottom: 10px; }
+.token-field { display: flex; align-items: center; background: #131a23; border: 1px solid #343e4c; border-radius: 9px; }
+.token-field:focus-within { border-color: #87bbc9; }
+input { background: transparent; border: 0; min-width: 0; flex: 1; padding: 15px 14px; color: #e5edf7; font-size: 13px; }
+input::placeholder { color: #647282; }
+input:focus { outline: none; }
+.visibility { border: 0; background: transparent; font-size: 11px; color: #92a4b6; padding: 12px; }
+.field-footer { display: flex; gap: 14px; align-items: center; justify-content: space-between; margin: 9px 0 23px; font-size: 10px; color: #758493; line-height: 1.5; }
+.text-button { border: 0; background: transparent; color: #9bc3d1; padding: 3px 0; font-size: 11px; white-space: nowrap; }
+.text-button:hover:not(:disabled) { background: transparent; color: #c5e4ee; }
+.primary { color: #10242c; background: #9fc8d5; border-color: #9fc8d5; font-weight: 600; }
+.primary:hover:not(:disabled) { background: #bbdbe5; }
+.full { width: 100%; padding: 13px; }
+.fine-print { font-size: 11px; color: #8995a4; line-height: 1.65; margin: 16px 0 0; }
+.notice { border: 1px solid #3b4651; border-radius: 8px; background: #1b232c; padding: 13px 15px; margin: 0 0 22px; color: #b5c7d7; font-size: 12px; line-height: 1.65; }
+.danger { border-color: #704c4f; background: #281d23; color: #e2b4b6; }
+.warning { border-color: #6d5b38; background: #282418; color: #d4c193; }
+.service-facts { margin: 24px 0 0; border-top: 1px solid #2a323d; }
+.service-facts div { display: flex; justify-content: space-between; gap: 20px; padding: 15px 0; border-bottom: 1px solid #252d37; font-size: 12px; }
+dt { color: #929fae; } dd { margin: 0; text-align: right; color: #d3dde9; }
+.quota-note { font-size: 10px; }
+.actions { display: flex; gap: 10px; margin-top: 26px; }
+.settings-row, .refresh-row { display: flex; align-items: center; justify-content: space-between; gap: 15px; font-size: 11px; }
+.settings-row { padding: 22px 0; margin-top: 15px; border-top: 1px solid #28313b; }
+.refresh-row { color: #748494; margin-top: 30px; padding-top: 20px; border-top: 1px solid #232d37; }
+footer { display: flex; gap: 8px; align-items: center; padding: 17px 28px; color: #697888; font-size: 10px; border-top: 1px solid #202630; }
+.footer-note { margin-left: auto; text-align: right; }
+.status-dot { width: 5px; height: 5px; border-radius: 50%; background: #7491a0; flex-shrink: 0; }
+.spinner { width: 26px; height: 26px; border-radius: 50%; border: 2px solid #293644; border-top-color: #95becd; margin-bottom: 30px; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (max-width: 560px) { .app-header { padding: 20px; } main { padding: 34px 22px; } h1 { font-size: 30px; } .field-footer { align-items: flex-start; } footer { flex-wrap: wrap; padding: 16px 22px; } .footer-note { width: 100%; margin-left: 0; text-align: left; } .actions { flex-wrap: wrap; } }
