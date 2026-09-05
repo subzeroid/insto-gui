@@ -94,9 +94,82 @@ Retained screenshots in ignored `.build/`:
 `browser-running-mobile.png`. These are mock UI evidence, not actual provider
 onboarding or macOS WebKit rendering evidence.
 
+## Actual WebKit and native application proof
+
+The separately reviewed `app-proof` feature opens the same production Tauri
+window, ACL/CSP and eight-command IPC boundary. Its fixed developer script
+uses real WebKit and real IPC, not the earlier browser mock. Production builds
+do not admit proof roots or run the script/stdin controller.
+
+- `.build/native-app-window-01`: setup/password visibility, invalid local
+  input, Rust invalid-token IPC rejection, unconfigured profile inspection,
+  DOM/style/geometry and actual close/drain passed. Executable SHA-256:
+  `76397b26443155a9f240cc01839ddf74871bff6baddf59a0da74d1207aad6614`.
+- Instrumented feature source `b567c40`, executable SHA-256:
+  `74abb941077ce6980dfe362e7c58301bd5496151c3f61105a3e81402c78550f7`.
+  `.build/native-app-close-02` closed while runtime preparation was underway;
+  real CloseRequested, drain, exit 0 and owned-group cleanup passed in 18.82 s.
+- `.build/native-app-quit-02` reached real ExitRequested and drained with exit 0
+  in 236.928 s. It initially stalled between prepare_ready and inspect_started
+  while backgrounded; one exact executable/PID-validated AppKit activation
+  resumed the flow. No OS settings or permissions were changed. This proves
+  the developer-launched foreground Quit path, not the cause of background
+  suspension. Earlier quit01 timed out before Quit was sent and stays failed.
+- No screen-recording access was requested. These are real DOM/style/geometry
+  checks, not captured-pixel screenshot QA. No valid token or provider request
+  was used; real-token configuration remains outside this fake/offline proof.
+
+The new native fixture `.build/native-app-persistence-03` used that exact
+instrumented app and supervisor commit `4e434d2`. It passed in 56.615 s with
+`passed`, `app_group_cleaned` and `cleanup_confirmed` all true. Its initial
+background view similarly resumed after one exact-owned-app activation.
+
+The only fake home was
+`insto-app-proof-persistence-03/native/service home`; installed Python was
+`insto-app-proof-persistence-03/runtimes/<build_id>/python/bin/python3`.
+The actual GUI remained unconfigured. The fixture seeded/installed via this
+published interpreter, not a developer interpreter or source imports.
+
+| Observation | Committed last_ok | Interval | Daemon PID |
+| --- | ---: | ---: | ---: |
+| GUI alive | 1788591015 | 601 | 27135 |
+| GUI exited and owned group cleaned | 1788591017 | 600 | 27135 |
+| Copied source app relocated | 1788591019 | 601 | 27135 |
+
+All three observations had start identity `Sat Sep 5 09:50:15 2026` and
+registration `881ca2816ad24926ac520231269e2525`. To request a fresh tick, the
+fixture atomically toggled interval 600/601 and reset last_ok. C1's existing
+reconciliation replaced the watch task; the daemon was not restarted.
+The source copy moved from `insto.app` to the previously absent sibling
+`insto-moved.app`, with the same directory inode. The installed runtime did
+not move and its exact inventory remained verified.
+
+Exact label `io.insto.watch.501.049bffdc9a7e53e0`, plist and manifest are absent
+after installed-CLI uninstall. Its first call returned 1 with
+`backend error: could not confirm LaunchAgent absence`; after exact absence
+and renewed identity/ownership checks, the one permitted retry returned 0.
+The result retains both calls. This bounded fixture recovery is not a core
+uninstall fix; native post-bootout confirmation remains a follow-up to inspect
+before distribution/uninstaller work. No raw bootout, manual plist removal or
+broad process cleanup was used.
+
+Earlier native02 stays failed: last_ok-only reset could not wake an existing
+600-second task, and cleanup initially left ownership files. Those files and
+the exact registration were subsequently removed through the validated
+installed controller; `manual-cleanup.json` records that separately. The
+original failed result, all profiles/logs/runtimes and copied apps are retained.
+
+An ordinary build without `app-proof` is retained as
+`.build/native-app-ordinary-02/insto.app`, executable SHA-256
+`a77bfc654c6c33a32fb77a4093c70d5b608b1c48d214f072ea32d864383b5d89`.
+Its full 3,122-entry runtime inventory and strict ad-hoc signature pass. Both
+`--proof-root` and `--proof-window` return exit 1, empty stdout and exactly
+`unsupported_arguments`, without creating the requested root. The default
+profile was not opened. Ad-hoc verification is not a signed release gate.
+
 ## Independent review
 
-Final library verification: 64 Python tests and Ruff passed; 43 Rust host tests,
+Earlier library verification: 64 Python tests and Ruff passed; 43 Rust host tests,
 Rust formatting and all-target Clippy with warnings denied passed. The 22 Vue
 tests and TypeScript/production build passed again after the review fix.
 
@@ -132,24 +205,37 @@ remains: if the initialization future itself panics, a closed empty watch
 receiver is retained and explicit Retry cannot recover without restarting the
 application. No concrete production panic trigger was identified.
 
-## Open gates
+Latest native extension verification at `4e434d2`: 99 Python tests and Ruff
+passed; 22 Vue tests, typecheck and production build passed; 18 all-feature and
+8 default adapter tests, formatting and strict Clippy passed. Full host tests
+run concurrently with other builds had 42 passes/1 failure: the dedicated 600 ms
+mutation-deadline fixture ended before its ready marker. A complete serial
+43-test run passed in 33.02 s, followed by formatting and strict Clippy. No
+production policy was changed and timing robustness under load is not claimed.
 
-- Actual macOS WebKit window interaction and app-specific native persistence
-  remain unverified; the offline developer feature does not open a window.
-- A separately reviewed app-specific native supervisor must prove new fake
-  SQLite ticks after app exit and source-app relocation. Historical P0/C1
-  LaunchAgent evidence is not reused to claim this gate passed.
+Astra spec and fresh safety/quality reviews approved the real-window feature,
+owned-child supervisor and final native fixture before installation. The
+signal-termination retry finding was reproduced (two uninstall calls instead
+of one), fixed and re-reviewed. Original tick-trigger and masked-cleanup-error
+regressions also failed before the developer-only corrections.
+
+## Remaining product/release gates
+
+- P1's real WebKit and isolated app-specific native persistence checks above
+  passed. This is local fake/offline evidence, not real-provider onboarding or
+  a released installer. Historical P0/C1 native evidence was not substituted.
 - Private-user source locations only. Standard `/Applications` ancestor trust
   remains an R1 compatibility gate; destination ownership stays strict.
 - Watch/history UI is C2/G1; interpreter migration/external home adoption is G2.
 - Signed/notarized downloaded installer, Gatekeeper/quarantine, both Mac
   architectures and clean-machine/minimum-OS support matrix remain R1.
 
-P1 is not marked complete merely because library and frontend tests pass.
-
-Final independent Astra integration review at `3b50ef4`: PASS for safe local
+Earlier independent Astra integration review at `3b50ef4`: PASS for safe local
 handoff, no integration blockers. It checked frontend/IPC response alignment,
 resource/pin wiring, synchronous admission closure and the evidence boundaries.
 The local worktree is retained on `feat/app-shell`; nothing was published or
-merged. Tasks 1–3 and the offline built-app gate are complete. Native persistence
-and real WebKit interaction remain the next P1 work, not a completed release.
+merged. The new app-specific native and WebKit evidence above closes those
+additional execution gates. Final independent Astra extension integration
+review approved `5617966..4e434d2` and this measured evidence for local P1
+handoff, with no blockers. All planned P1 gates are complete; full watch/history
+product completion and distribution remain separate stages.

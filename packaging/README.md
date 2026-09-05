@@ -72,7 +72,7 @@ valid HikerAPI token or a GUI-triggered service mutation.
 Native acceptance requires three strictly increasing SQLite commits with the
 same watch registration and daemon PID/start time: while the app is alive,
 after its actual exit, and after relocating only the copied source app. The
-fixture toggles interval600/601 and resets last_ok atomically to trigger C1's
+fixture toggles interval 600/601 and resets last_ok atomically to trigger C1's
 existing reconciliation. It does not restart the daemon or add a scheduler.
 
 The supervisor reserves child identity until its final owned-group signal,
@@ -80,7 +80,7 @@ confirms no live descendants, then reaps. Unknown ownership prohibits native
 fallback. Cleanup uses only the exact installed controller with immutable
 fake-home/runtime identity validation. One retry is allowed only after a
 normal positive nonzero CLI exit, confirmed exact label absence and renewed
-validation, within one120-second cleanup budget. Timeouts, signal termination,
+validation, within one 120-second cleanup budget. Timeouts, signal termination,
 unknown ownership and loaded/ambiguous labels are not retryable.
 
 The new private `<root-name>-result.json` retains bounded failure diagnostics,
