@@ -24,16 +24,30 @@ fn name(value: &str) -> Result<CString> {
     CString::new(value).map_err(|_| RuntimeError::Ownership)
 }
 pub(super) fn metadata(file: &File, directory: bool) -> Result<std::fs::Metadata> {
-    let m = file.metadata().map_err(|_| RuntimeError::Storage)?;
-    let uid = unsafe { libc::getuid() };
-    if (m.uid() != uid && m.uid() != 0)
-        || m.mode() & 0o7022 != 0
-        || (directory && !m.is_dir())
-        || (!directory && (!m.is_file() || m.nlink() != 1))
-    {
-        return Err(RuntimeError::Ownership);
+    Ownership::Source.metadata(file, directory)
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Ownership {
+    Source,
+    Destination,
+}
+impl Ownership {
+    fn allows(self, owner: u32, current: u32) -> bool {
+        owner == current || (matches!(self, Self::Source) && owner == 0)
     }
-    Ok(m)
+    pub fn metadata(self, file: &File, directory: bool) -> Result<std::fs::Metadata> {
+        let m = file.metadata().map_err(|_| RuntimeError::Storage)?;
+        let uid = unsafe { libc::getuid() };
+        if !self.allows(m.uid(), uid)
+            || m.mode() & 0o7022 != 0
+            || (directory && !m.is_dir())
+            || (!directory && (!m.is_file() || m.nlink() != 1))
+        {
+            return Err(RuntimeError::Ownership);
+        }
+        Ok(m)
+    }
 }
 pub(super) fn same(before: &std::fs::Metadata, after: &std::fs::Metadata) -> Result<()> {
     if before.dev() != after.dev()
@@ -211,6 +225,30 @@ impl Dir {
 mod tests {
     use super::*;
     use std::os::unix::fs::{symlink, PermissionsExt};
+    #[test]
+    fn destination_ownership_excludes_root_and_other_accounts() {
+        for (owner, source, destination) in
+            [(0, true, false), (501, true, true), (502, false, false)]
+        {
+            assert_eq!(Ownership::Source.allows(owner, 501), source);
+            assert_eq!(Ownership::Destination.allows(owner, 501), destination);
+        }
+        // UID 0 is allowed only when it is the current account itself.
+        assert!(Ownership::Destination.allows(0, 0));
+    }
+
+    #[test]
+    fn root_owned_descriptor_is_source_only_without_chown() {
+        let file = std::fs::File::open("/").unwrap();
+        assert_eq!(file.metadata().unwrap().uid(), 0);
+        assert!(Ownership::Source.metadata(&file, true).is_ok());
+        if unsafe { libc::getuid() } != 0 {
+            assert!(matches!(
+                Ownership::Destination.metadata(&file, true),
+                Err(RuntimeError::Ownership)
+            ));
+        }
+    }
     #[test]
     fn private_directories_reject_symlink_and_unsafe_existing_modes() {
         let temp = tempfile::tempdir().unwrap();

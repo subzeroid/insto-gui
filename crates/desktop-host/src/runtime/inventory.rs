@@ -1,5 +1,5 @@
 use super::{
-    filesystem::{check, metadata, same, Dir},
+    filesystem::{check, same, Dir, Ownership},
     manifest::Entry,
     Result, RuntimeError,
 };
@@ -41,6 +41,7 @@ fn stream(
     mut destination: Option<&mut File>,
     entry: &Entry,
     deadline: Instant,
+    ownership: Ownership,
 ) -> Result<()> {
     let Entry::File {
         mode, size, sha256, ..
@@ -48,7 +49,7 @@ fn stream(
     else {
         return Err(RuntimeError::Integrity);
     };
-    let before = metadata(&source, false)?;
+    let before = ownership.metadata(&source, false)?;
     if before.size() != *size || before.mode() & 0o7777 != *mode {
         return Err(RuntimeError::Integrity);
     }
@@ -72,7 +73,7 @@ fn stream(
             write_chunk(file, &buffer[..count]).map_err(|_| RuntimeError::Storage)?;
         }
     }
-    same(&before, &metadata(&source, false)?)?;
+    same(&before, &ownership.metadata(&source, false)?)?;
     if total != *size || format!("{:x}", hash.finalize()) != *sha256 {
         return Err(RuntimeError::Integrity);
     }
@@ -90,12 +91,13 @@ fn walk(
     entries: &Index<'_>,
     deadline: Instant,
     depth: usize,
+    ownership: Ownership,
 ) -> Result<()> {
     check(deadline)?;
     if depth > 128 {
         return Err(RuntimeError::Manifest);
     }
-    let before = metadata(&source.0, true)?;
+    let before = ownership.metadata(&source.0, true)?;
     if before.mode() & 0o7777 != entry.mode() {
         return Err(RuntimeError::Integrity);
     }
@@ -111,12 +113,20 @@ fn walk(
             Entry::Directory { .. } => {
                 let from = source.child(name)?;
                 let to = destination.map(|dir| dir.exclusive_dir(name)).transpose()?;
-                walk(&from, to.as_ref(), child, entries, deadline, depth + 1)?;
+                walk(
+                    &from,
+                    to.as_ref(),
+                    child,
+                    entries,
+                    deadline,
+                    depth + 1,
+                    ownership,
+                )?;
             }
             Entry::File { .. } => {
                 let from = source.file(name)?;
                 let mut to = destination.map(|dir| dir.create(name)).transpose()?;
-                stream(from, to.as_mut(), child, deadline)?;
+                stream(from, to.as_mut(), child, deadline, ownership)?;
             }
         }
         Ok(())
@@ -124,7 +134,7 @@ fn walk(
     if seen != expected.map_or(0, BTreeMap::len) {
         return Err(RuntimeError::Integrity);
     }
-    same(&before, &metadata(&source.0, true)?)?;
+    same(&before, &ownership.metadata(&source.0, true)?)?;
     if let Some(dir) = destination {
         dir.0
             .set_permissions(Permissions::from_mode(entry.mode()))
@@ -133,9 +143,14 @@ fn walk(
     }
     check(deadline)
 }
-pub(super) fn verify(root: &Dir, entries: &[Entry], deadline: Instant) -> Result<()> {
+pub(super) fn verify(
+    root: &Dir,
+    entries: &[Entry],
+    deadline: Instant,
+    ownership: Ownership,
+) -> Result<()> {
     let first = entries.first().ok_or(RuntimeError::Manifest)?;
-    walk(root, None, first, &index(entries), deadline, 0)
+    walk(root, None, first, &index(entries), deadline, 0, ownership)
 }
 pub(super) fn copy(
     source: &Dir,
@@ -151,6 +166,7 @@ pub(super) fn copy(
         &index(entries),
         deadline,
         0,
+        Ownership::Source,
     )
 }
 
@@ -183,16 +199,16 @@ mod tests {
             },
         ];
         let deadline = Instant::now() + std::time::Duration::from_secs(2);
-        assert!(verify(&source, &entries, deadline).is_ok());
+        assert!(verify(&source, &entries, deadline, Ownership::Source).is_ok());
         let dest = root.private("dest").unwrap();
         copy(&source, &dest, &entries, deadline).unwrap();
-        verify(&dest, &entries, deadline).unwrap();
+        verify(&dest, &entries, deadline, Ownership::Destination).unwrap();
         std::fs::write(path.join("source/extra"), b"x").unwrap();
-        assert!(verify(&source, &entries, deadline).is_err());
+        assert!(verify(&source, &entries, deadline, Ownership::Source).is_err());
         std::fs::remove_file(path.join("source/extra")).unwrap();
         std::fs::write(path.join("source/file"), b"wrong").unwrap();
-        assert!(verify(&source, &entries, deadline).is_err());
+        assert!(verify(&source, &entries, deadline, Ownership::Source).is_err());
         std::fs::remove_file(path.join("source/file")).unwrap();
-        assert!(verify(&source, &entries, deadline).is_err());
+        assert!(verify(&source, &entries, deadline, Ownership::Source).is_err());
     }
 }

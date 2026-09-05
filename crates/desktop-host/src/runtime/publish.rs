@@ -1,5 +1,5 @@
 use super::{
-    filesystem::{check, metadata, same, Dir},
+    filesystem::{check, metadata, same, Dir, Ownership},
     inventory,
     manifest::{Manifest, MAX_MANIFEST_BYTES},
     Result, RuntimeError,
@@ -125,9 +125,9 @@ fn lock(root: &Dir, deadline: Instant) -> Result<File> {
     Ok(file)
 }
 
-fn raw_manifest(bundle: &Dir, deadline: Instant) -> Result<Vec<u8>> {
+fn raw_manifest(bundle: &Dir, deadline: Instant, ownership: Ownership) -> Result<Vec<u8>> {
     let mut file = bundle.file("manifest.json")?;
-    let before = metadata(&file, false)?;
+    let before = ownership.metadata(&file, false)?;
     if before.size() > MAX_MANIFEST_BYTES as u64 {
         return Err(RuntimeError::Manifest);
     }
@@ -144,7 +144,7 @@ fn raw_manifest(bundle: &Dir, deadline: Instant) -> Result<Vec<u8>> {
         }
         bytes.extend_from_slice(&chunk[..count]);
     }
-    same(&before, &metadata(&file, false)?)?;
+    same(&before, &ownership.metadata(&file, false)?)?;
     Ok(bytes)
 }
 
@@ -199,13 +199,14 @@ impl Candidate {
         }
         // Destination metadata is never authoritative. Its exact bytes must
         // still match the bounded manifest read from the trusted bundle.
-        if raw_manifest(&wrapper, self.deadline)? != self.raw {
+        if raw_manifest(&wrapper, self.deadline, Ownership::Destination)? != self.raw {
             return Err(RuntimeError::Integrity);
         }
         inventory::verify(
             &wrapper.child("python")?,
             &self.manifest.files,
             self.deadline,
+            Ownership::Destination,
         )
     }
 }
@@ -221,12 +222,17 @@ fn prepare(bundle: &Path, root: &Path, home: &Path, deadline: Instant) -> Result
     check(deadline)?;
     Dir::absolute(home)?;
     let source = Dir::absolute(bundle)?;
-    let raw = raw_manifest(&source, deadline)?;
+    let raw = raw_manifest(&source, deadline, Ownership::Source)?;
     let manifest = Manifest::parse(&raw, architecture())?;
     let root_dir = private_root(root)?;
     let held = lock(&root_dir, deadline)?;
     let runtimes = root_dir.private("runtimes")?;
-    inventory::verify(&source.child("python")?, &manifest.files, deadline)?;
+    inventory::verify(
+        &source.child("python")?,
+        &manifest.files,
+        deadline,
+        Ownership::Source,
+    )?;
     let mut existing = false;
     runtimes.entries(|name| {
         check(deadline)?;
@@ -284,13 +290,14 @@ fn prepare(bundle: &Path, root: &Path, home: &Path, deadline: Instant) -> Result
 fn finish(candidate: Candidate) -> Result<PublishedRuntime> {
     candidate.verify()?;
     let source = Dir::absolute(&candidate.bundle)?;
-    if raw_manifest(&source, candidate.deadline)? != candidate.raw {
+    if raw_manifest(&source, candidate.deadline, Ownership::Source)? != candidate.raw {
         return Err(RuntimeError::Integrity);
     }
     inventory::verify(
         &source.child("python")?,
         &candidate.manifest.files,
         candidate.deadline,
+        Ownership::Source,
     )?;
     if !candidate.existing {
         check(candidate.deadline)?;
