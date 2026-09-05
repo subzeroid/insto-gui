@@ -112,14 +112,18 @@ impl Owner {
             HostError::Transport
         }))
     }
+    /// Synchronously reject new work and cancel reads. UI close handlers call
+    /// this before scheduling the asynchronous drain; accepted mutations keep
+    /// their original deadlines and remain owned until supervision completes.
+    pub fn close_admission(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.closed = true;
+        self.cancel.send_replace(true);
+    }
     /// Close admission, cancel reads, and drain accepted mutations to their
     /// original deadlines. This never requests a service stop or replays work.
     pub async fn shutdown(&self) {
-        {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.closed = true;
-            self.cancel.send_replace(true);
-        }
+        self.close_admission();
         loop {
             let changed = self.changed.notified();
             tokio::pin!(changed);
@@ -155,6 +159,18 @@ mod tests {
             assert!(Instant::now() < deadline, "fixture never started");
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+    #[tokio::test]
+    async fn synchronous_close_blocks_an_unpolled_invoke_before_async_drain() {
+        let _lock = crate::process::tests::FIXTURE_LOCK.lock().await;
+        let fixture = Fixture::new(&format!("open('started','w').close()\n{RESPOND}"));
+        let owner = owner(&fixture);
+        let request = owner.execute(Operation::ServiceStart);
+        owner.close_admission();
+        owner.close_admission();
+        assert_eq!(request.await.unwrap_err(), HostError::Closed);
+        owner.shutdown().await;
+        assert!(!fixture._dir.path().join("started").exists());
     }
     #[tokio::test]
     async fn two_reads_and_one_mutation_fail_busy_without_queue() {
