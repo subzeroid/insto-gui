@@ -32,6 +32,13 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify(self.root, entries)
 
+    def test_verification_does_not_materialize_directory_names(self):
+        entries = describe(self.root)
+        with patch.object(
+            Path, "iterdir", side_effect=AssertionError("eager directory listing")
+        ):
+            verify(self.root, entries)
+
     def test_hardlinked_file_is_rejected(self):
         os.link(self.root / "dir/a", self.root / "hardlink")
         with self.assertRaisesRegex(ValueError, "Hardlinked"):

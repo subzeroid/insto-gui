@@ -103,8 +103,12 @@ def verify(root: Path, entries: list[dict]) -> None:
         if actual != entry:
             raise ValueError("Runtime inventory mismatch")
         if directory:
-            for child in path.iterdir():
-                visit(child, child.name if name == "." else f"{name}/{child.name}")
+            with os.scandir(path) as children:
+                for child in children:
+                    visit(
+                        Path(child.path),
+                        child.name if name == "." else f"{name}/{child.name}",
+                    )
 
     visit(Path(root), ".")
     if expected:
