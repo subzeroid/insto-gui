@@ -7,8 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-fn new_root(args: &[OsString]) -> Result<PathBuf, &'static str> {
-    if args.len() != 2 || args[0] != "--proof-root" {
+pub(crate) fn new_root(args: &[OsString]) -> Result<PathBuf, &'static str> {
+    if args.len() != 2 || (args[0] != "--proof-root" && args[0] != "--proof-window") {
         return Err("proof_arguments");
     }
     let root = PathBuf::from(&args[1]);
@@ -27,6 +27,15 @@ fn new_root(args: &[OsString]) -> Result<PathBuf, &'static str> {
     let metadata = parent.metadata().map_err(|_| "proof_root")?;
     if metadata.uid() != unsafe { libc::getuid() } || metadata.mode() & 0o022 != 0 {
         return Err("proof_root");
+    }
+    for ancestor in parent.ancestors() {
+        let metadata = ancestor.symlink_metadata().map_err(|_| "proof_root")?;
+        if !metadata.is_dir()
+            || (metadata.uid() != 0 && metadata.uid() != unsafe { libc::getuid() })
+            || metadata.mode() & 0o022 != 0
+        {
+            return Err("proof_root");
+        }
     }
     std::fs::DirBuilder::new()
         .mode(0o700)
@@ -77,6 +86,41 @@ pub fn run(args: Vec<OsString>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejects_unsafe_ancestors_and_symlink_roots() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let unsafe_parent = base.join("unsafe");
+        let parent = unsafe_parent.join("private");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::set_permissions(&unsafe_parent, std::fs::Permissions::from_mode(0o777)).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(new_root(&[
+            "--proof-window".into(),
+            parent.join("insto-app-proof-bad").into_os_string()
+        ])
+        .is_err());
+        let link = base.join("insto-app-proof-link");
+        symlink(&parent, &link).unwrap();
+        assert!(new_root(&["--proof-window".into(), link.into_os_string()]).is_err());
+    }
+    #[test]
+    fn accepts_window_mode_only_with_a_fresh_private_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("insto-app-proof-window");
+        let args = [
+            OsString::from("--proof-window"),
+            root.clone().into_os_string(),
+        ];
+        assert_eq!(new_root(&args), Ok(root.clone()));
+        assert_eq!(root.metadata().unwrap().mode() & 0o777, 0o700);
+        assert!(new_root(&args).is_err());
+    }
     #[test]
     fn requires_new_explicit_private_proof_root() {
         let dir = tempfile::tempdir().unwrap();
