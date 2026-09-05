@@ -17,10 +17,19 @@ class ManifestTests(unittest.TestCase):
 
     def test_inventory_and_hash(self):
         entries = describe(self.root)
-        self.assertEqual([x["path"] for x in entries], ["dir", "dir/a"])
-        self.assertEqual(entries[1]["sha256"], sha256(self.root / "dir/a"))
-        self.assertEqual(entries[1]["size"], 5)
+        self.assertEqual([x["path"] for x in entries], [".", "dir", "dir/a"])
+        self.assertEqual(entries[0]["type"], "directory")
+        self.assertEqual(entries[0]["mode"], 0o700)
+        self.assertEqual(entries[2]["sha256"], sha256(self.root / "dir/a"))
+        self.assertEqual(entries[2]["size"], 5)
         verify(self.root, entries)
+
+    def test_root_mode_change_is_detected(self):
+        self.root.chmod(0o700)
+        entries = describe(self.root)
+        self.root.chmod(0o777)
+        with self.assertRaises(ValueError):
+            verify(self.root, entries)
 
     def test_mutations(self):
         for mutation in ("change", "extra", "delete", "mode", "type"):

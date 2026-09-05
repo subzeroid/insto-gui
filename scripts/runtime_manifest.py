@@ -27,9 +27,12 @@ def _checked_stat(path: Path):
 
 def describe(root: Path) -> list[dict]:
     root = Path(root)
-    if not stat.S_ISDIR(_checked_stat(root).st_mode):
+    root_info = _checked_stat(root)
+    if not stat.S_ISDIR(root_info.st_mode):
         raise ValueError(f"Not a directory: {root}")
-    entries = []
+    entries = [
+        {"path": ".", "type": "directory", "mode": stat.S_IMODE(root_info.st_mode)}
+    ]
 
     def visit(directory):
         for path in directory.iterdir():
