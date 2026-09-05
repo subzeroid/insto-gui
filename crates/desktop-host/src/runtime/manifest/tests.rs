@@ -1,0 +1,114 @@
+use super::*;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+fn fixture() -> Value {
+    let pin: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../packaging/core-pin.json"
+    )))
+    .unwrap();
+    let python: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../packaging/python-distributions.json"
+    )))
+    .unwrap();
+    json!({
+        "manifest_version": 1,
+        "inputs": {
+            "core_commit": pin["core_commit"], "core_wheel_name": "insto-0.7.20-py3-none-any.whl",
+            "core_wheel_sha256": "a".repeat(64), "requirements_sha256": "b".repeat(64),
+            "build_constraints_sha256": "c".repeat(64), "uv_version": "uv 0.8.13",
+            "architecture": "arm64", "python_version": python["python_version"],
+            "upstream_url": python["targets"]["arm64"]["url"], "upstream_sha256": python["targets"]["arm64"]["sha256"]
+        },
+        "files": [
+            {"path": ".", "type": "directory", "mode": 493},
+            {"path": "bin", "type": "directory", "mode": 493},
+            {"path": "bin/python3", "type": "file", "mode": 493, "size": 5, "sha256": format!("{:x}",Sha256::digest(b"hello"))}
+        ]
+    })
+}
+
+fn signed(mut value: Value) -> Vec<u8> {
+    value.as_object_mut().unwrap().remove("build_id");
+    let canonical = serde_json::to_vec(&value).unwrap();
+    value["build_id"] = json!(format!("{:x}", Sha256::digest(canonical)));
+    serde_json::to_vec(&value).unwrap()
+}
+
+#[test]
+fn valid_pinned_v1_manifest() {
+    let manifest = Manifest::parse(&signed(fixture()), "arm64").unwrap();
+    assert_eq!(manifest.files.len(), 3);
+    assert_eq!(manifest.files[2].path(), "bin/python3");
+}
+
+#[test]
+fn invalid_identity_schema_and_metadata() {
+    let valid = signed(fixture());
+    let mut bad_digest: Value = serde_json::from_slice(&valid).unwrap();
+    bad_digest["build_id"] = json!("0".repeat(64));
+    assert!(Manifest::parse(&serde_json::to_vec(&bad_digest).unwrap(), "arm64").is_err());
+    assert!(Manifest::parse(&valid, "x86_64").is_err());
+    for (field, value) in [
+        ("core_commit", "e".repeat(40)),
+        ("core_wheel_name", "other.whl".into()),
+        ("architecture", "other".into()),
+        ("upstream_sha256", "0".repeat(64)),
+        ("python_version", "0.0.0".into()),
+        ("uv_version", "uv ☃".into()),
+    ] {
+        let mut invalid = fixture();
+        invalid["inputs"][field] = json!(value);
+        assert!(
+            Manifest::parse(&signed(invalid), "arm64").is_err(),
+            "{field}"
+        );
+    }
+    for version in [json!(true), json!(1.0), json!(2)] {
+        let mut invalid = fixture();
+        invalid["manifest_version"] = version;
+        assert!(Manifest::parse(&signed(invalid), "arm64").is_err());
+    }
+    let duplicate = String::from_utf8(valid).unwrap().replace(
+        "\"manifest_version\":1",
+        "\"manifest_version\":1,\"manifest_version\":1",
+    );
+    assert!(Manifest::parse(duplicate.as_bytes(), "arm64").is_err());
+}
+
+#[test]
+fn invalid_entries_paths_modes_and_budgets() {
+    for path in [
+        "/bin/python3",
+        "bin/../python3",
+        "bin//python3",
+        "bin/./python3",
+        "bin/python3/",
+        "bin\\python3",
+        "missing/python3",
+    ] {
+        let mut invalid = fixture();
+        invalid["files"][2]["path"] = json!(path);
+        assert!(
+            Manifest::parse(&signed(invalid), "arm64").is_err(),
+            "{path}"
+        );
+    }
+    for mode in [json!(true), json!(4095), json!(511), json!(420)] {
+        let mut invalid = fixture();
+        invalid["files"][2]["mode"] = mode;
+        assert!(Manifest::parse(&signed(invalid), "arm64").is_err());
+    }
+    let mut invalid = fixture();
+    invalid["files"][2]["type"] = json!("symlink");
+    assert!(Manifest::parse(&signed(invalid), "arm64").is_err());
+    let mut invalid = fixture();
+    invalid["files"][2]["size"] = json!(MAX_FILE_BYTES + 1);
+    assert!(Manifest::parse(&signed(invalid), "arm64").is_err());
+    let mut invalid = fixture();
+    invalid["files"].as_array_mut().unwrap().reverse();
+    assert!(Manifest::parse(&signed(invalid), "arm64").is_err());
+    assert!(Manifest::parse(&vec![b' '; MAX_MANIFEST_BYTES + 1], "arm64").is_err());
+}
