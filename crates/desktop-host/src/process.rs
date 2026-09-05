@@ -13,6 +13,8 @@ pub struct TrustedLauncher {
     home: PathBuf,
     #[cfg(test)]
     pub(crate) force_cleanup_timeout: bool,
+    #[cfg(test)]
+    spawned_children: std::sync::Arc<AtomicU64>,
 }
 impl TrustedLauncher {
     pub fn new(root: &Path, python: &Path, home: &Path) -> Result<Self, HostError> {
@@ -31,6 +33,8 @@ impl TrustedLauncher {
             home: home.into(),
             #[cfg(test)]
             force_cleanup_timeout: false,
+            #[cfg(test)]
+            spawned_children: std::sync::Arc::new(AtomicU64::new(0)),
         })
     }
 }
@@ -133,7 +137,7 @@ pub(crate) async fn run(
         NEXT_ID.fetch_add(1, Ordering::Relaxed)
     );
     let request = op.request(&id)?;
-    if !mutation && *cancel.borrow() {
+    if Instant::now() >= deadline || (!mutation && *cancel.borrow()) {
         return Err(fail());
     }
     let mut command = tokio::process::Command::new(&launcher.python);
@@ -154,6 +158,8 @@ pub(crate) async fn run(
         // reap could have made that PID available for reuse.
         .kill_on_drop(false);
     let mut child = command.spawn().map_err(|_| fail())?;
+    #[cfg(test)]
+    launcher.spawned_children.fetch_add(1, Ordering::Relaxed);
     let group = Group(child.id().ok_or_else(fail)? as i32);
     let mut stdin = child.stdin.take().ok_or_else(fail)?;
     let stdout = child.stdout.take().ok_or_else(fail)?;
@@ -267,6 +273,31 @@ pub(crate) mod tests {
             rx,
         )
         .await
+    }
+    #[tokio::test]
+    async fn expired_deadline_never_spawns_a_controlled_child() {
+        let _lock = FIXTURE_LOCK.lock().await;
+        let fixture = Fixture::new(RESPOND);
+        for op in [Operation::SetupInspect, Operation::ServiceStart] {
+            let expected = if op.is_mutation() {
+                HostError::OutcomeUnknown
+            } else {
+                HostError::Transport
+            };
+            let (_tx, rx) = watch::channel(false);
+            assert_eq!(
+                run(
+                    &fixture.launcher,
+                    op,
+                    Instant::now() - Duration::from_secs(1),
+                    rx
+                )
+                .await
+                .unwrap_err(),
+                expected
+            );
+            assert_eq!(fixture.launcher.spawned_children.load(Ordering::Relaxed), 0);
+        }
     }
     #[tokio::test]
     async fn eof_and_fixed_argv_clean_environment() {
