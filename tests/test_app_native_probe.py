@@ -1,5 +1,7 @@
 import hashlib
 from contextlib import closing
+from contextlib import redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -8,15 +10,18 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts.app_native_probe import (
     Fixture,
     NativeDriver,
+    close_window,
     fresh_tick,
     persistence_sequence,
     private_read,
     write_new,
+    window_marker,
 )
 from scripts.proof_process import UnsafeProcessGroup
 from scripts.runtime_manifest import describe
@@ -163,6 +168,61 @@ class FixtureTests(unittest.TestCase):
 
 
 class SequenceTests(unittest.TestCase):
+    def test_expected_closed_preparation_is_not_a_drain_failure(self):
+        class Child:
+            def __init__(self):
+                self.lines = iter(
+                    (
+                        b'{"proof":"close_requested"}',
+                        b'{"proof":"prepare_failed","code":"closed"}',
+                        b'{"proof":"inspect_failed","code":"transport"}',
+                        b'{"proof":"drained"}',
+                    )
+                )
+                self.finished = False
+
+            def send(self, data, deadline):
+                self.control = data
+
+            def finish(self, deadline):
+                self.finished = True
+                return SimpleNamespace(returncode=0)
+
+            def wait_for_line(self, predicate, deadline):
+                for line in self.lines:
+                    if predicate(line):
+                        return line
+                raise AssertionError("missing drain")
+
+        with redirect_stdout(io.StringIO()):
+            child = Child()
+            close_window(child, time.monotonic() + 1)
+            self.assertEqual(child.control, b"close\n")
+            self.assertTrue(child.finished)
+            with self.assertRaises(RuntimeError):
+                window_marker(Child(), "ui_ready", time.monotonic() + 1)
+
+    def test_live_window_progress_forwards_only_expected_static_marker(self):
+        class Child:
+            def wait_for_line(self, predicate, deadline):
+                self_accepted = [
+                    line
+                    for line in (
+                        b'{"proof":"secret"}',
+                        b'{"proof":"ui_ready","extra":"secret"}',
+                        b'{"proof":"ui_ready"}',
+                    )
+                    if predicate(line)
+                ]
+                self.assertion = self_accepted
+
+        child = Child()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            window_marker(child, "ui_ready", time.monotonic() + 1)
+        self.assertEqual(child.assertion, [b'{"proof":"ui_ready"}'])
+        self.assertEqual(output.getvalue(), '{"observed": "ui_ready"}\n')
+
     def test_service_identity_change_is_not_continuation(self):
         driver = NativeDriver(None, None, time.monotonic() + 5)
         driver.pin_service(123, b"Sat Sep  5 10:00:00 2026")

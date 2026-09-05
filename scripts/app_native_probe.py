@@ -282,13 +282,43 @@ def label_absent(label, cwd, deadline):
 
 
 def window_marker(child, expected, deadline):
+    progress = {
+        "window_opened",
+        "ui_ready",
+        "close_requested",
+        "exit_requested",
+        "drained",
+        "script_started",
+        "form_ready",
+        "prepare_started",
+        "prepare_ready",
+        "inspect_started",
+        "inspect_ready",
+    }
+    if expected not in progress:
+        raise ValueError("unsupported static proof marker")
+
     def match(line):
         try:
             value = json.loads(line)
         except (ValueError, UnicodeError):
             return False
-        if isinstance(value, dict) and value.get("proof") == "ui_failed":
+        if expected == "drained" and value in (
+            {"proof": "prepare_failed", "code": "closed"},
+            {"proof": "inspect_failed", "code": "closed"},
+            {"proof": "inspect_failed", "code": "transport"},
+        ):
+            # Only after a real Close/ExitRequested marker: cancellation of
+            # accepted initialization/reads is expected while draining.
+            return False
+        if isinstance(value, dict) and value.get("proof") in (
+            "ui_failed",
+            "prepare_failed",
+            "inspect_failed",
+        ):
             raise RuntimeError("real WebKit proof failed; retain bounded evidence")
+        if any(value == {"proof": event} for event in progress):
+            print(json.dumps({"observed": value["proof"]}), flush=True)
         return value == {"proof": expected}
 
     child.wait_for_line(match, deadline)
@@ -484,6 +514,7 @@ def run(source, root, mode):
         env=ENV,
     )
     driver = None
+    started_at = time.monotonic()
     result = {
         "mode": mode,
         "passed": False,
@@ -508,12 +539,16 @@ def run(source, root, mode):
             else:
                 close_window(app, deadline, b"quit\n" if mode == "quit" else b"close\n")
         result["passed"] = True
+    except BaseException as error:
+        result["failure_type"] = type(error).__name__
+        raise
     finally:
         try:
             if not app.reaped and not app.unsafe:
                 app.abort()
         finally:
             result["app_group_cleaned"] = app.reaped
+            result["elapsed_seconds"] = round(time.monotonic() - started_at, 3)
             if driver:
                 result["cleanup_confirmed"] = driver.cleanup_confirmed
                 result["native_events"] = driver.evidence

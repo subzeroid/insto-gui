@@ -43,20 +43,42 @@ impl Credentials {
     }
 }
 #[tauri::command]
-pub async fn prepare_desktop(
+pub async fn prepare_desktop<R: tauri::Runtime>(
+    _app: tauri::AppHandle<R>,
     state: tauri::State<'_, Arc<DesktopState>>,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Prepared, &'static str> {
     no_arguments(request)?;
-    state.prepare().await
+    #[cfg(feature = "app-proof")]
+    crate::proof_window::progress(&_app, "prepare_started", None);
+    let result = state.prepare().await;
+    #[cfg(feature = "app-proof")]
+    match &result {
+        Ok(_) => crate::proof_window::progress(&_app, "prepare_ready", None),
+        Err(code) => crate::proof_window::progress(&_app, "prepare_failed", Some(code)),
+    }
+    result
 }
 #[tauri::command]
-pub async fn inspect_setup(
+pub async fn inspect_setup<R: tauri::Runtime>(
+    _app: tauri::AppHandle<R>,
     state: tauri::State<'_, Arc<DesktopState>>,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Response, &'static str> {
     no_arguments(request)?;
-    state.execute(Operation::SetupInspect).await
+    #[cfg(feature = "app-proof")]
+    crate::proof_window::progress(&_app, "inspect_started", None);
+    let result = state.execute(Operation::SetupInspect).await;
+    #[cfg(feature = "app-proof")]
+    match &result {
+        Ok(Response::Profile(_)) => crate::proof_window::progress(&_app, "inspect_ready", None),
+        Ok(Response::Error(error)) => {
+            crate::proof_window::progress(&_app, "inspect_failed", Some(error.code))
+        }
+        Ok(_) => crate::proof_window::progress(&_app, "inspect_failed", Some("protocol")),
+        Err(code) => crate::proof_window::progress(&_app, "inspect_failed", Some(code)),
+    }
+    result
 }
 #[tauri::command]
 pub async fn configure_setup(

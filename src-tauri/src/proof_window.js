@@ -5,13 +5,21 @@
   const mark = code => { document.title = `insto-proof:${code}`; };
   const check = (condition, code) => { if (!condition) throw code; };
   const run = async () => {
+    // Initialization scripts can precede the HTML title element.
+    const deadline = Date.now() + 240000;
+    while (!document.head && Date.now() < deadline) await tick();
+    mark('script_started');
+    await tick();
     let input;
-    for (let i = 0; i < 4800; i++) {
+    while (Date.now() < deadline) {
+      check(!document.querySelector('.loading-panel [role="alert"]'), 'initialization_failed');
       input = document.querySelector('#hiker-token');
       if (input && !input.disabled) break;
       await tick();
     }
     check(input && !input.disabled, 'timeout');
+    mark('form_ready');
+    await tick();
     const form = input.closest('form');
     const toggle = form.querySelector('.visibility');
     const submit = form.querySelector('[type="submit"]');
@@ -50,5 +58,5 @@
     check(response.kind === 'profile' && response.data.status === 'unconfigured' && response.data.configured === false && response.data.service_running === false, 'profile');
     mark('ui_ready');
   };
-  run().catch(code => mark(['form', 'visibility', 'validation', 'geometry', 'ipc', 'profile', 'timeout'].includes(code) ? code : 'script'));
+  run().catch(code => mark(['form', 'visibility', 'validation', 'geometry', 'ipc', 'profile', 'timeout', 'initialization_failed'].includes(code) ? code : 'script'));
 })();
