@@ -24,6 +24,53 @@ requests or live profiles were used.
 This verifies the library's actual C1 runtime path, not a built-app or native
 service gate. The unsigned manifest is integrity evidence, not authenticity.
 
+## Built-app offline proof
+
+Host: macOS 26.6.2 (25G83), arm64. Source at `1e00667` includes adapter
+`fe80cfd` and the synchronous close integration. Built with:
+
+```sh
+npx tauri build --features app-proof --bundles app
+```
+
+The generated `.app` was copied into new private
+`.build/app-proof-bundle/insto.app` before execution. Its embedded runtime is
+byte-for-byte identical to `.build/app-resources/runtime`; strict ad-hoc code
+signature verification passed. No Developer ID identity or notarization was
+used. Only the application executable and outer bundle were ad-hoc signed;
+the bundled Python inventory was not rewritten.
+
+Copied application executable SHA-256:
+`23b71b85a92ce4c5d8790c0653d967a3b544fa1e72eaf0c8227361123be5cd35`.
+
+Actual command (absolute paths, no inherited environment except fixed PATH):
+
+```sh
+env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  "$PWD/.build/app-proof-bundle/insto.app/Contents/MacOS/insto-gui" \
+  --proof-root "$PWD/.build/insto-app-proof-01"
+```
+
+Result: exit 0 in **19.02 seconds**. `prepared` returned core 0.7.20 and the
+exact pinned build ID; `inspected` returned all seven unconfigured profile
+fields. The real bundled application's `DesktopState` performed publication,
+strict hello, setup inspection and shutdown. This developer feature does not
+open a window, call a provider, or issue service commands.
+
+Published `.build/insto-app-proof-01/runtimes/<build_id>` matches the bundled
+manifest and Python tree byte-for-byte. The interpreter SHA-256 is unchanged.
+The fresh proof root contains only private `runtime.lock` and `runtimes`,
+not a profile. The copied app and published runtime are retained separately.
+
+The ordinary build (`npx tauri build --bundles app`, no proof feature) was
+also built and retained at `.build/app-local-bundle/insto.app`. Its runtime
+matches the staged inventory, and strict ad-hoc signature verification passes.
+Its executable SHA-256 is
+`85a1d39a9166b199aa1a635cd65d7744c2803ac114e83bc8a35cccbd3db50afd`.
+Invoking it with `--proof-root` returned exit 1 and only `unsupported_arguments`;
+the requested proof directory was not created. The ordinary GUI was not opened
+against the default profile during verification.
+
 ## Frontend proof
 
 22 Vitest tests pass, including named IPC, invalid tokens, safe errors, unsafe
@@ -49,7 +96,7 @@ onboarding or macOS WebKit rendering evidence.
 
 ## Independent review
 
-Final library verification: 64 Python tests and Ruff passed; 41 Rust host tests,
+Final library verification: 64 Python tests and Ruff passed; 43 Rust host tests,
 Rust formatting and all-target Clippy with warnings denied passed. The 22 Vue
 tests and TypeScript/production build passed again after the review fix.
 
@@ -64,14 +111,31 @@ and frontend. Publisher ownership finding was fixed in `3dac13d`; destination
 manifest and every inventory entry now require current UID. Frontend status
 coercion was reproduced and fixed with a rejection regression.
 
-Nonblocking follow-ups: check an already-expired bridge deadline before spawning;
-add a publisher coordination fixture with two distinct application processes
+The expired-deadline review edge was also fixed: a controlled-child test first
+observed one unwanted spawn, then passed with zero spawns for both reads and
+mutations. The guard rejects expired work before command construction.
+
+Tauri integration also required synchronous owner admission closure before
+scheduling the asynchronous drain. Its regression first admitted an unpolled
+invoke after a no-op close, then correctly rejected it without launching a child.
+One concurrent development run had two existing fixture-start timing failures;
+both passed individually, then the complete 43-test suite passed in 27.48 s.
+This was not a production deadline change or a claim that fixture timing is
+immune to host load.
+
+Nonblocking follow-up: add a publisher coordination fixture with two distinct application processes
 (current concurrent tests use separate file opens and real flock in one process).
+
+Tauri spec and fresh quality source reviews also passed, with 9 adapter tests
+and strict all-target/all-feature Clippy passing. A nonblocking review edge
+remains: if the initialization future itself panics, a closed empty watch
+receiver is retained and explicit Retry cannot recover without restarting the
+application. No concrete production panic trigger was identified.
 
 ## Open gates
 
-- Tauri adapter ACL/lifecycle review, local `.app` bundle and real bundled-app
-  prepare/inspect proof are being completed separately.
+- Actual macOS WebKit window interaction and app-specific native persistence
+  remain unverified; the offline developer feature does not open a window.
 - A separately reviewed app-specific native supervisor must prove new fake
   SQLite ticks after app exit and source-app relocation. Historical P0/C1
   LaunchAgent evidence is not reused to claim this gate passed.
