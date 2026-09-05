@@ -56,5 +56,56 @@ def describe(root: Path) -> list[dict]:
 
 
 def verify(root: Path, entries: list[dict]) -> None:
-    if describe(root) != entries:
-        raise ValueError(f"Runtime inventory mismatch: {root}")
+    # Reject unlisted nodes and incorrect sizes before reading their contents.
+    # Iterating only the declared paths would miss extras; describing the whole
+    # actual tree first would hash arbitrarily large, already-invalid payloads.
+    if not 1 <= len(entries) <= 50_000:
+        raise ValueError("Runtime inventory entry budget")
+    expected = {entry["path"]: entry for entry in entries}
+    if len(expected) != len(entries):
+        raise ValueError("Duplicate runtime inventory path")
+
+    def visit(path: Path, name: str):
+        entry = expected.pop(name, None)
+        if entry is None:
+            raise ValueError("Unexpected runtime entry")
+        info = _checked_stat(path)
+        directory = stat.S_ISDIR(info.st_mode)
+        actual = {
+            "path": name,
+            "type": "directory" if directory else "file",
+            "mode": stat.S_IMODE(info.st_mode),
+        }
+        if not directory:
+            if info.st_size != entry.get("size") or info.st_size > 256 * 1024 * 1024:
+                raise ValueError("Runtime file size mismatch")
+            digest = hashlib.sha256()
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_nlink) != (
+                    info.st_dev,
+                    info.st_ino,
+                    info.st_size,
+                    1,
+                ):
+                    raise ValueError("Runtime file changed before hashing")
+                remaining = info.st_size
+                while remaining:
+                    chunk = stream.read(min(remaining, 1024 * 1024))
+                    if not chunk:
+                        raise ValueError("Runtime file changed while hashing")
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+                if stream.read(1):
+                    raise ValueError("Runtime file grew while hashing")
+            actual.update(size=info.st_size, sha256=digest.hexdigest())
+        if actual != entry:
+            raise ValueError("Runtime inventory mismatch")
+        if directory:
+            for child in path.iterdir():
+                visit(child, child.name if name == "." else f"{name}/{child.name}")
+
+    visit(Path(root), ".")
+    if expected:
+        raise ValueError("Missing runtime entries")

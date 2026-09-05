@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts.runtime_manifest import describe, sha256, verify
+from scripts import runtime_manifest
 
 
 class ManifestTests(unittest.TestCase):
@@ -35,6 +36,47 @@ class ManifestTests(unittest.TestCase):
         os.link(self.root / "dir/a", self.root / "hardlink")
         with self.assertRaisesRegex(ValueError, "Hardlinked"):
             describe(self.root)
+
+    def test_unlisted_or_oversized_file_is_rejected_before_hashing(self):
+        entries = describe(self.root)
+        extra = self.root / "extra"
+        extra.write_bytes(b"unexpected")
+        real_open = runtime_manifest.os.open
+        real_path_open = Path.open
+        hashed = []
+
+        def record_open(path, *args, **kwargs):
+            hashed.append(Path(path))
+            return real_open(path, *args, **kwargs)
+
+        def record_path_open(path, *args, **kwargs):
+            hashed.append(Path(path))
+            return real_path_open(path, *args, **kwargs)
+
+        with (
+            patch.object(runtime_manifest.os, "open", side_effect=record_open),
+            patch.object(Path, "open", record_path_open),
+        ):
+            with self.assertRaises(ValueError):
+                verify(self.root, entries)
+        self.assertNotIn(extra, hashed)
+        extra.unlink()
+        hashed.clear()
+        (self.root / "dir/a").write_bytes(b"oversized content")
+        with (
+            patch.object(runtime_manifest.os, "open", side_effect=record_open),
+            patch.object(Path, "open", record_path_open),
+        ):
+            with self.assertRaises(ValueError):
+                verify(self.root, entries)
+        self.assertNotIn(self.root / "dir/a", hashed)
+        (self.root / "dir/a").write_bytes(b"hello")
+        with (
+            patch.object(runtime_manifest.os, "open", side_effect=record_open),
+            patch.object(Path, "open", record_path_open),
+        ):
+            verify(self.root, entries)
+        self.assertIn(self.root / "dir/a", hashed)
 
     def test_mutations(self):
         for mutation in ("change", "extra", "delete", "mode", "type"):

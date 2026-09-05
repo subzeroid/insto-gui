@@ -266,7 +266,34 @@ class StageTests(unittest.TestCase):
         self.assertFalse((self.destination / "manifest.json").exists())
         verify(self.source / "python", self.manifest["files"])
 
-    def test_changed_copy_or_source_never_gets_completion_manifest(self):
+    def test_manifest_sync_failure_never_publishes_completion_name(self):
+        with patch.object(
+            stager.os, "fsync", side_effect=OSError(errno.ENOSPC, "fixture disk full")
+        ):
+            with self.assertRaises(OSError):
+                stager.stage(self.source, self.destination)
+        self.assertTrue(self.destination.is_dir())
+        self.assertFalse((self.destination / "manifest.json").exists())
+
+    def test_manifest_write_failure_retains_only_private_partial(self):
+        real_dumps = json.dumps
+
+        def failing_final_serialization(value, *args, **kwargs):
+            if isinstance(value, dict) and "build_id" in value:
+                raise OSError(errno.ENOSPC, "fixture disk full")
+            return real_dumps(value, *args, **kwargs)
+
+        with patch.object(
+            stager.json, "dumps", side_effect=failing_final_serialization
+        ):
+            with self.assertRaises(OSError):
+                stager.stage(self.source, self.destination)
+        self.assertFalse((self.destination / "manifest.json").exists())
+        self.assertEqual(
+            (self.destination / ".manifest.partial").stat().st_mode & 0o777, 0o600
+        )
+
+    def test_changed_copy_never_gets_completion_manifest(self):
         real_copy = shutil.copytree
 
         def changing_copy(source, destination, *args, **kwargs):
@@ -281,3 +308,18 @@ class StageTests(unittest.TestCase):
         self.assertTrue(self.destination.is_dir())
         self.assertFalse((self.destination / "manifest.json").exists())
         verify(self.source / "python", self.manifest["files"])
+
+    def test_changed_source_after_copy_never_gets_completion_manifest(self):
+        real_copy = shutil.copytree
+
+        def changing_source(source, destination, *args, **kwargs):
+            result = real_copy(source, destination, *args, **kwargs)
+            if Path(destination) == self.destination / "python":
+                (Path(source) / "LICENSE").write_text("changed source after copy")
+            return result
+
+        with patch.object(stager.shutil, "copytree", side_effect=changing_source):
+            with self.assertRaises(ValueError):
+                stager.stage(self.source, self.destination)
+        self.assertFalse((self.destination / "manifest.json").exists())
+        verify(self.destination / "python", self.manifest["files"])

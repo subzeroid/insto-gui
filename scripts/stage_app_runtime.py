@@ -51,12 +51,15 @@ def stage(source: Path, destination: Path) -> dict:
     shutil.copytree(source / "python", destination / "python", symlinks=True)
     verify(destination / "python", manifest["files"])
     verify(source / "python", manifest["files"])
-    output = destination / "manifest.json"
+    output = destination / ".manifest.partial"
     descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w") as stream:
         stream.write(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
         stream.flush()
         os.fsync(stream.fileno())
+    # Publish the ready name only after write, flush, sync and close succeeded.
+    # The destination was exclusively created by this developer invocation.
+    output.rename(destination / "manifest.json")
     return manifest
 
 
