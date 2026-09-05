@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-inspect-setup"
+description = "Enables the inspect_setup command without any pre-configured scope."
+commands.allow = ["inspect_setup"]
+
+[[permission]]
+identifier = "deny-inspect-setup"
+description = "Denies the inspect_setup command without any pre-configured scope."
+commands.deny = ["inspect_setup"]

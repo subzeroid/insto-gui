@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "insto",
+  "version": "0.1.0",
+  "identifier": "app.insto.desktop",
+  "build": { "frontendDist": "../dist", "beforeBuildCommand": "npm run build" },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'",
+      "capabilities": ["main-local"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "resources": { "../.build/app-resources/runtime/": "runtime/" },
+    "macOS": { "signingIdentity": "-" }
+  }
+}

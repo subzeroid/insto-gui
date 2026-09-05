@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-local",
+  "description": "Only the bundled main window can call the eight desktop commands.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "allow-prepare-desktop", "allow-inspect-setup", "allow-configure-setup",
+    "allow-replace-credentials", "allow-start-service", "allow-stop-service",
+    "allow-repair-service", "allow-open-token-page"
+  ]
+}
