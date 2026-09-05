@@ -148,17 +148,33 @@ mod tests {
         Owner::with_policy(
             fixture.launcher.clone(),
             Policy {
-                read: Duration::from_secs(2),
-                mutation: Duration::from_secs(2),
+                read: Duration::from_secs(10),
+                mutation: Duration::from_secs(10),
             },
         )
     }
-    async fn started(fixture: &Fixture) {
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while !fixture._dir.path().join("started").exists() {
-            assert!(Instant::now() < deadline, "fixture never started");
+    async fn started(fixture: &Fixture, marker: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !fixture._dir.path().join(marker).exists() {
+            assert!(Instant::now() < deadline, "fixture never started: {marker}");
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+    async fn ready(
+        fixture: &Fixture,
+        marker: &str,
+        call: &mut tokio::task::JoinHandle<Result<Response, HostError>>,
+    ) {
+        tokio::select! {
+            _ = started(fixture, marker) => {},
+            result = call => panic!("child ended before ready ({marker}): {result:?}"),
+        }
+    }
+    fn gated_response() -> String {
+        let response = RESPOND.strip_prefix("r=json.load(sys.stdin)\n").unwrap();
+        format!(
+            "r=json.load(sys.stdin)\nopen('started-'+r['operation'],'w').close()\nwhile not os.path.exists('release'): time.sleep(.005)\nopen('completed','w').close()\n{response}"
+        )
     }
     #[tokio::test]
     async fn synchronous_close_blocks_an_unpolled_invoke_before_async_drain() {
@@ -175,23 +191,23 @@ mod tests {
     #[tokio::test]
     async fn two_reads_and_one_mutation_fail_busy_without_queue() {
         let _lock = crate::process::tests::FIXTURE_LOCK.lock().await;
-        let f = Fixture::new(&format!(
-            "open('started','w').close()\ntime.sleep(.3)\n{RESPOND}"
-        ));
+        let f = Fixture::new(&gated_response());
         let owner = owner(&f);
-        let read1 = tokio::spawn({
+        let mut read1 = tokio::spawn({
             let o = owner.clone();
             async move { o.execute(Operation::SetupInspect).await }
         });
-        let read2 = tokio::spawn({
+        let mut read2 = tokio::spawn({
             let o = owner.clone();
             async move { o.execute(Operation::SettingsInspect).await }
         });
-        let mutation = tokio::spawn({
+        let mut mutation = tokio::spawn({
             let o = owner.clone();
             async move { o.execute(Operation::ServiceStart).await }
         });
-        started(&f).await;
+        ready(&f, "started-setup.inspect", &mut read1).await;
+        ready(&f, "started-settings.inspect", &mut read2).await;
+        ready(&f, "started-service.start", &mut mutation).await;
         assert_eq!(
             owner.execute(Operation::Hello).await.unwrap_err(),
             HostError::Busy
@@ -200,6 +216,7 @@ mod tests {
             owner.execute(Operation::ServiceStop).await.unwrap_err(),
             HostError::Busy
         );
+        std::fs::write(f._dir.path().join("release"), "").unwrap();
         assert!(read1.await.unwrap().is_ok());
         assert!(read2.await.unwrap().is_ok());
         assert!(mutation.await.unwrap().is_ok());
@@ -207,22 +224,39 @@ mod tests {
     #[tokio::test]
     async fn cancelled_caller_retains_mutation_and_shutdown_drains_it() {
         let _lock = crate::process::tests::FIXTURE_LOCK.lock().await;
-        let f = Fixture::new(&format!(
-            "open('started','w').close()\ntime.sleep(.3)\nopen('completed','w').close()\n{RESPOND}"
-        ));
+        let f = Fixture::new(&gated_response());
         let owner = owner(&f);
-        let call = tokio::spawn({
+        let mut call = tokio::spawn({
             let o = owner.clone();
             async move { o.execute(Operation::ServiceStart).await }
         });
-        started(&f).await;
+        ready(&f, "started-service.start", &mut call).await;
+        // Deliberately delay the caller beyond the old fixture's 300 ms sleep.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            !f._dir.path().join("completed").exists(),
+            "mutation completed before explicit fixture release"
+        );
         call.abort();
         let _ = call.await;
         assert_eq!(
             owner.execute(Operation::ServiceStop).await.unwrap_err(),
             HostError::Busy
         );
-        owner.shutdown().await;
+        let shutdown = owner.shutdown();
+        tokio::pin!(shutdown);
+        // Poll the actual drain while the accepted mutation is still blocked.
+        std::future::poll_fn(|cx| {
+            use std::future::Future;
+            assert!(shutdown.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert!(!f._dir.path().join("completed").exists());
+        std::fs::write(f._dir.path().join("release"), "").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .expect("shutdown did not drain the released mutation");
         assert!(f._dir.path().join("completed").exists());
         assert_eq!(
             owner.execute(Operation::SetupInspect).await.unwrap_err(),
@@ -238,7 +272,7 @@ mod tests {
             let o = owner.clone();
             async move { o.execute(Operation::SetupInspect).await }
         });
-        tokio::select! { _=started(&f)=>{}, result=&mut call=>panic!("child ended before ready: {result:?}") }
+        ready(&f, "started", &mut call).await;
         let start = Instant::now();
         owner.shutdown().await;
         assert!(start.elapsed() < Duration::from_secs(1));
@@ -259,11 +293,11 @@ mod tests {
                 mutation: Duration::from_millis(600),
             },
         );
-        let call = tokio::spawn({
+        let mut call = tokio::spawn({
             let o = owner.clone();
             async move { o.execute(Operation::ServiceRepair).await }
         });
-        started(&f).await;
+        ready(&f, "started", &mut call).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
         let start = Instant::now();
         owner.shutdown().await;
