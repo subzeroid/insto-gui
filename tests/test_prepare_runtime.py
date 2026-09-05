@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -227,6 +228,46 @@ class BuildTests(unittest.TestCase):
         ):
             builder.build(self.core, self.output)
         self.assertTrue(self.output.is_dir())
+        self.assertFalse((self.output / "manifest.json").exists())
+
+    def test_failed_subprocess_retains_private_bounded_diagnostics(self):
+        error = subprocess.CalledProcessError(
+            17,
+            ["uv", "export"],
+            output="prefix" + "é" * 40_000,
+            stderr="discard" + "failure detail\n" * 6_000,
+        )
+
+        def failing_run(args, *, cwd):
+            if args[:2] == ["uv", "export"]:
+                raise error
+            return self.run_fake(args, cwd=cwd)
+
+        with (
+            patch.object(builder, "run", side_effect=failing_run),
+            patch.object(builder, "fetch"),
+            patch.object(builder, "unpack", side_effect=self.fake_unpack),
+            patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            self.assertRaises(subprocess.CalledProcessError) as caught,
+        ):
+            builder.build(self.core, self.output)
+        self.assertIs(caught.exception, error)
+        diagnostic = self.output / "build-error.json"
+        self.assertEqual(diagnostic.stat().st_mode & 0o777, 0o600)
+        data = json.loads(diagnostic.read_text())
+        self.assertEqual(
+            set(data), {"command", "exit_code", "stdout_tail", "stderr_tail"}
+        )
+        self.assertEqual(data["command"], ["uv", "export"])
+        self.assertEqual(data["exit_code"], 17)
+        for key, original in (
+            ("stdout_tail", error.stdout),
+            ("stderr_tail", error.stderr),
+        ):
+            self.assertLessEqual(len(data[key].encode()), 64 * 1024)
+            self.assertTrue(original.endswith(data[key]))
+            self.assertGreater(len(data[key]), 100)
+        self.assertNotIn("failure detail", stderr.getvalue())
         self.assertFalse((self.output / "manifest.json").exists())
 
     def test_directory_symlink_rejected_by_builder(self):

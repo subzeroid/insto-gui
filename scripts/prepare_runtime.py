@@ -1,7 +1,8 @@
 """Developer-only, pinned macOS Python runtime builder.
 
 Run with: python -m scripts.prepare_runtime --core-root PATH --output .build/NAME
-Incomplete output is deliberately retained for inspection.
+Incomplete output is retained; subprocess failures add a private build-error.json
+with the command, exit code, and at most 64 KiB of each captured output tail.
 """
 
 import argparse
@@ -252,7 +253,31 @@ def build(core: Path, output: Path) -> dict:
             with (output / "manifest.json").open("x") as stream:
                 stream.write(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
             return manifest
-    except BaseException:
+    except BaseException as error:
+        if isinstance(error, subprocess.CalledProcessError):
+
+            def tail(value):
+                data = value if isinstance(value, bytes) else (value or "").encode()
+                return data[-64 * 1024 :].decode("utf-8", errors="ignore")
+
+            diagnostic = {
+                "command": error.cmd,
+                "exit_code": error.returncode,
+                "stdout_tail": tail(error.stdout),
+                "stderr_tail": tail(error.stderr),
+            }
+            try:
+                descriptor = os.open(
+                    output / "build-error.json",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    json.dump(diagnostic, stream, ensure_ascii=False, indent=2)
+                    stream.write("\n")
+            except OSError:
+                # A diagnostics write failure must not hide the build failure.
+                print("Could not write build-error.json", file=sys.stderr)
         print(f"Incomplete runtime retained at {output}", file=sys.stderr)
         raise
 
