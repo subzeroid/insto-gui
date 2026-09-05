@@ -40,9 +40,67 @@ integers outside Rust `u64`, or outside JavaScript safe integers, are rejected
 rather than silently rounded. No browser storage or general filesystem,
 shell, provider-network or arbitrary-URL IPC is exposed.
 
+## P1 real-window and native proof
+
+Build the compile-gated developer app, then copy it into a **new** private
+artifact parent. Use a fresh copy/root for each mode; never overwrite or reuse
+a failed artifact. For example, from this worktree:
+
+```sh
+npm run tauri -- build --features app-proof --bundles app -- --locked --offline
+mkdir -m 700 "$PWD/.build/native-app-example-01"
+cp -cRp src-tauri/target/release/bundle/macos/insto.app "$PWD/.build/native-app-example-01/insto.app"
+/opt/homebrew/bin/python3 -B -m scripts.app_native_probe \
+  "$PWD/.build/native-app-example-01/insto.app" \
+  "$PWD/.build/native-app-example-01/insto-app-proof-example-01" --mode window
+```
+
+The supervisor needs developer Python with working `os.waitid` and WNOWAIT
+(Homebrew Python 3.14.7 on this host). This is not an end-user dependency.
+Before running, verify the copied runtime inventory and ad-hoc bundle signature.
+Keep the test window foreground: a developer-launched background WebKit view
+was observed to stall until its exact owned app was activated. Do not disable
+OS protections or repeatedly steal focus. No screen-recording permission is
+required; DOM/style/geometry checks are not screenshot-based visual QA.
+
+Modes `window`, `quit` and `close-preparing` verify actual window lifecycle and
+drain. Mode `native` also requires explicit `--allow-native-fake`. It creates
+one fresh fake home, seeds only alice and installs the service through the
+published interpreter. The real GUI stays unconfigured: this does not test a
+valid HikerAPI token or a GUI-triggered service mutation.
+
+Native acceptance requires three strictly increasing SQLite commits with the
+same watch registration and daemon PID/start time: while the app is alive,
+after its actual exit, and after relocating only the copied source app. The
+fixture toggles interval600/601 and resets last_ok atomically to trigger C1's
+existing reconciliation. It does not restart the daemon or add a scheduler.
+
+The supervisor reserves child identity until its final owned-group signal,
+confirms no live descendants, then reaps. Unknown ownership prohibits native
+fallback. Cleanup uses only the exact installed controller with immutable
+fake-home/runtime identity validation. One retry is allowed only after a
+normal positive nonzero CLI exit, confirmed exact label absence and renewed
+validation, within one120-second cleanup budget. Timeouts, signal termination,
+unknown ownership and loaded/ambiguous labels are not retryable.
+
+The new private `<root-name>-result.json` retains bounded failure diagnostics,
+including both primary and cleanup errors. Success requires `passed`,
+`app_group_cleaned` and `cleanup_confirmed` all true, and all three native
+tick events. Missing label alone is insufficient: exact plist and manifest
+must also be absent. Never remove retained runtimes before exact cleanup.
+An unsuccessful attempt stays failed even after a later manual cleanup;
+record supplemental cleanup evidence separately.
+
+Rebuild without `app-proof` for the ordinary app and verify both proof switches
+are rejected before profile access. See [app-proof-results.md](app-proof-results.md)
+for actual hashes, measured results and remaining distribution gates.
+
 ## Historical P0 workflow
 
-## Prerequisites
+The P0 scripts below are historical evidence, not the supervisor for new P1
+application proofs. Use the separately reviewed P1 helper above.
+
+### Prerequisites
 
 Use macOS on the target architecture, developer Python 3.12 or newer, `uv`
 with `build --build-constraints --require-hashes` support, and network access

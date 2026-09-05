@@ -1,6 +1,7 @@
 """Developer-only real-window and one fake LaunchAgent persistence proof."""
 
 import argparse
+from builtins import BaseExceptionGroup
 from contextlib import closing
 import hashlib
 import json
@@ -200,13 +201,15 @@ def checked_database(home):
     return path
 
 
-def fresh_tick(home, previous, deadline):
+def fresh_tick(home, previous, deadline, *, registration_id=None):
     # Integer seconds: move past the prior commit's wall-clock second before
     # resetting it, then require a strictly later committed daemon update.
     while int(time.time()) <= previous:
         if time.monotonic() >= deadline:
             raise TimeoutError("tick clock deadline")
         time.sleep(0.05)
+    if time.monotonic() >= deadline:
+        raise TimeoutError("tick deadline before schedule change")
     db = checked_database(home)
     with (
         closing(
@@ -214,11 +217,29 @@ def fresh_tick(home, previous, deadline):
         ) as connection,
         connection,
     ):
-        if connection.execute("SELECT user FROM watches").fetchall() != [("alice",)]:
-            raise ValueError("fixture must contain exactly the alice watch")
+        connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute(
+            "SELECT user, interval_seconds, status, registration_id FROM watches"
+        ).fetchall()
+        if (
+            len(rows) != 1
+            or rows[0][0] != "alice"
+            or rows[0][1] not in (600, 601)
+            or rows[0][2] != "active"
+            or not isinstance(rows[0][3], str)
+            or not rows[0][3]
+            or (registration_id is not None and rows[0][3] != registration_id)
+        ):
+            raise ValueError("fixture must contain the unchanged active alice watch")
+        _, prior_interval, _, registration_id = rows[0]
+        interval = 601 if prior_interval == 600 else 600
+        # C1 replaces an existing task on interval/registration changes only.
+        # Resetting last_ok alone leaves its existing 600-second sleep intact.
+        # Keep the watch registration and daemon; use normal reconciliation.
         if (
             connection.execute(
-                "UPDATE watches SET last_ok=0 WHERE user='alice'"
+                "UPDATE watches SET last_ok=0, interval_seconds=? WHERE user='alice'",
+                (interval,),
             ).rowcount
             != 1
         ):
@@ -228,17 +249,29 @@ def fresh_tick(home, previous, deadline):
         with closing(
             sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=1)
         ) as connection:
-            value = connection.execute(
-                "SELECT last_ok FROM watches WHERE user='alice'"
-            ).fetchone()[0]
+            rows = connection.execute(
+                "SELECT user, last_ok, interval_seconds, status, registration_id FROM watches"
+            ).fetchall()
+        if (
+            len(rows) != 1
+            or rows[0][0] != "alice"
+            or rows[0][2:] != (interval, "active", registration_id)
+        ):
+            raise ValueError("isolated watch changed during tick observation")
+        value = rows[0][1]
         if type(value) is int and value > previous:
-            return value
+            return {
+                "last_ok": value,
+                "prior_interval": prior_interval,
+                "interval_seconds": interval,
+                "registration_id": registration_id,
+            }
         time.sleep(0.1)
     raise TimeoutError("no fresh committed fake watch tick")
 
 
 def persistence_sequence(driver):
-    error = None
+    errors = []
     try:
         driver.seed()
         driver.install()
@@ -248,15 +281,37 @@ def persistence_sequence(driver):
         driver.relocate()
         driver.tick("app_relocated")
     except BaseException as caught:
-        error = caught
-    finally:
-        # Stopping the independently owned app is safe even when a CLI group
-        # became unknown. Never issue fallback native mutations in that case.
+        errors.append(caught)
+    # Stopping the independently owned app is safe even when a CLI group
+    # became unknown. Never issue fallback native mutations in that case.
+    app_stopped = False
+    try:
         driver.stop_app()
-        if not isinstance(error, UnsafeProcessGroup):
+        app_stopped = True
+    except BaseException as caught:
+        errors.append(caught)
+    if app_stopped and not any(
+        isinstance(error, UnsafeProcessGroup) for error in errors
+    ):
+        try:
             driver.cleanup()
-    if error:
-        raise error
+        except BaseException as caught:
+            errors.append(caught)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup("native proof and finalization failed", errors)
+
+
+def failure_record(error):
+    record = {"type": type(error).__name__, "message": str(error)[:4096]}
+    if isinstance(error, BaseExceptionGroup):
+        record["errors"] = [failure_record(item) for item in error.exceptions]
+    return record
+
+
+class NativeCLIError(RuntimeError):
+    """A normally completed nonzero CLI, not a timeout/unknown process group."""
 
 
 def run_child(argv, cwd, deadline, env=None):
@@ -344,6 +399,7 @@ class NativeDriver:
         self.previous = 0
         self.evidence = []
         self.service_identity = None
+        self.watch_registration = None
 
     def pin_service(self, pid, started):
         if not started or len(started) > 128:
@@ -353,11 +409,10 @@ class NativeDriver:
             raise RuntimeError("service restarted instead of continuing")
         self.service_identity = identity
 
-    def cli(self, *args, cleanup=False):
-        deadline = (
-            time.monotonic() + 120
-            if cleanup
-            else min(self.deadline, time.monotonic() + 45)
+    def cli(self, *args, cleanup_deadline=None):
+        deadline = min(
+            self.deadline if cleanup_deadline is None else cleanup_deadline,
+            time.monotonic() + 45,
         )
         result = run_child(
             [str(self.fixture.python), "-I", "-B", "-m", "insto", *args],
@@ -365,9 +420,24 @@ class NativeDriver:
             deadline,
             {**ENV, "INSTO_HOME": str(self.fixture.home), "INSTO_BACKEND": "fake"},
         )
-        self.evidence.append({"cli": list(args), "exit_code": result.returncode})
+        evidence = {"cli": list(args), "exit_code": result.returncode}
+        self.evidence.append(evidence)
         if result.returncode:
-            raise RuntimeError("isolated CLI failed; no raw diagnostics forwarded")
+            # This evidence is written only to the proof's new private0600
+            # result file. Never send CLI output to the UI or progress console.
+            evidence.update(
+                {
+                    "stdout": result.stdout[:16384].decode("utf-8", "replace"),
+                    "stderr": result.stderr[:16384].decode("utf-8", "replace"),
+                    "diagnostics_truncated": max(len(result.stdout), len(result.stderr))
+                    > 16384,
+                }
+            )
+            if result.returncode < 0:
+                raise RuntimeError(
+                    "isolated CLI was signal-terminated; diagnostics retained privately"
+                )
+            raise NativeCLIError("isolated CLI failed; diagnostics retained privately")
         return result
 
     def seed(self):
@@ -409,9 +479,13 @@ class NativeDriver:
             raise UnsafeProcessGroup(
                 "app group not closed before persistence observation"
             )
-        value = fresh_tick(
-            self.fixture.home, self.previous, min(self.deadline, time.monotonic() + 40)
+        tick = fresh_tick(
+            self.fixture.home,
+            self.previous,
+            min(self.deadline, time.monotonic() + 40),
+            registration_id=self.watch_registration,
         )
+        self.watch_registration = tick["registration_id"]
         status = json.loads(self.cli("watch-service", "status", "--json").stdout)
         pid = status.get("process", {}).get("pid")
         lock_pid = int(private_read(self.fixture.home / "store.db.watch.lock").strip())
@@ -435,13 +509,13 @@ class NativeDriver:
         self.evidence.append(
             {
                 "phase": phase,
-                "last_ok": value,
+                **tick,
                 "prior_last_ok": self.previous,
                 "service_pid": pid,
                 "service_started": process.stdout.strip().decode("ascii"),
             }
         )
-        self.previous = value
+        self.previous = tick["last_ok"]
 
     def close_app(self):
         close_window(self.app, min(self.deadline, time.monotonic() + 130))
@@ -462,6 +536,29 @@ class NativeDriver:
             self.app.abort()
 
     def cleanup(self):
+        deadline = time.monotonic() + 120
+        owned = self.cleanup_artifacts()
+        if owned:
+            try:
+                self.cli("watch-service", "uninstall", cleanup_deadline=deadline)
+            except NativeCLIError:
+                # Core may have completed bootout before its immediate absence
+                # check failed. Retry at most once, only when the exact label
+                # is now absent and ownership is revalidated. Never retry an
+                # ambiguous/loaded label, timeout or unknown child state.
+                if not label_absent(self.fixture.label, self.fixture.root, deadline):
+                    raise
+                if self.cleanup_artifacts():
+                    self.cli("watch-service", "uninstall", cleanup_deadline=deadline)
+        if (
+            os.path.lexists(self.fixture.manifest)
+            or os.path.lexists(self.fixture.plist)
+            or not label_absent(self.fixture.label, self.fixture.root, deadline)
+        ):
+            raise RuntimeError("exact native cleanup unconfirmed; retain all artifacts")
+        self.cleanup_confirmed = True
+
+    def cleanup_artifacts(self):
         self.fixture.validate()
         manifest_exists = os.path.lexists(self.fixture.manifest)
         plist_exists = os.path.lexists(self.fixture.plist)
@@ -472,16 +569,7 @@ class NativeDriver:
                 private_read(self.fixture.manifest)
             if plist_exists:
                 private_read(self.fixture.plist)
-            self.cli("watch-service", "uninstall", cleanup=True)
-        if (
-            os.path.lexists(self.fixture.manifest)
-            or os.path.lexists(self.fixture.plist)
-            or not label_absent(
-                self.fixture.label, self.fixture.root, time.monotonic() + 15
-            )
-        ):
-            raise RuntimeError("exact native cleanup unconfirmed; retain all artifacts")
-        self.cleanup_confirmed = True
+        return manifest_exists or plist_exists
 
 
 def run(source, root, mode):
@@ -541,6 +629,7 @@ def run(source, root, mode):
         result["passed"] = True
     except BaseException as error:
         result["failure_type"] = type(error).__name__
+        result["failure"] = failure_record(error)
         raise
     finally:
         try:

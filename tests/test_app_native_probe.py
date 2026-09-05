@@ -1,4 +1,5 @@
 import hashlib
+from builtins import BaseExceptionGroup
 from contextlib import closing
 from contextlib import redirect_stdout
 import io
@@ -132,23 +133,31 @@ class FixtureTests(unittest.TestCase):
                 driver.cleanup()
             cli.assert_not_called()
 
-    def test_tick_requires_reset_then_new_committed_timestamp(self):
+    def test_tick_changes_schedule_then_requires_new_committed_timestamp(self):
         fixture = Fixture.create(self.root, self.source, self.manifest)
         db = fixture.home / "store.db"
         previous = int(time.time()) - 5
         with closing(sqlite3.connect(db)) as connection, connection:
-            connection.execute("CREATE TABLE watches(user TEXT, last_ok INTEGER)")
-            connection.execute("INSERT INTO watches VALUES('alice', ?)", (previous,))
+            connection.execute(
+                "CREATE TABLE watches(user TEXT, last_ok INTEGER, "
+                "interval_seconds INTEGER, status TEXT, registration_id TEXT)"
+            )
+            connection.execute(
+                "INSERT INTO watches VALUES('alice', ?, 600, 'active', 'registration')",
+                (previous,),
+            )
         db.chmod(0o600)
 
         def daemon():
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline:
                 with closing(sqlite3.connect(db)) as connection, connection:
-                    if (
-                        connection.execute("SELECT last_ok FROM watches").fetchone()[0]
-                        == 0
-                    ):
+                    # C1 reconciles existing tasks for schedule changes, NOT
+                    # last_ok alone. A fake writer reacting only to last_ok
+                    # previously concealed the native proof's invalid trigger.
+                    if connection.execute(
+                        "SELECT last_ok, interval_seconds FROM watches"
+                    ).fetchone() == (0, 601):
                         connection.execute(
                             "UPDATE watches SET last_ok=?", (int(time.time()),)
                         )
@@ -159,12 +168,192 @@ class FixtureTests(unittest.TestCase):
         worker.start()
         try:
             self.assertGreater(
-                fresh_tick(fixture.home, previous, time.monotonic() + 3), previous
+                fresh_tick(fixture.home, previous, time.monotonic() + 3)["last_ok"],
+                previous,
             )
         finally:
             worker.join(timeout=4)
         with self.assertRaises(TimeoutError):
             fresh_tick(fixture.home, previous, time.monotonic() + 0.1)
+        with closing(sqlite3.connect(db)) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT last_ok, interval_seconds FROM watches"
+                ).fetchone(),
+                (0, 600),
+            )
+
+    def test_failed_cli_retains_bounded_private_diagnostics(self):
+        fixture = Fixture.create(self.root, self.source, self.manifest)
+        driver = NativeDriver(fixture, None, time.monotonic() + 5)
+        result = SimpleNamespace(returncode=1, stdout=b"detail", stderr=b"x" * 20000)
+        output = io.StringIO()
+        with (
+            patch("scripts.app_native_probe.run_child", return_value=result),
+            redirect_stdout(output),
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                driver.cli("watch-service", "uninstall")
+        self.assertNotIn("detail", str(caught.exception))
+        self.assertEqual(output.getvalue(), "")
+        evidence = driver.evidence[-1]
+        self.assertEqual(evidence["stdout"], "detail")
+        self.assertEqual(evidence["stderr"], "x" * 16384)
+        self.assertTrue(evidence["diagnostics_truncated"])
+
+    def test_tick_rejects_changed_registration_or_unexpected_watch_before_update(self):
+        fixture = Fixture.create(self.root, self.source, self.manifest)
+        db = fixture.home / "store.db"
+        with closing(sqlite3.connect(db)) as connection, connection:
+            connection.execute(
+                "CREATE TABLE watches(user TEXT, last_ok INTEGER, "
+                "interval_seconds INTEGER, status TEXT, registration_id TEXT)"
+            )
+        db.chmod(0o600)
+        for row in (
+            ("bob", 12, 600, "active", "expected"),
+            ("alice", 12, 300, "active", "expected"),
+            ("alice", 12, 600, "paused", "expected"),
+            ("alice", 12, 600, "active", "changed"),
+        ):
+            with self.subTest(row=row):
+                with closing(sqlite3.connect(db)) as connection, connection:
+                    connection.execute("DELETE FROM watches")
+                    connection.execute("INSERT INTO watches VALUES(?, ?, ?, ?, ?)", row)
+                with self.assertRaises(ValueError):
+                    fresh_tick(
+                        fixture.home,
+                        0,
+                        time.monotonic() + 1,
+                        registration_id="expected",
+                    )
+                with closing(sqlite3.connect(db)) as connection:
+                    self.assertEqual(
+                        connection.execute("SELECT * FROM watches").fetchone(), row
+                    )
+
+    def cleanup_driver(self):
+        fixture = Fixture.create(self.root, self.source, self.manifest)
+        # Never create a real LaunchAgents artifact in a unit test.
+        fixture.plist = self.root / "owned.plist"
+        fixture.manifest.parent.mkdir(parents=True, mode=0o700)
+        fixture.manifest.parent.parent.chmod(0o700)
+        write_new(fixture.manifest, b"{}")
+        write_new(fixture.plist, b"{}")
+        return NativeDriver(fixture, None, time.monotonic() + 5)
+
+    def test_cleanup_retries_once_only_after_exact_absence_and_revalidation(self):
+        driver = self.cleanup_driver()
+        calls = []
+
+        def uninstall(argv, cwd, deadline, env):
+            calls.append(deadline)
+            if len(calls) == 1:
+                return SimpleNamespace(
+                    returncode=1, stdout=b"", stderr=b"not absent yet"
+                )
+            driver.fixture.manifest.unlink()
+            driver.fixture.plist.unlink()
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        with (
+            patch("scripts.app_native_probe.run_child", side_effect=uninstall),
+            patch("scripts.app_native_probe.label_absent", return_value=True) as absent,
+            patch.object(
+                driver.fixture, "validate", wraps=driver.fixture.validate
+            ) as validate,
+        ):
+            driver.cleanup()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(validate.call_count, 2)
+        self.assertEqual(absent.call_count, 2)
+        # Per-call caps fit one shared absolute cleanup budget.
+        self.assertLessEqual(max(calls), absent.call_args.args[2])
+        self.assertEqual(
+            absent.call_args_list[0].args[2], absent.call_args_list[1].args[2]
+        )
+        self.assertTrue(driver.cleanup_confirmed)
+        self.assertEqual([item["exit_code"] for item in driver.evidence], [1, 0])
+
+    def test_cleanup_never_retries_loaded_label(self):
+        driver = self.cleanup_driver()
+        with (
+            patch(
+                "scripts.app_native_probe.run_child",
+                return_value=SimpleNamespace(
+                    returncode=1, stdout=b"", stderr=b"failed"
+                ),
+            ) as child,
+            patch("scripts.app_native_probe.label_absent", return_value=False),
+        ):
+            with self.assertRaises(RuntimeError):
+                driver.cleanup()
+        self.assertEqual(child.call_count, 1)
+        self.assertFalse(driver.cleanup_confirmed)
+
+    def test_cleanup_revalidation_failure_prevents_retry(self):
+        driver = self.cleanup_driver()
+        with (
+            patch(
+                "scripts.app_native_probe.run_child",
+                return_value=SimpleNamespace(
+                    returncode=1, stdout=b"", stderr=b"failed"
+                ),
+            ) as child,
+            patch("scripts.app_native_probe.label_absent", return_value=True),
+            patch.object(
+                driver.fixture, "validate", side_effect=[None, ValueError("changed")]
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "changed"):
+                driver.cleanup()
+        self.assertEqual(child.call_count, 1)
+
+    def test_cleanup_never_retries_timeout_or_unknown_group(self):
+        driver = self.cleanup_driver()
+        for error in (TimeoutError("deadline"), UnsafeProcessGroup("unknown")):
+            with (
+                self.subTest(error=error),
+                patch("scripts.app_native_probe.run_child", side_effect=error) as child,
+                patch("scripts.app_native_probe.label_absent") as absent,
+            ):
+                with self.assertRaises(type(error)):
+                    driver.cleanup()
+                self.assertEqual(child.call_count, 1)
+                absent.assert_not_called()
+
+    def test_cleanup_second_failure_never_gets_third_attempt(self):
+        driver = self.cleanup_driver()
+        with (
+            patch(
+                "scripts.app_native_probe.run_child",
+                return_value=SimpleNamespace(
+                    returncode=1, stdout=b"", stderr=b"failed"
+                ),
+            ) as child,
+            patch("scripts.app_native_probe.label_absent", return_value=True),
+        ):
+            with self.assertRaises(RuntimeError):
+                driver.cleanup()
+        self.assertEqual(child.call_count, 2)
+        self.assertFalse(driver.cleanup_confirmed)
+
+    def test_signal_terminated_uninstall_never_retries(self):
+        driver = self.cleanup_driver()
+        with (
+            patch(
+                "scripts.app_native_probe.run_child",
+                return_value=SimpleNamespace(
+                    returncode=-9, stdout=b"", stderr=b"signal"
+                ),
+            ) as child,
+            patch("scripts.app_native_probe.label_absent", return_value=True) as absent,
+        ):
+            with self.assertRaises(RuntimeError):
+                driver.cleanup()
+        self.assertEqual(child.call_count, 1)
+        absent.assert_not_called()
+        self.assertEqual(driver.evidence[-1]["stderr"], "signal")
 
 
 class SequenceTests(unittest.TestCase):
@@ -297,6 +486,25 @@ class SequenceTests(unittest.TestCase):
         driver = self.Driver("unsafe")
         with self.assertRaises(UnsafeProcessGroup):
             persistence_sequence(driver)
+        self.assertNotIn("cleanup", driver.events)
+
+    def test_cleanup_failure_does_not_hide_primary_failure(self):
+        driver = self.Driver("app_closed")
+        cleanup_error = ValueError("cleanup failure")
+        with patch.object(driver, "cleanup", side_effect=cleanup_error):
+            with self.assertRaises(BaseExceptionGroup) as caught:
+                persistence_sequence(driver)
+        self.assertEqual(len(caught.exception.exceptions), 2)
+        self.assertIsInstance(caught.exception.exceptions[0], RuntimeError)
+        self.assertIs(caught.exception.exceptions[1], cleanup_error)
+
+    def test_unknown_app_cleanup_keeps_primary_and_forbids_native_cleanup(self):
+        driver = self.Driver("app_closed")
+        unsafe = UnsafeProcessGroup("unknown app group")
+        with patch.object(driver, "stop_app", side_effect=unsafe):
+            with self.assertRaises(BaseExceptionGroup) as caught:
+                persistence_sequence(driver)
+        self.assertIs(caught.exception.exceptions[1], unsafe)
         self.assertNotIn("cleanup", driver.events)
 
 
