@@ -1,0 +1,15 @@
+{
+  "core_commit": "1abf3fbdea04d3da4e56ec9bec1090d7737a9727",
+  "core_version": "0.7.20",
+  "schema_version_supported": 2,
+  "capabilities": [
+    "hello",
+    "setup.inspect",
+    "setup.configure",
+    "settings.inspect",
+    "credentials.replace",
+    "service.start",
+    "service.stop",
+    "service.repair"
+  ]
+}

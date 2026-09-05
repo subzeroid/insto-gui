@@ -22,6 +22,8 @@ def _checked_stat(path: Path):
         raise ValueError(f"Special permission bits: {path}")
     if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
         raise ValueError(f"Nonordinary node: {path}")
+    if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+        raise ValueError(f"Hardlinked file: {path}")
     return info
 
 

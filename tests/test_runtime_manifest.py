@@ -31,6 +31,11 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify(self.root, entries)
 
+    def test_hardlinked_file_is_rejected(self):
+        os.link(self.root / "dir/a", self.root / "hardlink")
+        with self.assertRaisesRegex(ValueError, "Hardlinked"):
+            describe(self.root)
+
     def test_mutations(self):
         for mutation in ("change", "extra", "delete", "mode", "type"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
