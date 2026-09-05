@@ -1,6 +1,10 @@
 //! Verification and transactional publication of the bundled Python runtime.
 
+mod filesystem;
+mod inventory;
 pub mod manifest;
+mod publish;
+pub use publish::{account_home, application_root, publish, PublishedRuntime};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeError {
