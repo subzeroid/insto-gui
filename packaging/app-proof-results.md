@@ -146,3 +146,10 @@ application. No concrete production panic trigger was identified.
   architectures and clean-machine/minimum-OS support matrix remain R1.
 
 P1 is not marked complete merely because library and frontend tests pass.
+
+Final independent Astra integration review at `3b50ef4`: PASS for safe local
+handoff, no integration blockers. It checked frontend/IPC response alignment,
+resource/pin wiring, synchronous admission closure and the evidence boundaries.
+The local worktree is retained on `feat/app-shell`; nothing was published or
+merged. Tasks 1–3 and the offline built-app gate are complete. Native persistence
+and real WebKit interaction remain the next P1 work, not a completed release.
