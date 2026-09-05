@@ -1,9 +1,46 @@
-# Runtime proof — build machine only
+# Runtime and app proofs — build machine only
 
 P0 proves that a bundled Python core can run after relocation. These commands
-are for developers, **not end-user installation steps**. There is no GUI,
-installer or production runtime publisher yet. The target user flow remains:
+are for developers, **not end-user installation steps**. P1 adds a local GUI
+and a Rust runtime publisher, but no public installer. The target user flow remains:
 install the app, enter a HikerAPI token, add accounts, start monitoring.
+
+## P1 local shell
+
+The Rust host strictly decodes C1 JSONL, bounds bridge I/O and lifetime, and
+publishes the pinned runtime into a private versioned directory. Vue provides
+token setup/replacement and explicit service Start/Stop/Repair. Opening the
+app only prepares and inspects; closing must never stop the background service.
+Cached quota and native process state are not monitoring-health guarantees.
+
+Use the clean C1 revision in `packaging/core-pin.json` as the read-only build
+input. After preparing a new runtime, stage it with:
+
+```sh
+python3 -B -m scripts.stage_app_runtime .build/runtime-c1-01
+npm ci --ignore-scripts
+npm test
+npm run build
+cargo test -p insto-desktop-host --locked
+```
+
+Staging refuses an existing `.build/app-resources/runtime`; it never overwrites
+historical evidence. Rust is the production runtime-copy path; Python staging
+is a developer packaging helper only. Bundled app commands and measured results
+are recorded in [app-proof-results.md](app-proof-results.md).
+
+P1 source locations must have safe, non-group-writable ancestors. Standard
+`/Applications` (`root:admin 0775` on this Mac) is currently rejected. Run local
+proofs only from a private user location; normal `/Applications` installation
+requires a reviewed source-trust policy before R1. Destination ownership is
+always current UID, never weakened to accommodate source installation paths.
+
+The frontend is a bounded numeric client: unusual Python quota/timestamp
+integers outside Rust `u64`, or outside JavaScript safe integers, are rejected
+rather than silently rounded. No browser storage or general filesystem,
+shell, provider-network or arbitrary-URL IPC is exposed.
+
+## Historical P0 workflow
 
 ## Prerequisites
 
@@ -104,8 +141,8 @@ All binary outputs and raw evidence are ignored by Git. See
 
 ## What follows P0
 
-Implement C1's desktop operations, then P1's signed `.app`/runtime publication
-proof. Signing changes binary bytes: sign nested binaries first, generate the
+C1's desktop operations are pinned for P1. Production signing still requires
+its own distribution proof. Signing changes binary bytes: sign nested binaries first, generate the
 final manifest/build ID second, sign the outer application third, then
 notarize. P0's pre-signing manifest must not be reused as the post-signing
 production manifest. Test both Mac architectures and quarantine/Gatekeeper
