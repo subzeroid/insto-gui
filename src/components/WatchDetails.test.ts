@@ -6,7 +6,7 @@ import { createHistoryState } from '../desktop/history'
 import { watch } from '../desktop/fixtures'
 
 describe('watch details', () => {
-  it('saves a changed interval, toggles pause and resume, and disables every action while stale', async () => {
+  it('saves a changed interval, toggles pause and resume, and disables every mutating action while stale', async () => {
     const actions = { pause: vi.fn().mockResolvedValue(true), resume: vi.fn().mockResolvedValue(true), update: vi.fn().mockResolvedValue(true), remove: vi.fn().mockResolvedValue(true) }
     const history = createHistoryState(new DesktopClient(vi.fn()))
     const wrapper = mount(WatchDetails, { props: { watch, busy: false, stale: false, history, ...actions } })
@@ -24,8 +24,12 @@ describe('watch details', () => {
     expect(wrapper.get('button[data-action="remove"]').attributes('disabled')).toBeUndefined() // the trigger keeps focus while confirming
     await wrapper.get('button[data-action="cancel-remove"]').trigger('click')
     expect(wrapper.find('button[data-action="confirm-remove"]').exists()).toBe(false)
+    history.state.targetPk = '7'
     await wrapper.setProps({ stale: true })
-    expect(wrapper.findAll('button[data-action]').every(button => button.attributes('disabled') !== undefined)).toBe(true)
+    expect(wrapper.get('button[data-action="changes"]').attributes('disabled')).toBeUndefined() // a read stays available while stale
+    expect(wrapper.findAll('button[data-action]').filter(button => button.attributes('data-action') !== 'changes').every(button => button.attributes('disabled') !== undefined)).toBe(true)
     expect(wrapper.text()).not.toContain(watch.revision)
+    await wrapper.setProps({ busy: true })
+    expect(wrapper.get('button[data-action="changes"]').attributes('disabled')).toBeDefined() // only a running mutation holds it back
   })
 })

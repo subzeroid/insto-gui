@@ -321,7 +321,7 @@ interactions were driven by DOM-dispatched events through the same Vue
 handlers rather than trusted pointer/keyboard input, the picker change was
 simulated by a `change` event, and the harness reported `visibilityState` as
 visible so the polling path ran. The QA mock returned
-`read_overview.service_state` as `stopped` (the dispatch suggested `unknown`);
+`read_overview.service_state` as `stopped` (the intended mock value was `unknown`);
 both decode. These are mock UI evidence, not provider onboarding or WebKit
 rendering evidence.
 
@@ -374,17 +374,15 @@ Run in order on 2026-09-06 at `8f00434` with the docs above staged: 16 Vitest
 files / 75 tests and the TypeScript production build passed; `cargo fmt` for
 both crates and strict all-target Clippy passed; the host crate ran 55 tests
 with one failure, `owner::tests::local_mutation_uses_its_own_deadline_and_the_mutation_slot`
-(its 400 ms local-mutation budget expired before the `/usr/bin/python3`
-fixture wrote its `started` marker while the host carried a load average of
-about 16 on 14 cores from unrelated workloads); rerun alone it failed once
-more and then passed on the second spaced attempt under the same load, which
-is the known load-sensitive fixture timing, not a policy change. The flaking
-test was `owner::tests::local_mutation_uses_its_own_deadline_and_the_mutation_slot`,
-not the `shutdown_preserves_original_mutation_deadline_and_never_replays` test
-the plan names; it passed alone on the second spaced rerun, and the full host
-suite was not observed green in a single run under the host load of about 16.
-The real
-bridge test `c2_bridge` against `.build/runtime-c2-01` passed (1 test, 4.16 s),
-the Tauri crate's 9 tests passed, 103 Python unittest cases passed,
-`git diff --check` was clean and the trailer/home-path grep matched only the
-`Co-authored-by` rule text in `AGENTS.md`.
+(not the `shutdown_preserves_original_mutation_deadline_and_never_replays` test
+the plan names): its 400 ms local-mutation budget expired before the
+`/usr/bin/python3` fixture wrote its `started` marker while the host carried a
+load average of about 16 on 14 cores from unrelated workloads, which is the
+known load-sensitive fixture timing, not a policy change. Rerun alone it failed
+once more and passed on the second spaced rerun under the same load; the full
+host suite was not observed green in a single run under that load of about 16.
+The real bridge test `c2_bridge` against `.build/runtime-c2-01` passed (1 test,
+4.16 s), the Tauri crate's 9 tests passed, 103 Python unittest cases passed and
+`git diff --check` was clean. The trailer/home-path grep over all tracked files
+(rerun without the plan carve-out after the plan's home paths were scrubbed)
+matched only the trailer rule text in `AGENTS.md`.

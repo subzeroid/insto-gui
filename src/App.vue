@@ -56,7 +56,7 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
             <div class="refresh-row"><span>Состояние читается локально, без запросов HikerAPI.</span><button class="text-button" :disabled="state.busy" @click="ui.refresh">Обновить</button></div>
           </template>
           <template v-else>
-            <SettingsView :busy="state.busy" :stale="state.stale" :configured="state.profile.configured" :recovery="state.profile.status === 'recovery_required'" :service-running="state.profile.service_running" :core-version="state.runtime?.core_version ?? null" :build-id="state.runtime?.build_id ?? null" :replace="ui.replace" :stop="() => serviceAction(ui.stop)" :open-token-page="() => client.openTokenPage()" />
+            <SettingsView :busy="state.busy" :stale="state.stale" :configured="state.profile.configured" :recovery="state.profile.status === 'recovery_required'" :desired-service="state.profile.desired_service" :service-running="state.profile.service_running" :core-version="state.runtime?.core_version ?? null" :build-id="state.runtime?.build_id ?? null" :replace="ui.replace" :stop="() => serviceAction(ui.stop)" :open-token-page="() => client.openTokenPage()" />
           </template>
         </template>
       </template>

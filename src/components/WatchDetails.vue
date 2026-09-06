@@ -24,7 +24,8 @@ async function confirmRemove() { confirming.value = false; await props.remove(pr
       <button v-if="watch.status === 'active'" data-action="pause" :disabled="disabled" @click="pause(watch)">Приостановить</button>
       <button v-else data-action="resume" :disabled="disabled" @click="resume(watch)">Возобновить</button>
       <button data-action="remove" :disabled="disabled" @click="confirming = true">Удалить</button>
-      <button v-if="history.state.targetPk" type="button" class="text-button" data-action="changes" :disabled="disabled" @click="emit('show-changes', history.state.targetPk)">Изменения этого аккаунта</button>
+      <!-- Opening the changes feed is a read: only a running mutation holds it back, not stale state. -->
+      <button v-if="history.state.targetPk" type="button" class="text-button" data-action="changes" :disabled="busy" @click="emit('show-changes', history.state.targetPk)">Изменения этого аккаунта</button>
     </div>
     <ConfirmBlock v-if="confirming" label="Подтверждение удаления" :message="`Удалить наблюдение @${watch.user}? История снимков сохранится в базе.`" confirm-label="Удалить наблюдение" action="remove" :busy="disabled" @confirm="confirmRemove" @cancel="confirming = false" />
     <form class="interval-form" @submit.prevent="saveInterval">

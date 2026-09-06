@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { ref, watch as observe } from 'vue'
+import { computed, ref, watch as observe } from 'vue'
 import ConfirmBlock from './ConfirmBlock.vue'
 import SetupPanel from './SetupPanel.vue'
-const props = defineProps<{ busy: boolean; stale: boolean; configured: boolean; recovery: boolean; serviceRunning: boolean; coreVersion: string | null; buildId: string | null; replace: (token: string) => Promise<boolean>; stop: () => Promise<boolean>; openTokenPage: () => Promise<void> }>()
+const props = defineProps<{ busy: boolean; stale: boolean; configured: boolean; recovery: boolean; desiredService: 'running' | 'stopped' | null; serviceRunning: boolean; coreVersion: string | null; buildId: string | null; replace: (token: string) => Promise<boolean>; stop: () => Promise<boolean>; openTokenPage: () => Promise<void> }>()
 const replacing = ref(false)
 const confirming = ref(false)
-// Token replacement is serialized with recovery (spec section 4): the form closes if recovery starts while it is open.
-observe(() => props.recovery, recovery => { if (recovery) replacing.value = false })
+// Token replacement and service removal are serialized with recovery (spec section 4): an open
+// form or confirmation closes if recovery starts while it is open.
+observe(() => props.recovery, recovery => { if (recovery) { replacing.value = false; confirming.value = false } })
+// Mirrors the ServicePanel stop predicate: a service the saved state already holds stopped, with
+// no running process, has nothing left to switch off.
+const alreadyStopped = computed(() => props.desiredService === 'stopped' && !props.serviceRunning)
 async function replace(token: string) { const ok = await props.replace(token); if (ok) replacing.value = false; return ok }
 async function disable() { confirming.value = false; await props.stop() }
 </script>
@@ -15,7 +19,7 @@ async function disable() { confirming.value = false; await props.stop() }
     <h1>Настройки</h1>
     <div class="settings-row"><span>Доступ к HikerAPI</span><button type="button" class="text-button" data-action="replace" :disabled="busy || stale || !configured || recovery" :aria-expanded="replacing" @click="replacing = !replacing">{{ replacing ? 'Закрыть' : 'Заменить токен' }}</button></div>
     <SetupPanel v-if="replacing" replace :busy="busy || stale" :connect="replace" :open-token-page="openTokenPage" />
-    <div class="settings-row"><span>Фоновая служба перед удалением приложения</span><button type="button" class="text-button" data-action="uninstall" :disabled="busy || stale || !configured || confirming" @click="confirming = true">Отключить фоновую службу</button></div>
+    <div class="settings-row"><span>Фоновая служба перед удалением приложения</span><button type="button" class="text-button" data-action="uninstall" :disabled="busy || stale || !configured || confirming || recovery || alreadyStopped" @click="confirming = true">Отключить фоновую службу</button></div>
     <!-- The Trash explanation is offered up front, not only inside the confirmation. -->
     <p class="fine-print">Перенос приложения в Корзину сам по себе не отключает установленную службу{{ serviceRunning ? ' — её процесс сейчас запущен' : '' }}. Отключите её здесь перед удалением приложения.</p>
     <ConfirmBlock v-if="confirming" label="Отключение фоновой службы" message="Служба будет отключена и не запустится при следующем открытии приложения. История снимков и токен сохранятся. Перенос приложения в Корзину сам по себе не отключает установленную службу." confirm-label="Отключить" action="uninstall" :busy="busy" @confirm="disable" @cancel="confirming = false" />

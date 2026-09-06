@@ -105,6 +105,7 @@ describe('application integration', () => {
     await wrapper.findAll('.app-nav button')[3].trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('Служба требует внимания')
     expect(wrapper.get('button[data-action="replace"]').attributes('disabled')).toBeDefined() // recovery guards token replacement
+    expect(wrapper.get('button[data-action="uninstall"]').attributes('disabled')).toBeDefined() // and service removal
     await wrapper.get('button[data-action="open-service"]').trigger('click'); await flushPromises()
     expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Служба')
     expect(wrapper.text()).toContain('Нужно восстановление')

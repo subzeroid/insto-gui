@@ -2,7 +2,7 @@
 import { computed, onMounted, watch as observe } from 'vue'
 import type { HistoryItem } from '../desktop/dto'
 import type { createHistoryState } from '../desktop/history'
-import { localTime } from '../desktop/format'
+import { formatCount, localTime } from '../desktop/format'
 import ChangeList from './ChangeList.vue'
 const props = defineProps<{ history: ReturnType<typeof createHistoryState>; filterPk: string | null }>()
 // The filter is owned by the parent so retry, remount and navigation agree on it.
@@ -33,7 +33,7 @@ function title(item: HistoryItem) {
       <p v-else-if="item.kind === 'baseline'" class="fine-print">Отправная точка истории, а не набор изменений.</p>
       <p v-else-if="item.kind === 'diagnostic'" class="fine-print">{{ item.code === 'history_oversized' ? 'Снимок превышает поддерживаемый размер.' : 'Сохранённый снимок не удалось прочитать безопасно.' }}</p>
     </article>
-    <p v-if="feed.loaded && !feed.scanComplete" class="fine-print">Просмотрено кандидатов: {{ feed.scanned }}. <button type="button" class="text-button" data-action="more" :disabled="feed.loading" @click="history.moreFeed()">Показать дальше</button></p>
+    <p v-if="feed.loaded && !feed.scanComplete" class="fine-print">Просмотрено кандидатов: {{ formatCount(feed.scanned) }}. <button type="button" class="text-button" data-action="more" :disabled="feed.loading" @click="history.moreFeed()">Показать дальше</button></p>
     <p v-else-if="feed.loaded && feed.items.length > 0" class="fine-print">Лента просмотрена до конца сохранённой истории.</p>
   </section>
 </template>
