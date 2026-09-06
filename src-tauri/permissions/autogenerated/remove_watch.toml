@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-remove-watch"
+description = "Enables the remove_watch command without any pre-configured scope."
+commands.allow = ["remove_watch"]
+
+[[permission]]
+identifier = "deny-remove-watch"
+description = "Denies the remove_watch command without any pre-configured scope."
+commands.deny = ["remove_watch"]

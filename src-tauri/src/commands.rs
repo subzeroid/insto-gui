@@ -145,3 +145,246 @@ pub fn valid_credentials(payload: &str) -> bool {
         .and_then(|c| c.operation(false).ok())
         .is_some()
 }
+fn argument<T: serde::de::DeserializeOwned>(
+    request: tauri::ipc::Request<'_>,
+    key: &str,
+    code: &'static str,
+) -> Result<T, &'static str> {
+    let tauri::ipc::InvokeBody::Json(value) = request.body() else {
+        return Err(code);
+    };
+    let object = value.as_object().filter(|m| m.len() == 1).ok_or(code)?;
+    serde_json::from_value(object.get(key).ok_or(code)?.clone()).map_err(|_| code)
+}
+fn checked(operation: Operation, code: &'static str) -> Result<Operation, &'static str> {
+    operation.validate().map_err(|_| code)?;
+    Ok(operation)
+}
+const WATCH: &str = "invalid_watch_input";
+const HISTORY: &str = "invalid_history_input";
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PageInput {
+    limit: Option<u8>,
+    cursor: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddInput {
+    user: String,
+    interval_seconds: Option<u32>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateInput {
+    user: String,
+    revision: String,
+    interval_seconds: u32,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RevisionInput {
+    user: String,
+    revision: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TargetsInput {
+    username: String,
+    limit: Option<u8>,
+    cursor: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SnapshotsInput {
+    target_pk: String,
+    limit: Option<u8>,
+    cursor: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PairInput {
+    target_pk: String,
+    older_id: String,
+    newer_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChangesInput {
+    target_pk: Option<String>,
+    limit: Option<u8>,
+    cursor: Option<String>,
+}
+#[tauri::command]
+pub async fn read_overview(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    no_arguments(request)?;
+    state.execute(Operation::Overview).await
+}
+#[tauri::command]
+pub async fn list_watches(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let page: PageInput = argument(request, "page", WATCH)?;
+    state
+        .execute(checked(
+            Operation::WatchesList {
+                limit: page.limit,
+                cursor: page.cursor,
+            },
+            WATCH,
+        )?)
+        .await
+}
+#[tauri::command]
+pub async fn add_watch(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: AddInput = argument(request, "watch", WATCH)?;
+    state
+        .execute(checked(
+            Operation::WatchesAdd {
+                user: input.user,
+                interval_seconds: input.interval_seconds,
+            },
+            WATCH,
+        )?)
+        .await
+}
+#[tauri::command]
+pub async fn update_watch(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: UpdateInput = argument(request, "watch", WATCH)?;
+    state
+        .execute(checked(
+            Operation::WatchesUpdate {
+                user: input.user,
+                revision: input.revision,
+                interval_seconds: input.interval_seconds,
+            },
+            WATCH,
+        )?)
+        .await
+}
+#[tauri::command]
+pub async fn pause_watch(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: RevisionInput = argument(request, "watch", WATCH)?;
+    state
+        .execute(checked(
+            Operation::WatchesPause {
+                user: input.user,
+                revision: input.revision,
+            },
+            WATCH,
+        )?)
+        .await
+}
+#[tauri::command]
+pub async fn resume_watch(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: RevisionInput = argument(request, "watch", WATCH)?;
+    state
+        .execute(checked(
+            Operation::WatchesResume {
+                user: input.user,
+                revision: input.revision,
+            },
+            WATCH,
+        )?)
+        .await
+}
+#[tauri::command]
+pub async fn remove_watch(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: RevisionInput = argument(request, "watch", WATCH)?;
+    state
+        .execute(checked(
+            Operation::WatchesRemove {
+                user: input.user,
+                revision: input.revision,
+            },
+            WATCH,
+        )?)
+        .await
+}
+#[tauri::command]
+pub async fn search_targets(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: TargetsInput = argument(request, "query", HISTORY)?;
+    state
+        .execute(checked(
+            Operation::SnapshotsTargets {
+                username: input.username,
+                limit: input.limit,
+                cursor: input.cursor,
+            },
+            HISTORY,
+        )?)
+        .await
+}
+#[tauri::command]
+pub async fn list_snapshots(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: SnapshotsInput = argument(request, "query", HISTORY)?;
+    state
+        .execute(checked(
+            Operation::SnapshotsList {
+                target_pk: input.target_pk,
+                limit: input.limit,
+                cursor: input.cursor,
+            },
+            HISTORY,
+        )?)
+        .await
+}
+#[tauri::command]
+pub async fn compare_snapshots(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: PairInput = argument(request, "pair", HISTORY)?;
+    state
+        .execute(checked(
+            Operation::SnapshotsCompare {
+                target_pk: input.target_pk,
+                older_id: input.older_id,
+                newer_id: input.newer_id,
+            },
+            HISTORY,
+        )?)
+        .await
+}
+#[tauri::command]
+pub async fn list_changes(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: ChangesInput = argument(request, "query", HISTORY)?;
+    state
+        .execute(checked(
+            Operation::ChangesList {
+                target_pk: input.target_pk,
+                limit: input.limit,
+                cursor: input.cursor,
+            },
+            HISTORY,
+        )?)
+        .await
+}

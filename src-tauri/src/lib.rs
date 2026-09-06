@@ -91,7 +91,18 @@ pub fn run() {
             commands::start_service,
             commands::stop_service,
             commands::repair_service,
-            commands::open_token_page
+            commands::open_token_page,
+            commands::read_overview,
+            commands::list_watches,
+            commands::add_watch,
+            commands::update_watch,
+            commands::pause_watch,
+            commands::resume_watch,
+            commands::remove_watch,
+            commands::search_targets,
+            commands::list_snapshots,
+            commands::compare_snapshots,
+            commands::list_changes
         ])
         .setup(move |app| {
             let bundle = app.path().resource_dir()?.join("runtime");

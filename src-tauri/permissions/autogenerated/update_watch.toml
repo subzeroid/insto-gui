@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-update-watch"
+description = "Enables the update_watch command without any pre-configured scope."
+commands.allow = ["update_watch"]
+
+[[permission]]
+identifier = "deny-update-watch"
+description = "Denies the update_watch command without any pre-configured scope."
+commands.deny = ["update_watch"]

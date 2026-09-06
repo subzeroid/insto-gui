@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-add-watch"
+description = "Enables the add_watch command without any pre-configured scope."
+commands.allow = ["add_watch"]
+
+[[permission]]
+identifier = "deny-add-watch"
+description = "Denies the add_watch command without any pre-configured scope."
+commands.deny = ["add_watch"]

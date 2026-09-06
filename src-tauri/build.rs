@@ -9,6 +9,17 @@ fn main() {
             "stop_service",
             "repair_service",
             "open_token_page",
+            "read_overview",
+            "list_watches",
+            "add_watch",
+            "update_watch",
+            "pause_watch",
+            "resume_watch",
+            "remove_watch",
+            "search_targets",
+            "list_snapshots",
+            "compare_snapshots",
+            "list_changes",
         ]),
     ))
     .expect("application configuration is invalid");
