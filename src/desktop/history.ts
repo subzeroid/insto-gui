@@ -19,7 +19,7 @@ export function createHistoryState(client: DesktopClient) {
     feed: emptyFeed(),
   })
   let generation = 0        // username scope: targets
-  let targetGeneration = 0  // chosen PK scope: snapshots
+  let listGeneration = 0    // chosen PK's snapshot list: first page, more pages, recovery reload
   let pairGeneration = 0    // chosen pair scope: comparison
   let feedGeneration = 0
   async function guard<T>(part: Loadable, current: () => number, expected: number, work: () => Promise<T>, apply: (value: T) => void): Promise<boolean> {
@@ -29,11 +29,11 @@ export function createHistoryState(client: DesktopClient) {
     finally { if (current() === expected) part.loading = false }
   }
   const selection = () => generation
-  const targetSelection = () => targetGeneration
+  const listSelection = () => listGeneration
   const pairSelection = () => pairGeneration
   const feedSelection = () => feedGeneration
   function reset() {
-    generation++; targetGeneration++; pairGeneration++
+    generation++; listGeneration++; pairGeneration++
     state.username = null; state.targets = emptyTargets(); state.targetPk = null; state.snapshots = emptySnapshots()
     state.pair = { olderId: null, newerId: null }; state.comparison = { value: null, loading: false, error: null }
   }
@@ -66,33 +66,37 @@ export function createHistoryState(client: DesktopClient) {
     if (username === null || cursor === null || state.targets.loading) return
     if (await guard(state.targets, selection, expected, () => client.searchTargets(username, { cursor }), absorbTargets)) await settleSelection(expected)
   }
-  async function defaultPair() {
-    if (state.snapshots.items.length >= 2) await choosePair(state.snapshots.items[1].id, state.snapshots.items[0].id)
+  async function defaultPair(recovered = false) {
+    if (state.snapshots.items.length >= 2) await attemptPair(state.snapshots.items[1].id, state.snapshots.items[0].id, recovered)
   }
   async function chooseTarget(pk: string) {
-    targetGeneration++; pairGeneration++
-    const expected = targetGeneration
+    listGeneration++; pairGeneration++
+    const expected = listGeneration
     state.targetPk = pk; state.snapshots = emptySnapshots(); state.pair = { olderId: null, newerId: null }; state.comparison = { value: null, loading: false, error: null }
-    if (await guard(state.snapshots, targetSelection, expected, () => client.listSnapshots(pk), result => absorbSnapshots(result, true))) await defaultPair()
+    if (await guard(state.snapshots, listSelection, expected, () => client.listSnapshots(pk), result => absorbSnapshots(result, true))) await defaultPair()
   }
   async function moreSnapshots() {
     const pk = state.targetPk, cursor = state.snapshots.cursor
     if (pk === null || cursor === null || state.snapshots.loading) return
-    await guard(state.snapshots, targetSelection, targetGeneration, () => client.listSnapshots(pk, { cursor }), result => absorbSnapshots(result, false))
+    await guard(state.snapshots, listSelection, listGeneration, () => client.listSnapshots(pk, { cursor }), result => absorbSnapshots(result, false))
   }
-  async function choosePair(olderId: string, newerId: string) {
+  // `recovered` marks the single automatic retry after retention removed a chosen
+  // snapshot; a second `snapshot_unavailable` leaves the error visible and stops.
+  async function attemptPair(olderId: string, newerId: string, recovered: boolean) {
     const pk = state.targetPk
     if (pk === null) return
     pairGeneration++
-    const expected = pairGeneration, target = targetGeneration
+    const expected = pairGeneration
     state.pair = { olderId, newerId }; state.comparison.value = null
     const ok = await guard(state.comparison, pairSelection, expected, () => client.compareSnapshots(pk, olderId, newerId), value => { state.comparison.value = value })
-    if (!ok && pairGeneration === expected && state.comparison.error?.code === 'snapshot_unavailable') {
-      // Retention removed a selected snapshot: reload the list and fall back to the newest pair.
-      state.pair = { olderId: null, newerId: null }
-      if (await guard(state.snapshots, targetSelection, target, () => client.listSnapshots(pk), result => absorbSnapshots(result, true))) await defaultPair()
-    }
+    if (ok || recovered || pairGeneration !== expected || state.comparison.error?.code !== 'snapshot_unavailable') return
+    // Retention removed a selected snapshot: reload the list once and fall back to
+    // the newest pair. Bumping the list generation drops any page still in flight.
+    state.pair = { olderId: null, newerId: null }
+    listGeneration++
+    if (await guard(state.snapshots, listSelection, listGeneration, () => client.listSnapshots(pk), result => absorbSnapshots(result, true))) await defaultPair(true)
   }
+  async function choosePair(olderId: string, newerId: string) { await attemptPair(olderId, newerId, false) }
   function absorbFeed(result: HistoryPage) {
     state.feed.items.push(...result.items); state.feed.cursor = result.next_cursor; state.feed.scanComplete = result.scan_complete; state.feed.scanned += result.scanned; state.feed.loaded = true
   }
