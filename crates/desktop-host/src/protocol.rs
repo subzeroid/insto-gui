@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub const MAX_REQUEST: usize = 64 * 1024;
 pub const MAX_RESPONSE: usize = 2 * 1024 * 1024;
+pub const MAX_TIME: u64 = 253_402_300_799;
+pub const MAX_SAFE: u64 = 9_007_199_254_740_991;
 pub const CORE_VERSION: &str = "0.7.21";
 pub const CAPABILITIES: [&str; 19] = [
     "hello",
@@ -101,6 +103,12 @@ impl std::fmt::Debug for Operation {
 pub enum Response {
     Hello(Hello),
     Profile(Profile),
+    Overview(Overview),
+    WatchPage(WatchPage),
+    Watch(Watch),
+    Removed(Removed),
+    HistoryPage(HistoryPage),
+    Comparison(Comparison),
     Error(SafeError),
 }
 #[derive(Debug, Deserialize, Serialize)]
@@ -137,6 +145,58 @@ pub struct Profile {
     pub quota_checked_at: Option<u64>,
     pub revision: Option<String>,
 }
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchStatus {
+    Active,
+    Paused,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Watch {
+    pub user: String,
+    pub status: WatchStatus,
+    pub interval_seconds: u64,
+    pub last_ok: Option<u64>,
+    pub waiting_first_check: bool,
+    pub has_error: bool,
+    pub consecutive_errors: u64,
+    pub revision: String,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WatchPage {
+    pub items: Vec<Watch>,
+    pub next_cursor: Option<String>,
+}
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceState {
+    Running,
+    Stopped,
+    Unknown,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Overview {
+    pub configured: bool,
+    pub desired_service: Option<DesiredService>,
+    pub service_state: ServiceState,
+    pub quota_remaining: Option<u64>,
+    pub quota_checked_at: Option<u64>,
+    pub watches: Vec<Watch>,
+    pub next_cursor: Option<String>,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Removed {
+    pub removed_user: String,
+}
+// Placeholders so `Response` compiles; Task 5 defines the history DTOs.
+#[derive(Debug, Serialize)]
+pub struct HistoryPage {}
+#[derive(Debug, Serialize)]
+pub struct Comparison {}
 #[derive(Debug, Serialize)]
 pub struct SafeError {
     pub code: &'static str,
@@ -491,6 +551,150 @@ pub(crate) fn strict_json(raw: &[u8]) -> Result<Value, HostError> {
         .map(|Unique(value)| value)
         .map_err(|_| HostError::Protocol)
 }
+fn hello(result: &Value) -> Result<Hello, HostError> {
+    let hello: Hello = serde_json::from_value(result.clone()).map_err(|_| HostError::Protocol)?;
+    if hello.core_version != CORE_VERSION
+        || hello.schema_version_supported != 2
+        || hello.capabilities.len() != CAPABILITIES.len()
+        || !CAPABILITIES.iter().all(|c| {
+            hello
+                .capabilities
+                .iter()
+                .filter(|s| s.as_str() == *c)
+                .count()
+                == 1
+        })
+    {
+        return Err(HostError::Protocol);
+    }
+    Ok(hello)
+}
+fn profile(result: &Value) -> Result<Profile, HostError> {
+    if result.as_object().map(|o| o.len()) != Some(7) {
+        return Err(HostError::Protocol);
+    }
+    let profile: Profile =
+        serde_json::from_value(result.clone()).map_err(|_| HostError::Protocol)?;
+    if profile.revision.as_deref().is_some_and(|r| !hex(r, 32)) {
+        return Err(HostError::Protocol);
+    }
+    let fields = [
+        profile.desired_service.is_some(),
+        profile.quota_remaining.is_some(),
+        profile.quota_checked_at.is_some(),
+        profile.revision.is_some(),
+    ];
+    if !fields.iter().all(|present| *present == profile.configured) {
+        return Err(HostError::Protocol);
+    }
+    let valid_status = match profile.status {
+        Status::Unconfigured => !profile.configured && !profile.service_running,
+        Status::RecoveryRequired => !profile.service_running,
+        Status::QuotaExhausted => profile.configured && profile.quota_remaining == Some(0),
+        Status::Running => {
+            profile.configured && profile.service_running && profile.quota_remaining != Some(0)
+        }
+        Status::Stopped => {
+            profile.configured && !profile.service_running && profile.quota_remaining != Some(0)
+        }
+        Status::ServiceError => profile.configured && !profile.service_running,
+    };
+    if !valid_status {
+        return Err(HostError::Protocol);
+    }
+    Ok(profile)
+}
+fn exact_keys<'a>(
+    value: &'a Value,
+    keys: &[&str],
+) -> Result<&'a serde_json::Map<String, Value>, HostError> {
+    let obj = value.as_object().ok_or(HostError::Protocol)?;
+    if obj.len() != keys.len() || !keys.iter().all(|key| obj.contains_key(*key)) {
+        return Err(HostError::Protocol);
+    }
+    Ok(obj)
+}
+fn check_watch(watch: &Watch) -> Result<(), HostError> {
+    let ok = canonical_user(&watch.user)
+        && (300..=2_147_483_647).contains(&watch.interval_seconds)
+        && watch.last_ok.is_none_or(|t| t <= MAX_TIME)
+        && watch.waiting_first_check == watch.last_ok.is_none()
+        && watch.consecutive_errors <= MAX_SAFE
+        && hex(&watch.revision, 64);
+    if ok {
+        Ok(())
+    } else {
+        Err(HostError::Protocol)
+    }
+}
+fn check_watch_list(items: &[Watch], cursor: Option<&str>) -> Result<(), HostError> {
+    if items.len() > 50 || cursor.is_some_and(|c| !watch_cursor(c)) {
+        return Err(HostError::Protocol);
+    }
+    for (index, watch) in items.iter().enumerate() {
+        check_watch(watch)?;
+        if index > 0 && items[index - 1].user >= watch.user {
+            return Err(HostError::Protocol);
+        }
+    }
+    Ok(())
+}
+fn watch_page(result: &Value) -> Result<WatchPage, HostError> {
+    exact_keys(result, &["items", "next_cursor"])?;
+    let page: WatchPage =
+        serde_json::from_value(result.clone()).map_err(|_| HostError::Protocol)?;
+    check_watch_list(&page.items, page.next_cursor.as_deref())?;
+    Ok(page)
+}
+fn overview(result: &Value) -> Result<Overview, HostError> {
+    exact_keys(
+        result,
+        &[
+            "configured",
+            "desired_service",
+            "service_state",
+            "quota_remaining",
+            "quota_checked_at",
+            "watches",
+            "next_cursor",
+        ],
+    )?;
+    let overview: Overview =
+        serde_json::from_value(result.clone()).map_err(|_| HostError::Protocol)?;
+    let configured = overview.configured;
+    let ok = overview.desired_service.is_some() == configured
+        && overview.quota_remaining.is_some() == configured
+        && overview.quota_checked_at.is_some() == configured
+        && overview.quota_checked_at.is_none_or(|t| t <= MAX_TIME)
+        && (configured
+            || (overview.watches.is_empty()
+                && overview.next_cursor.is_none()
+                && overview.service_state == ServiceState::Unknown));
+    if !ok {
+        return Err(HostError::Protocol);
+    }
+    check_watch_list(&overview.watches, overview.next_cursor.as_deref())?;
+    Ok(overview)
+}
+fn single_watch(result: &Value, user: &str) -> Result<Watch, HostError> {
+    let obj = exact_keys(result, &["watch"])?;
+    let watch: Watch =
+        serde_json::from_value(obj["watch"].clone()).map_err(|_| HostError::Protocol)?;
+    check_watch(&watch)?;
+    if watch.user != user {
+        return Err(HostError::Protocol);
+    }
+    Ok(watch)
+}
+fn removed(result: &Value, user: &str) -> Result<Removed, HostError> {
+    exact_keys(result, &["removed_user"])?;
+    let removed: Removed =
+        serde_json::from_value(result.clone()).map_err(|_| HostError::Protocol)?;
+    if removed.removed_user != user {
+        return Err(HostError::Protocol);
+    }
+    Ok(removed)
+}
 pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, HostError> {
     let bad = || HostError::Protocol;
     if raw.len() > MAX_RESPONSE
@@ -510,62 +714,27 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
         return Err(bad());
     }
     if let Some(result) = obj.get("result") {
-        if matches!(operation, Operation::Hello) {
-            let hello: Hello = serde_json::from_value(result.clone()).map_err(|_| bad())?;
-            if hello.core_version != CORE_VERSION
-                || hello.schema_version_supported != 2
-                || hello.capabilities.len() != CAPABILITIES.len()
-                || !CAPABILITIES.iter().all(|c| {
-                    hello
-                        .capabilities
-                        .iter()
-                        .filter(|s| s.as_str() == *c)
-                        .count()
-                        == 1
-                })
-            {
-                return Err(bad());
-            }
-            return Ok(Response::Hello(hello));
-        }
-        if result.as_object().map(|o| o.len()) != Some(7) {
-            return Err(bad());
-        }
-        let profile: Profile = serde_json::from_value(result.clone()).map_err(|_| bad())?;
-        if let Some(revision) = &profile.revision {
-            if revision.len() != 32
-                || !revision
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            {
-                return Err(bad());
-            }
-        }
-        let fields = [
-            profile.desired_service.is_some(),
-            profile.quota_remaining.is_some(),
-            profile.quota_checked_at.is_some(),
-            profile.revision.is_some(),
-        ];
-        if !fields.iter().all(|present| *present == profile.configured) {
-            return Err(bad());
-        }
-        let valid_status = match profile.status {
-            Status::Unconfigured => !profile.configured && !profile.service_running,
-            Status::RecoveryRequired => !profile.service_running,
-            Status::QuotaExhausted => profile.configured && profile.quota_remaining == Some(0),
-            Status::Running => {
-                profile.configured && profile.service_running && profile.quota_remaining != Some(0)
-            }
-            Status::Stopped => {
-                profile.configured && !profile.service_running && profile.quota_remaining != Some(0)
-            }
-            Status::ServiceError => profile.configured && !profile.service_running,
-        };
-        if !valid_status {
-            return Err(bad());
-        }
-        return Ok(Response::Profile(profile));
+        return Ok(match operation {
+            Operation::Hello => Response::Hello(hello(result)?),
+            Operation::SetupInspect
+            | Operation::SettingsInspect
+            | Operation::SetupConfigure { .. }
+            | Operation::CredentialsReplace { .. }
+            | Operation::ServiceStart
+            | Operation::ServiceStop
+            | Operation::ServiceRepair => Response::Profile(profile(result)?),
+            Operation::Overview => Response::Overview(overview(result)?),
+            Operation::WatchesList { .. } => Response::WatchPage(watch_page(result)?),
+            Operation::WatchesAdd { user, .. }
+            | Operation::WatchesUpdate { user, .. }
+            | Operation::WatchesPause { user, .. }
+            | Operation::WatchesResume { user, .. } => Response::Watch(single_watch(result, user)?),
+            Operation::WatchesRemove { user, .. } => Response::Removed(removed(result, user)?),
+            Operation::SnapshotsTargets { .. }
+            | Operation::SnapshotsList { .. }
+            | Operation::SnapshotsCompare { .. }
+            | Operation::ChangesList { .. } => return Err(HostError::Protocol), // replaced in Task 5
+        });
     }
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -652,6 +821,42 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
         "unsupported_platform" => (
             "unsupported_platform",
             "Desktop service management requires macOS.",
+            false,
+        ),
+        "watch_conflict" => (
+            "watch_conflict",
+            "The watch changed; refresh it before retrying.",
+            false,
+        ),
+        "watch_not_found" => (
+            "watch_not_found",
+            "The watch no longer exists; refresh the list.",
+            false,
+        ),
+        "watch_exists" => (
+            "watch_exists",
+            "The watch already exists; refresh the list.",
+            false,
+        ),
+        "watch_limit" => ("watch_limit", "At most three watches can be active.", false),
+        "history_corrupt" => (
+            "history_corrupt",
+            "A saved snapshot cannot be read safely.",
+            false,
+        ),
+        "history_oversized" => (
+            "history_oversized",
+            "A saved snapshot exceeds the supported size.",
+            false,
+        ),
+        "snapshot_unavailable" => (
+            "snapshot_unavailable",
+            "A selected snapshot is no longer available; refresh the list.",
+            false,
+        ),
+        "snapshot_identity_mismatch" => (
+            "snapshot_identity_mismatch",
+            "Select snapshots from the same saved account history.",
             false,
         ),
         _ => return Err(bad()),
@@ -859,6 +1064,14 @@ mod tests {
             "storage_error",
             "schema_mismatch",
             "unsupported_platform",
+            "watch_conflict",
+            "watch_not_found",
+            "watch_exists",
+            "watch_limit",
+            "history_corrupt",
+            "history_oversized",
+            "snapshot_unavailable",
+            "snapshot_identity_mismatch",
         ] {
             let raw=format!("{{\"protocol_version\":1,\"request_id\":\"test\",\"error\":{{\"code\":\"{code}\",\"message\":\"STDOUT_SECRET /private/path\",\"retryable\":false}}}}\n");
             let response = decode(raw.as_bytes(), "test", &Operation::SetupInspect).unwrap();
@@ -1227,5 +1440,139 @@ mod tests {
             ),
             (10, 15, 120)
         );
+    }
+    const WATCH: &str = r#"{"user":"alice","status":"active","interval_seconds":300,"last_ok":null,"waiting_first_check":true,"has_error":false,"consecutive_errors":0,"revision":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
+    fn overview_json(watches: &str) -> String {
+        format!(
+            r#"{{"configured":true,"desired_service":"running","service_state":"unknown","quota_remaining":8,"quota_checked_at":100,"watches":[{watches}],"next_cursor":null}}"#
+        )
+    }
+    #[test]
+    fn overview_and_watch_pages_decode_strictly() {
+        let good = decode(
+            &envelope(&overview_json(WATCH)),
+            "test",
+            &Operation::Overview,
+        )
+        .unwrap();
+        assert!(
+            matches!(good, Response::Overview(ref o) if o.watches.len() == 1 && o.service_state == ServiceState::Unknown)
+        );
+        let unconfigured = r#"{"configured":false,"desired_service":null,"service_state":"unknown","quota_remaining":null,"quota_checked_at":null,"watches":[],"next_cursor":null}"#;
+        assert!(decode(&envelope(unconfigured), "test", &Operation::Overview).is_ok());
+        for bad in [
+            overview_json(WATCH).replace(
+                "\"service_state\":\"unknown\"",
+                "\"service_state\":\"healthy\"",
+            ),
+            overview_json(WATCH).replace("\"quota_remaining\":8", "\"quota_remaining\":null"),
+            overview_json(WATCH).replace(
+                "\"quota_remaining\":8",
+                "\"quota_remaining\":8,\"secret\":\"TOKEN_SENTINEL\"",
+            ),
+            overview_json(&WATCH.replace("\"last_ok\":null", "\"last_ok\":5")),
+            overview_json(&WATCH.replace("\"user\":\"alice\"", "\"user\":\"Alice\"")),
+            overview_json(&WATCH.replace("\"interval_seconds\":300", "\"interval_seconds\":299")),
+            overview_json(&WATCH.replace(
+                "\"consecutive_errors\":0",
+                "\"consecutive_errors\":9007199254740992",
+            )),
+            overview_json(&WATCH.replace("\"revision\":\"0123", "\"revision\":\"ZZ23")),
+            overview_json(&WATCH.replace("\"status\":\"active\"", "\"status\":\"deleted\"")),
+            overview_json(&format!("{WATCH},{WATCH}")),
+            overview_json(&WATCH.replace(
+                "\"has_error\":false",
+                "\"has_error\":false,\"last_error\":\"TOKEN_SENTINEL\"",
+            )),
+            unconfigured.replace("\"watches\":[]", &format!("\"watches\":[{WATCH}]")),
+            unconfigured.replace(
+                "\"service_state\":\"unknown\"",
+                "\"service_state\":\"stopped\"",
+            ),
+        ] {
+            assert_eq!(
+                decode(&envelope(&bad), "test", &Operation::Overview).unwrap_err(),
+                HostError::Protocol,
+                "{bad}"
+            );
+        }
+        let page = format!(
+            r#"{{"items":[{WATCH},{}],"next_cursor":"w1.Ym9i"}}"#,
+            WATCH.replace("alice", "bob")
+        );
+        let list = Operation::WatchesList {
+            limit: None,
+            cursor: None,
+        };
+        assert!(
+            matches!(decode(&envelope(&page), "test", &list).unwrap(), Response::WatchPage(ref p) if p.items.len() == 2 && p.next_cursor.as_deref() == Some("w1.Ym9i"))
+        );
+        for bad in [
+            page.replace(
+                "\"next_cursor\":\"w1.Ym9i\"",
+                "\"next_cursor\":\"bad cursor\"",
+            ),
+            page.replace(
+                "\"next_cursor\":\"w1.Ym9i\"",
+                "\"next_cursor\":null,\"scanned\":1",
+            ),
+            format!(
+                r#"{{"items":[{},{WATCH}],"next_cursor":null}}"#,
+                WATCH.replace("alice", "bob")
+            ),
+        ] {
+            assert!(decode(&envelope(&bad), "test", &list).is_err(), "{bad}");
+        }
+    }
+    #[test]
+    fn watch_mutations_decode_only_their_own_user() {
+        let add = Operation::WatchesAdd {
+            user: "alice".into(),
+            interval_seconds: None,
+        };
+        let wrapped = format!(r#"{{"watch":{WATCH}}}"#);
+        assert!(
+            matches!(decode(&envelope(&wrapped), "test", &add).unwrap(), Response::Watch(ref w) if w.user == "alice" && w.waiting_first_check)
+        );
+        assert!(decode(&envelope(&wrapped.replace("alice", "bob")), "test", &add).is_err());
+        assert!(decode(&envelope(WATCH), "test", &add).is_err());
+        let remove = Operation::WatchesRemove {
+            user: "alice".into(),
+            revision: "a".repeat(64),
+        };
+        assert!(
+            matches!(decode(&envelope(r#"{"removed_user":"alice"}"#), "test", &remove).unwrap(), Response::Removed(ref r) if r.removed_user == "alice")
+        );
+        assert!(decode(&envelope(r#"{"removed_user":"bob"}"#), "test", &remove).is_err());
+        assert!(decode(
+            &envelope(r#"{"removed_user":"alice","watch":null}"#),
+            "test",
+            &remove
+        )
+        .is_err());
+        assert!(decode(&envelope(WATCH), "test", &Operation::SetupInspect).is_err());
+    }
+    #[test]
+    fn c2_error_codes_are_static() {
+        for code in [
+            "watch_conflict",
+            "watch_not_found",
+            "watch_exists",
+            "watch_limit",
+            "history_corrupt",
+            "history_oversized",
+            "snapshot_unavailable",
+            "snapshot_identity_mismatch",
+        ] {
+            let raw = format!("{{\"protocol_version\":1,\"request_id\":\"test\",\"error\":{{\"code\":\"{code}\",\"message\":\"RAW_SENTINEL\",\"retryable\":true}}}}\n");
+            let response = decode(raw.as_bytes(), "test", &Operation::Overview).unwrap();
+            let safe = serde_json::to_string(&response).unwrap();
+            assert!(
+                safe.contains(code)
+                    && !safe.contains("RAW_SENTINEL")
+                    && safe.contains("\"retryable\":false")
+            );
+        }
+        assert!(decode(b"{\"protocol_version\":1,\"request_id\":\"test\",\"error\":{\"code\":\"history_identity_unknown\",\"message\":\"x\",\"retryable\":false}}\n", "test", &Operation::Overview).is_err());
     }
 }
