@@ -55,10 +55,10 @@ impl Owner {
     pub async fn execute(self: &Arc<Self>, operation: Operation) -> Result<Response, HostError> {
         let mutation = operation.is_mutation();
         let deadline = Instant::now()
-            + if mutation {
-                self.policy.mutation
-            } else {
-                self.policy.read
+            + match operation.budget() {
+                crate::protocol::Budget::Read => self.policy.read,
+                crate::protocol::Budget::LocalMutation => self.policy.local_mutation,
+                crate::protocol::Budget::ServiceMutation => self.policy.mutation,
             };
         let admission = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -149,6 +149,7 @@ mod tests {
             fixture.launcher.clone(),
             Policy {
                 read: Duration::from_secs(10),
+                local_mutation: Duration::from_secs(10),
                 mutation: Duration::from_secs(10),
             },
         )
@@ -290,6 +291,7 @@ mod tests {
             f.launcher.clone(),
             Policy {
                 read: Duration::from_millis(400),
+                local_mutation: Duration::from_millis(600),
                 mutation: Duration::from_millis(600),
             },
         );
@@ -339,6 +341,38 @@ mod tests {
             owner.execute(Operation::SetupInspect).await.unwrap_err(),
             HostError::Closed
         );
+        owner.shutdown().await;
+    }
+    #[tokio::test]
+    async fn local_mutation_uses_its_own_deadline_and_the_mutation_slot() {
+        let _lock = crate::process::tests::FIXTURE_LOCK.lock().await;
+        let f = Fixture::new("open('started','w').close()\ntime.sleep(30)");
+        let owner = Owner::with_policy(
+            f.launcher.clone(),
+            Policy {
+                read: Duration::from_secs(10),
+                local_mutation: Duration::from_millis(400),
+                mutation: Duration::from_secs(10),
+            },
+        );
+        let mut call = tokio::spawn({
+            let o = owner.clone();
+            async move {
+                o.execute(Operation::WatchesAdd {
+                    user: "alice".into(),
+                    interval_seconds: None,
+                })
+                .await
+            }
+        });
+        ready(&f, "started", &mut call).await;
+        assert_eq!(
+            owner.execute(Operation::ServiceStop).await.unwrap_err(),
+            HostError::Busy
+        );
+        let start = Instant::now();
+        assert_eq!(call.await.unwrap().unwrap_err(), HostError::OutcomeUnknown);
+        assert!(start.elapsed() < Duration::from_secs(2));
         owner.shutdown().await;
     }
 }

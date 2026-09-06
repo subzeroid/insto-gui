@@ -122,6 +122,7 @@ fn runtime_error(error: RuntimeError) -> &'static str {
 fn host_error(error: HostError) -> &'static str {
     match error {
         HostError::InvalidToken => "invalid_token",
+        HostError::InvalidParams => "internal_error",
         HostError::Protocol => "protocol",
         HostError::Transport => "transport",
         HostError::OutcomeUnknown => "outcome_unknown",

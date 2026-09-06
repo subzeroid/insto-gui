@@ -25,15 +25,71 @@ pub const CAPABILITIES: [&str; 19] = [
     "snapshots.compare",
     "changes.list",
 ];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Budget {
+    Read,
+    LocalMutation,
+    ServiceMutation,
+}
 pub enum Operation {
     Hello,
     SetupInspect,
     SettingsInspect,
-    SetupConfigure { token: String },
-    CredentialsReplace { token: String },
+    SetupConfigure {
+        token: String,
+    },
+    CredentialsReplace {
+        token: String,
+    },
     ServiceStart,
     ServiceStop,
     ServiceRepair,
+    Overview,
+    WatchesList {
+        limit: Option<u8>,
+        cursor: Option<String>,
+    },
+    WatchesAdd {
+        user: String,
+        interval_seconds: Option<u32>,
+    },
+    WatchesUpdate {
+        user: String,
+        revision: String,
+        interval_seconds: u32,
+    },
+    WatchesPause {
+        user: String,
+        revision: String,
+    },
+    WatchesResume {
+        user: String,
+        revision: String,
+    },
+    WatchesRemove {
+        user: String,
+        revision: String,
+    },
+    SnapshotsTargets {
+        username: String,
+        limit: Option<u8>,
+        cursor: Option<String>,
+    },
+    SnapshotsList {
+        target_pk: String,
+        limit: Option<u8>,
+        cursor: Option<String>,
+    },
+    SnapshotsCompare {
+        target_pk: String,
+        older_id: String,
+        newer_id: String,
+    },
+    ChangesList {
+        target_pk: Option<String>,
+        limit: Option<u8>,
+        cursor: Option<String>,
+    },
 }
 impl std::fmt::Debug for Operation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -87,6 +143,52 @@ pub struct SafeError {
     pub message: &'static str,
     pub retryable: bool,
 }
+pub(crate) fn canonical_user(value: &str) -> bool {
+    (1..=255).contains(&value.len())
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_')
+}
+fn decimal(value: &str, max_len: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_len
+        && !value.starts_with('0')
+        && value.bytes().all(|b| b.is_ascii_digit())
+}
+pub(crate) fn target_pk(value: &str) -> bool {
+    decimal(value, 64)
+}
+pub(crate) fn snapshot_id(value: &str) -> bool {
+    decimal(value, 19) && value.parse::<i64>().is_ok()
+}
+pub(crate) fn hex(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+fn base64url(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+pub(crate) fn watch_cursor(value: &str) -> bool {
+    (4..=512).contains(&value.len()) && value.starts_with("w1.") && base64url(&value[3..])
+}
+pub(crate) fn history_cursor(value: &str) -> bool {
+    (1..=1024).contains(&value.len()) && base64url(value)
+}
+fn limit_ok(value: Option<u8>) -> bool {
+    value.is_none_or(|n| (1..=50).contains(&n))
+}
+fn interval_ok(value: u32) -> bool {
+    (300..=2_147_483_647).contains(&value)
+}
+fn cursor_ok(value: &Option<String>, check: fn(&str) -> bool) -> bool {
+    value.as_deref().is_none_or(check)
+}
 impl Operation {
     pub fn name(&self) -> &'static str {
         match self {
@@ -98,13 +200,113 @@ impl Operation {
             Self::ServiceStart => "service.start",
             Self::ServiceStop => "service.stop",
             Self::ServiceRepair => "service.repair",
+            Self::Overview => "overview",
+            Self::WatchesList { .. } => "watches.list",
+            Self::WatchesAdd { .. } => "watches.add",
+            Self::WatchesUpdate { .. } => "watches.update",
+            Self::WatchesPause { .. } => "watches.pause",
+            Self::WatchesResume { .. } => "watches.resume",
+            Self::WatchesRemove { .. } => "watches.remove",
+            Self::SnapshotsTargets { .. } => "snapshots.targets",
+            Self::SnapshotsList { .. } => "snapshots.list",
+            Self::SnapshotsCompare { .. } => "snapshots.compare",
+            Self::ChangesList { .. } => "changes.list",
+        }
+    }
+    pub fn budget(&self) -> Budget {
+        match self {
+            Self::Hello
+            | Self::SetupInspect
+            | Self::SettingsInspect
+            | Self::Overview
+            | Self::WatchesList { .. }
+            | Self::SnapshotsTargets { .. }
+            | Self::SnapshotsList { .. }
+            | Self::SnapshotsCompare { .. }
+            | Self::ChangesList { .. } => Budget::Read,
+            Self::WatchesAdd { .. }
+            | Self::WatchesUpdate { .. }
+            | Self::WatchesPause { .. }
+            | Self::WatchesResume { .. }
+            | Self::WatchesRemove { .. } => Budget::LocalMutation,
+            Self::SetupConfigure { .. }
+            | Self::CredentialsReplace { .. }
+            | Self::ServiceStart
+            | Self::ServiceStop
+            | Self::ServiceRepair => Budget::ServiceMutation,
         }
     }
     pub fn is_mutation(&self) -> bool {
-        !matches!(
-            self,
-            Self::Hello | Self::SetupInspect | Self::SettingsInspect
-        )
+        self.budget() != Budget::Read
+    }
+    pub fn validate(&self) -> Result<(), HostError> {
+        let ok = match self {
+            Self::SetupConfigure { token } | Self::CredentialsReplace { token } => {
+                return if (4..=4096).contains(&token.len())
+                    && token.bytes().all(|b| (33..=126).contains(&b))
+                {
+                    Ok(())
+                } else {
+                    Err(HostError::InvalidToken)
+                };
+            }
+            Self::Hello
+            | Self::SetupInspect
+            | Self::SettingsInspect
+            | Self::ServiceStart
+            | Self::ServiceStop
+            | Self::ServiceRepair
+            | Self::Overview => true,
+            Self::WatchesList { limit, cursor } => {
+                limit_ok(*limit) && cursor_ok(cursor, watch_cursor)
+            }
+            Self::WatchesAdd {
+                user,
+                interval_seconds,
+            } => canonical_user(user) && interval_seconds.is_none_or(interval_ok),
+            Self::WatchesUpdate {
+                user,
+                revision,
+                interval_seconds,
+            } => canonical_user(user) && hex(revision, 64) && interval_ok(*interval_seconds),
+            Self::WatchesPause { user, revision }
+            | Self::WatchesResume { user, revision }
+            | Self::WatchesRemove { user, revision } => canonical_user(user) && hex(revision, 64),
+            Self::SnapshotsTargets {
+                username,
+                limit,
+                cursor,
+            } => canonical_user(username) && limit_ok(*limit) && cursor_ok(cursor, history_cursor),
+            Self::SnapshotsList {
+                target_pk: pk,
+                limit,
+                cursor,
+            } => target_pk(pk) && limit_ok(*limit) && cursor_ok(cursor, history_cursor),
+            Self::SnapshotsCompare {
+                target_pk: pk,
+                older_id,
+                newer_id,
+            } => {
+                target_pk(pk)
+                    && snapshot_id(older_id)
+                    && snapshot_id(newer_id)
+                    && older_id != newer_id
+            }
+            Self::ChangesList {
+                target_pk: pk,
+                limit,
+                cursor,
+            } => {
+                pk.as_deref().is_none_or(target_pk)
+                    && limit_ok(*limit)
+                    && cursor_ok(cursor, history_cursor)
+            }
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(HostError::InvalidParams)
+        }
     }
     pub fn request(&self, id: &str) -> Result<Vec<u8>, HostError> {
         if id.is_empty()
@@ -115,6 +317,97 @@ impl Operation {
         {
             return Err(HostError::Protocol);
         }
+        self.validate()?;
+        let mut params = serde_json::Map::new();
+        let text = |value: &str| Value::String(value.to_owned());
+        match self {
+            Self::SetupConfigure { token } | Self::CredentialsReplace { token } => {
+                params.insert("token".into(), text(token));
+            }
+            Self::WatchesList { limit, cursor } => {
+                if let Some(n) = limit {
+                    params.insert("limit".into(), (*n).into());
+                }
+                if let Some(c) = cursor {
+                    params.insert("cursor".into(), text(c));
+                }
+            }
+            Self::WatchesAdd {
+                user,
+                interval_seconds,
+            } => {
+                params.insert("user".into(), text(user));
+                if let Some(n) = interval_seconds {
+                    params.insert("interval_seconds".into(), (*n).into());
+                }
+            }
+            Self::WatchesUpdate {
+                user,
+                revision,
+                interval_seconds,
+            } => {
+                params.insert("user".into(), text(user));
+                params.insert("revision".into(), text(revision));
+                params.insert("interval_seconds".into(), (*interval_seconds).into());
+            }
+            Self::WatchesPause { user, revision }
+            | Self::WatchesResume { user, revision }
+            | Self::WatchesRemove { user, revision } => {
+                params.insert("user".into(), text(user));
+                params.insert("revision".into(), text(revision));
+            }
+            Self::SnapshotsTargets {
+                username,
+                limit,
+                cursor,
+            } => {
+                params.insert("username".into(), text(username));
+                if let Some(n) = limit {
+                    params.insert("limit".into(), (*n).into());
+                }
+                if let Some(c) = cursor {
+                    params.insert("cursor".into(), text(c));
+                }
+            }
+            Self::SnapshotsList {
+                target_pk,
+                limit,
+                cursor,
+            } => {
+                params.insert("target_pk".into(), text(target_pk));
+                if let Some(n) = limit {
+                    params.insert("limit".into(), (*n).into());
+                }
+                if let Some(c) = cursor {
+                    params.insert("cursor".into(), text(c));
+                }
+            }
+            Self::SnapshotsCompare {
+                target_pk,
+                older_id,
+                newer_id,
+            } => {
+                params.insert("target_pk".into(), text(target_pk));
+                params.insert("older_id".into(), text(older_id));
+                params.insert("newer_id".into(), text(newer_id));
+            }
+            Self::ChangesList {
+                target_pk,
+                limit,
+                cursor,
+            } => {
+                if let Some(pk) = target_pk {
+                    params.insert("target_pk".into(), text(pk));
+                }
+                if let Some(n) = limit {
+                    params.insert("limit".into(), (*n).into());
+                }
+                if let Some(c) = cursor {
+                    params.insert("cursor".into(), text(c));
+                }
+            }
+            _ => {}
+        }
         #[derive(Serialize)]
         struct Request<'a> {
             protocol_version: u8,
@@ -122,22 +415,11 @@ impl Operation {
             operation: &'a str,
             params: Value,
         }
-        let params = match self {
-            Self::SetupConfigure { token } | Self::CredentialsReplace { token } => {
-                if !(4..=4096).contains(&token.len())
-                    || !token.bytes().all(|b| (33..=126).contains(&b))
-                {
-                    return Err(HostError::InvalidToken);
-                }
-                serde_json::json!({"token":token})
-            }
-            _ => serde_json::json!({}),
-        };
         let mut bytes = serde_json::to_vec(&Request {
             protocol_version: 1,
             request_id: id,
             operation: self.name(),
-            params,
+            params: Value::Object(params),
         })
         .map_err(|_| HostError::Protocol)?;
         bytes.push(b'\n');
@@ -596,5 +878,354 @@ mod tests {
             let profile=format!("{{\"configured\":true,\"status\":\"{status}\",\"desired_service\":\"running\",\"service_running\":false,\"quota_remaining\":1,\"quota_checked_at\":0,\"revision\":\"0123456789abcdef0123456789abcdef\"}}");
             assert!(decode(&envelope(&profile), "test", &Operation::SettingsInspect).is_ok());
         }
+    }
+    #[test]
+    fn c2_requests_carry_only_present_params() {
+        let cases: Vec<(Operation, &str)> = vec![
+            (Operation::Overview, r#""operation":"overview","params":{}"#),
+            (
+                Operation::WatchesList {
+                    limit: None,
+                    cursor: None,
+                },
+                r#""operation":"watches.list","params":{}"#,
+            ),
+            (
+                Operation::WatchesList {
+                    limit: Some(10),
+                    cursor: Some("w1.YWxpY2U".into()),
+                },
+                r#""operation":"watches.list","params":{"cursor":"w1.YWxpY2U","limit":10}"#,
+            ),
+            (
+                Operation::WatchesAdd {
+                    user: "alice".into(),
+                    interval_seconds: None,
+                },
+                r#""operation":"watches.add","params":{"user":"alice"}"#,
+            ),
+            (
+                Operation::WatchesAdd {
+                    user: "alice".into(),
+                    interval_seconds: Some(600),
+                },
+                r#""operation":"watches.add","params":{"interval_seconds":600,"user":"alice"}"#,
+            ),
+            (
+                Operation::WatchesUpdate {
+                    user: "alice".into(),
+                    revision: "a".repeat(64),
+                    interval_seconds: 900,
+                },
+                r#""operation":"watches.update","params":{"interval_seconds":900,"revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","user":"alice"}"#,
+            ),
+            (
+                Operation::WatchesRemove {
+                    user: "alice".into(),
+                    revision: "b".repeat(64),
+                },
+                r#""operation":"watches.remove","params":{"revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","user":"alice"}"#,
+            ),
+            (
+                Operation::SnapshotsTargets {
+                    username: "alice".into(),
+                    limit: None,
+                    cursor: None,
+                },
+                r#""operation":"snapshots.targets","params":{"username":"alice"}"#,
+            ),
+            (
+                Operation::SnapshotsList {
+                    target_pk: "7".into(),
+                    limit: Some(1),
+                    cursor: Some("eyJ2IjoxfQ".into()),
+                },
+                r#""operation":"snapshots.list","params":{"cursor":"eyJ2IjoxfQ","limit":1,"target_pk":"7"}"#,
+            ),
+            (
+                Operation::SnapshotsCompare {
+                    target_pk: "7".into(),
+                    older_id: "1".into(),
+                    newer_id: "2".into(),
+                },
+                r#""operation":"snapshots.compare","params":{"newer_id":"2","older_id":"1","target_pk":"7"}"#,
+            ),
+            (
+                Operation::ChangesList {
+                    target_pk: None,
+                    limit: None,
+                    cursor: None,
+                },
+                r#""operation":"changes.list","params":{}"#,
+            ),
+            (
+                Operation::ChangesList {
+                    target_pk: Some("8".into()),
+                    limit: Some(50),
+                    cursor: None,
+                },
+                r#""operation":"changes.list","params":{"limit":50,"target_pk":"8"}"#,
+            ),
+        ];
+        for (operation, expected) in cases {
+            let bytes = operation.request("test").unwrap();
+            let text = String::from_utf8(bytes).unwrap();
+            assert!(text.contains(expected), "{text}");
+            assert!(text.ends_with("}\n"));
+        }
+    }
+    #[test]
+    fn c2_parameter_bounds_match_the_core() {
+        let rev = "a".repeat(64);
+        let invalid = vec![
+            Operation::WatchesAdd {
+                user: "Alice".into(),
+                interval_seconds: None,
+            },
+            Operation::WatchesAdd {
+                user: "@alice".into(),
+                interval_seconds: None,
+            },
+            Operation::WatchesAdd {
+                user: " alice".into(),
+                interval_seconds: None,
+            },
+            Operation::WatchesAdd {
+                user: ".".into(),
+                interval_seconds: None,
+            },
+            Operation::WatchesAdd {
+                user: "..".into(),
+                interval_seconds: None,
+            },
+            Operation::WatchesAdd {
+                user: "a".repeat(256),
+                interval_seconds: None,
+            },
+            Operation::WatchesAdd {
+                user: "alice".into(),
+                interval_seconds: Some(299),
+            },
+            Operation::WatchesAdd {
+                user: "alice".into(),
+                interval_seconds: Some(2_147_483_648),
+            },
+            Operation::WatchesUpdate {
+                user: "alice".into(),
+                revision: "a".repeat(63),
+                interval_seconds: 300,
+            },
+            Operation::WatchesPause {
+                user: "alice".into(),
+                revision: "A".repeat(64),
+            },
+            Operation::WatchesList {
+                limit: Some(0),
+                cursor: None,
+            },
+            Operation::WatchesList {
+                limit: Some(51),
+                cursor: None,
+            },
+            Operation::WatchesList {
+                limit: None,
+                cursor: Some("w1.".into()),
+            },
+            Operation::WatchesList {
+                limit: None,
+                cursor: Some("x1.abc".into()),
+            },
+            Operation::WatchesList {
+                limit: None,
+                cursor: Some("w1.a b".into()),
+            },
+            Operation::WatchesList {
+                limit: None,
+                cursor: Some(format!("w1.{}", "a".repeat(510))),
+            },
+            Operation::SnapshotsList {
+                target_pk: "0".into(),
+                limit: None,
+                cursor: None,
+            },
+            Operation::SnapshotsList {
+                target_pk: "07".into(),
+                limit: None,
+                cursor: None,
+            },
+            Operation::SnapshotsList {
+                target_pk: "1".repeat(65),
+                limit: None,
+                cursor: None,
+            },
+            Operation::SnapshotsList {
+                target_pk: "7".into(),
+                limit: None,
+                cursor: Some(String::new()),
+            },
+            Operation::SnapshotsList {
+                target_pk: "7".into(),
+                limit: None,
+                cursor: Some("a+b".into()),
+            },
+            Operation::SnapshotsList {
+                target_pk: "7".into(),
+                limit: None,
+                cursor: Some("a".repeat(1025)),
+            },
+            Operation::SnapshotsCompare {
+                target_pk: "7".into(),
+                older_id: "1".into(),
+                newer_id: "1".into(),
+            },
+            Operation::SnapshotsCompare {
+                target_pk: "7".into(),
+                older_id: "0".into(),
+                newer_id: "1".into(),
+            },
+            Operation::SnapshotsCompare {
+                target_pk: "7".into(),
+                older_id: "1".into(),
+                newer_id: "9223372036854775808".into(),
+            },
+            Operation::SnapshotsTargets {
+                username: "alice ".into(),
+                limit: None,
+                cursor: None,
+            },
+            Operation::ChangesList {
+                target_pk: Some("x".into()),
+                limit: None,
+                cursor: None,
+            },
+        ];
+        for operation in invalid {
+            assert_eq!(
+                operation.validate(),
+                Err(HostError::InvalidParams),
+                "{operation:?}"
+            );
+            assert_eq!(operation.request("id"), Err(HostError::InvalidParams));
+        }
+        for operation in [
+            Operation::WatchesAdd {
+                user: "a".repeat(255),
+                interval_seconds: Some(2_147_483_647),
+            },
+            Operation::WatchesPause {
+                user: "a.b_c9".into(),
+                revision: rev.clone(),
+            },
+            Operation::SnapshotsCompare {
+                target_pk: "1".repeat(64),
+                older_id: "1".into(),
+                newer_id: "9223372036854775807".into(),
+            },
+            Operation::SnapshotsTargets {
+                username: "alice".into(),
+                limit: Some(50),
+                cursor: Some("a".repeat(1024)),
+            },
+            Operation::WatchesList {
+                limit: None,
+                cursor: Some("w1.a".into()),
+            },
+        ] {
+            assert_eq!(operation.validate(), Ok(()), "{operation:?}");
+        }
+        assert!(!format!(
+            "{:?}",
+            Operation::WatchesAdd {
+                user: "secret_sentinel".into(),
+                interval_seconds: None
+            }
+        )
+        .contains("secret_sentinel"));
+    }
+    #[test]
+    fn budget_classes_and_mutation_flags() {
+        use crate::protocol::Budget;
+        let rev = "a".repeat(64);
+        for op in [
+            Operation::Hello,
+            Operation::SetupInspect,
+            Operation::Overview,
+            Operation::WatchesList {
+                limit: None,
+                cursor: None,
+            },
+            Operation::SnapshotsTargets {
+                username: "a".into(),
+                limit: None,
+                cursor: None,
+            },
+            Operation::SnapshotsList {
+                target_pk: "1".into(),
+                limit: None,
+                cursor: None,
+            },
+            Operation::SnapshotsCompare {
+                target_pk: "1".into(),
+                older_id: "1".into(),
+                newer_id: "2".into(),
+            },
+            Operation::ChangesList {
+                target_pk: None,
+                limit: None,
+                cursor: None,
+            },
+        ] {
+            assert_eq!(op.budget(), Budget::Read);
+            assert!(!op.is_mutation());
+        }
+        for op in [
+            Operation::WatchesAdd {
+                user: "a".into(),
+                interval_seconds: None,
+            },
+            Operation::WatchesUpdate {
+                user: "a".into(),
+                revision: rev.clone(),
+                interval_seconds: 300,
+            },
+            Operation::WatchesPause {
+                user: "a".into(),
+                revision: rev.clone(),
+            },
+            Operation::WatchesResume {
+                user: "a".into(),
+                revision: rev.clone(),
+            },
+            Operation::WatchesRemove {
+                user: "a".into(),
+                revision: rev.clone(),
+            },
+        ] {
+            assert_eq!(op.budget(), Budget::LocalMutation);
+            assert!(op.is_mutation());
+        }
+        for op in [
+            Operation::SetupConfigure {
+                token: "abcd".into(),
+            },
+            Operation::CredentialsReplace {
+                token: "abcd".into(),
+            },
+            Operation::ServiceStart,
+            Operation::ServiceStop,
+            Operation::ServiceRepair,
+        ] {
+            assert_eq!(op.budget(), Budget::ServiceMutation);
+            assert!(op.is_mutation());
+        }
+        let policy = crate::process::Policy::default();
+        assert_eq!(
+            (
+                policy.read.as_secs(),
+                policy.local_mutation.as_secs(),
+                policy.mutation.as_secs()
+            ),
+            (10, 15, 120)
+        );
     }
 }

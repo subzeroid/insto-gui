@@ -41,12 +41,14 @@ impl TrustedLauncher {
 #[derive(Clone, Copy)]
 pub(crate) struct Policy {
     pub read: Duration,
+    pub local_mutation: Duration,
     pub mutation: Duration,
 }
 impl Default for Policy {
     fn default() -> Self {
         Self {
             read: Duration::from_secs(10),
+            local_mutation: Duration::from_secs(15),
             mutation: Duration::from_secs(120),
         }
     }
