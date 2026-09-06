@@ -368,6 +368,43 @@ ad-hoc signature verification passes. With a clean environment, both
 stdout and exactly `unsupported_arguments`; `/tmp/x` was not created and the
 default profile was not opened.
 
+### G1 WebKit window proof (rerun)
+
+Rerun on 2026-09-06 at 13:02 local time from an unlocked, foreground console
+session (`CGSSessionScreenIsLocked` absent) at `97f2274`. The app-proof bundle
+was rebuilt online with
+`npm run tauri -- build --features app-proof --bundles app -- --locked`
+(23.44 s incremental; executable SHA-256
+`41df95adc20666aeb92f5c46c8a8fd51b82b2a4655f02c0609939383e316f81e`), copied with
+`cp -cRp` into the new private parent `.build/native-app-g1-window-02/insto.app`
+(strict ad-hoc `codesign --verify --strict --deep` passed, same executable hash),
+and driven by `/opt/homebrew/bin/python3 -B -m scripts.app_native_probe
+<copied app> .build/native-app-g1-window-02/insto-app-proof-g1-02 --mode window`.
+About two seconds after launch the exact app (PID-validated, bundle id
+`app.insto.desktop`) received one AppleScript `activate`; no further focus
+changes were made.
+
+Result: **passed** — `passed: true`, `cleanup_confirmed: true`,
+`app_group_cleaned: true`, `elapsed_seconds 21.365`, empty app stderr, bundled
+build id `a910ea75d07236f49db324d24766b7ddad6980d89e09334fff6c62ad79c9978c`. The
+real WebKit window emitted the complete sequence `window_opened`,
+`prepare_started`, `script_started`, `prepare_ready`, `inspect_started`,
+`inspect_ready`, `form_ready`, `ui_ready`, `close_requested`, `drained`: the
+G1 frontend prepared the pinned runtime, read the unconfigured profile through
+the real IPC path and rendered the token form with the P1 fixed developer
+script's form, visibility, validation, geometry, IPC and profile checks all
+passing. This confirms the `-01` attribution: the earlier stall was the locked
+session, not a G1 regression. The retained
+`.build/native-app-g1-window-02/insto-app-proof-g1-02-result.json` holds the
+bounded evidence; the failed `-01` artifacts are kept unchanged. No
+`--mode native` run and no LaunchAgent were used.
+
+The ordinary build was rebuilt afterwards
+(`npm run tauri -- build --bundles app -- --locked`, 20.82 s; executable SHA-256
+`33d7a202df59fdc21307827690e8b8ad9662a71f8b9768d4ab8bde0389b0deb0`) and again
+rejects `--proof-window /tmp/x` with exit 1 and exactly `unsupported_arguments`;
+`/tmp/x` was not created.
+
 ### G1 gates
 
 Run in order on 2026-09-06 at `8f00434` with the docs above staged: 16 Vitest
