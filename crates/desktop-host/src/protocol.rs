@@ -653,6 +653,7 @@ fn watches<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Watch>, D::Erro
         .map(|item| watch(item).map_err(serde::de::Error::custom))
         .collect()
 }
+/// Items are already validated by the `watches` adapter; this checks page shape only.
 fn check_watch_list(items: &[Watch], cursor: Option<&str>) -> Result<(), HostError> {
     if items.len() > 50 || cursor.is_some_and(|c| !watch_cursor(c)) {
         return Err(HostError::Protocol);
@@ -1509,6 +1510,32 @@ mod tests {
                 "\"service_state\":\"unknown\"",
                 "\"service_state\":\"stopped\"",
             ),
+            overview_json(
+                &WATCH
+                    .replace("\"last_ok\":null", "\"last_ok\":253402300800")
+                    .replace(
+                        "\"waiting_first_check\":true",
+                        "\"waiting_first_check\":false",
+                    ),
+            ),
+            overview_json(WATCH).replace(
+                "\"quota_checked_at\":100",
+                "\"quota_checked_at\":253402300800",
+            ),
+            overview_json(&WATCH.replace(
+                "\"interval_seconds\":300",
+                "\"interval_seconds\":2147483648",
+            )),
+            overview_json(&WATCH.replace("\"interval_seconds\":300", "\"interval_seconds\":300.0")),
+            overview_json(&WATCH.replace("\"consecutive_errors\":0", "\"consecutive_errors\":-1")),
+            overview_json(&WATCH.replace(
+                "\"waiting_first_check\":true",
+                "\"waiting_first_check\":false",
+            )),
+            unconfigured.replace(
+                "\"desired_service\":null",
+                "\"desired_service\":\"stopped\"",
+            ),
         ] {
             assert_eq!(
                 decode(&envelope(&bad), "test", &Operation::Overview).unwrap_err(),
@@ -1527,11 +1554,23 @@ mod tests {
         assert!(
             matches!(decode(&envelope(&page), "test", &list).unwrap(), Response::WatchPage(ref p) if p.items.len() == 2 && p.next_cursor.as_deref() == Some("w1.Ym9i"))
         );
+        let items = |count: usize| {
+            (0..count)
+                .map(|i| WATCH.replace("alice", &format!("u{i:02}")))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let fifty = format!(r#"{{"items":[{}],"next_cursor":null}}"#, items(50));
+        assert!(
+            matches!(decode(&envelope(&fifty), "test", &list).unwrap(), Response::WatchPage(ref p) if p.items.len() == 50)
+        );
         for bad in [
             page.replace(
                 "\"next_cursor\":\"w1.Ym9i\"",
                 "\"next_cursor\":\"bad cursor\"",
             ),
+            page.replace("\"next_cursor\":\"w1.Ym9i\"", "\"next_cursor\":\"w1.\""),
+            format!(r#"{{"items":[{}],"next_cursor":null}}"#, items(51)),
             page.replace(
                 "\"next_cursor\":\"w1.Ym9i\"",
                 "\"next_cursor\":null,\"scanned\":1",
@@ -1657,5 +1696,54 @@ mod tests {
                 "{result}"
             );
         }
+    }
+    #[test]
+    fn production_watch_shape_is_accepted_everywhere() {
+        const PRODUCTION: &str = r#"{"user":"alice","status":"paused","interval_seconds":2147483647,"last_ok":253402300799,"waiting_first_check":false,"has_error":true,"consecutive_errors":9007199254740991,"revision":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
+        let check = |watch: &Watch| {
+            assert_eq!(watch.user, "alice");
+            assert_eq!(watch.status, WatchStatus::Paused);
+            assert_eq!(watch.interval_seconds, 2_147_483_647);
+            assert_eq!(watch.last_ok, Some(253_402_300_799));
+            assert!(!watch.waiting_first_check);
+            assert!(watch.has_error);
+            assert_eq!(watch.consecutive_errors, 9_007_199_254_740_991);
+            assert_eq!(
+                watch.revision,
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            );
+        };
+        let overview = overview_json(&format!("{PRODUCTION},{}", WATCH.replace("alice", "bob")));
+        match decode(&envelope(&overview), "test", &Operation::Overview).unwrap() {
+            Response::Overview(overview) => {
+                assert_eq!(overview.watches.len(), 2);
+                check(&overview.watches[0]);
+                assert_eq!(overview.watches[1].status, WatchStatus::Active);
+            }
+            other => panic!("{other:?}"),
+        }
+        let page = format!(r#"{{"items":[{PRODUCTION}],"next_cursor":"w1.YWxpY2U"}}"#);
+        let list = Operation::WatchesList {
+            limit: None,
+            cursor: None,
+        };
+        match decode(&envelope(&page), "test", &list).unwrap() {
+            Response::WatchPage(page) => {
+                assert_eq!(page.items.len(), 1);
+                assert_eq!(page.next_cursor.as_deref(), Some("w1.YWxpY2U"));
+                check(&page.items[0]);
+            }
+            other => panic!("{other:?}"),
+        }
+        let pause = Operation::WatchesPause {
+            user: "alice".into(),
+            revision: "a".repeat(64),
+        };
+        let single = format!(r#"{{"watch":{PRODUCTION}}}"#);
+        match decode(&envelope(&single), "test", &pause).unwrap() {
+            Response::Watch(watch) => check(&watch),
+            other => panic!("{other:?}"),
+        }
+        assert!(decode(&envelope(&single.replace("alice", "bob")), "test", &pause).is_err());
     }
 }
