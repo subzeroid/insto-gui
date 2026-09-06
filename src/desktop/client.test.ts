@@ -45,4 +45,55 @@ describe('desktop boundary', () => {
     await client.openTokenPage()
     expect(invoke.mock.calls).toEqual([['prepare_desktop'], ['open_token_page']])
   })
+  it('canonicalizes usernames like the CLI and rejects the rest before IPC', async () => {
+    const { canonicalUsername } = await import('./client')
+    expect(canonicalUsername('@@Alice ')).toBe('alice')
+    for (const raw of [' @alice', '.', '..', 'a b', 'ñ', 'a'.repeat(256), '']) expect(canonicalUsername(raw)).toBeNull()
+    const invoke = vi.fn()
+    const client = new DesktopClient(invoke)
+    await expect(client.addWatch('Alice')).rejects.toMatchObject({ code: 'invalid_watch_input' })
+    await expect(client.addWatch('alice', 299)).rejects.toMatchObject({ code: 'invalid_watch_input' })
+    await expect(client.searchTargets('@alice')).rejects.toMatchObject({ code: 'invalid_history_input' })
+    await expect(client.compareSnapshots('7', '1', '1')).rejects.toMatchObject({ code: 'invalid_history_input' })
+    expect(invoke).not.toHaveBeenCalled()
+  })
+  it('sends exact C2 arguments and decodes kinds', async () => {
+    const watch = { user: 'alice', status: 'active', interval_seconds: 300, last_ok: null, waiting_first_check: true, has_error: false, consecutive_errors: 0, revision: 'a'.repeat(64) }
+    const invoke = vi.fn()
+      .mockResolvedValueOnce({ kind: 'watch', data: watch })
+      .mockResolvedValueOnce({ kind: 'removed', data: { removed_user: 'alice' } })
+      .mockResolvedValueOnce({ kind: 'history_page', data: { items: [], next_cursor: null, scan_complete: true, scanned: 0 } })
+      .mockResolvedValueOnce({ kind: 'watch', data: watch })
+    const client = new DesktopClient(invoke)
+    expect(await client.addWatch('alice', 600)).toEqual(watch)
+    expect(await client.removeWatch({ user: 'alice', revision: 'a'.repeat(64) })).toBe('alice')
+    expect((await client.listChanges({ target_pk: '7', limit: 10 })).scan_complete).toBe(true)
+    await expect(client.overview()).rejects.toMatchObject({ code: 'protocol' })
+    expect(invoke.mock.calls).toEqual([
+      ['add_watch', { watch: { user: 'alice', interval_seconds: 600 } }],
+      ['remove_watch', { watch: { user: 'alice', revision: 'a'.repeat(64) } }],
+      ['list_changes', { query: { target_pk: '7', limit: 10 } }],
+      ['read_overview'],
+    ])
+  })
+  it('queues reads beyond two slots and hands a released slot to the next waiter', async () => {
+    const tick = async () => { for (let i = 0; i < 8; i++) await Promise.resolve() }
+    const pending: ((value: unknown) => void)[] = []
+    const invoke = vi.fn(() => new Promise(resolve => { pending.push(resolve) }))
+    const client = new DesktopClient(invoke)
+    const overviewData = { configured: false, desired_service: null, service_state: 'unknown', quota_remaining: null, quota_checked_at: null, watches: [], next_cursor: null }
+    const first = client.overview(), second = client.listChanges(), third = client.listWatches()
+    await tick()
+    expect(invoke).toHaveBeenCalledTimes(2)
+    pending[0]({ kind: 'overview', data: overviewData })
+    const fourth = client.overview() // issued during the hand-off: must wait, not take a third slot
+    await first; await tick()
+    expect(invoke).toHaveBeenCalledTimes(3)
+    pending[1]({ kind: 'history_page', data: { items: [], next_cursor: null, scan_complete: true, scanned: 0 } })
+    await second; await tick()
+    expect(invoke).toHaveBeenCalledTimes(4)
+    pending[2]({ kind: 'watch_page', data: { items: [], next_cursor: null } })
+    pending[3]({ kind: 'overview', data: overviewData })
+    await Promise.all([third, fourth])
+  })
 })
