@@ -2,7 +2,9 @@
 
 Self-contained macOS monitoring app under development. The local P1 shell
 provides token setup and service controls around a bundled insto core.
-Account management and history screens are not implemented yet.
+G1 adds the watch list, saved-snapshot comparison, change feed, service and
+settings sections on the bundled insto 0.7.21 core, still without a public
+installer.
 
 The app will bundle a compatible Python insto core. Users will not install
 Python, uv or the CLI separately. There is no public installer or release yet.

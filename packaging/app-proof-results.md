@@ -260,3 +260,113 @@ every decoded response. The fixture is seeded by the developer-only
 temporary root that only contains `profile`, `desktop-state.json` and
 `.desktop.lock` after shutdown. This is offline fake evidence, not user
 onboarding.
+
+### G1 frontend proof
+
+Browser QA on 2026-09-06 used local Vite at `127.0.0.1:1420` with a
+developer-injected in-memory `__TAURI_INTERNALS__.invoke` mock defined before
+the app scripts ran (ignored `.build/qa/` harness page; no mock backend or path
+override entered production code). The mock answered `prepare_desktop`
+(core 0.7.21, sixty-four-hex build id), a stopped configured profile after
+`configure_setup`, an overview with alice (waiting first check) and bob (paused,
+three consecutive errors), one target PK 7 for the username search, three
+snapshots, a comparison with one change plus one unknown field, a change feed
+page with baseline, comparison, incomplete and diagnostic entries followed by
+an empty complete page, a new watch on `add_watch`, one `watch_conflict` on
+`pause_watch`, and a variant where `read_overview` rejected with `transport`
+after the first success. Verified at a 980×820 app viewport and 375×812:
+
+- Setup → configured flow landed on «Наблюдения» with the empty call to
+  action and the four sections; the token input was unmounted and its value
+  did not remain in the DOM. The add form rejected `bad name!` locally without
+  a bridge call and canonicalized `@Alice` to `alice` (interval 300).
+- Selecting a row issued exactly `search_targets`, `list_snapshots` and
+  `compare_snapshots` with zero new resource requests; the comparison rendered
+  «Подписчики 10 → 12» and the unknown-field note for «Полное имя». The pair
+  pickers re-issued `compare_snapshots` for the chosen ordered pair and pruned
+  the partner options (older 2,1 → newer 3,2 → older 1).
+- The conflict showed the static `watch_conflict` message, one reconciling
+  read and the refreshed paused row; removal opened the in-page confirmation
+  (cancel issued nothing, confirm issued `remove_watch` then one read).
+- The stale banner arrived from the five-second poll itself (observed
+  `read_overview` spacing 5.0 s), disabled resume/remove/interval/add
+  controls, marked the row, kept the data visible and showed «остановлена
+  (устарело)» in the service section; «Обновить» issued one read and
+  re-enabled everything.
+- The feed showed all four kinds (filtered by PK 7 from the watch, then
+  global), «Показать дальше» sent the cursor and the end-of-history note
+  appeared; the service section showed the observed state, «Ядро и база» and
+  the last successful read, and start/stop each reconciled with one read;
+  settings showed «Заменить токен» (password field, «Сохранить токен») and the
+  uninstall confirmation with the Trash note.
+- No console errors, no requests outside `127.0.0.1:1420`, empty
+  `localStorage`/`sessionStorage`, and no horizontal overflow in any section
+  at 375 px (scroll width equal to client width).
+
+Retained screenshots in ignored `.build/`: `browser-g1-watches.png`,
+`browser-g1-changes.png`, `browser-g1-service.png`, `browser-g1-settings.png`,
+`browser-g1-stale.png` (980×820) and `browser-g1-mobile.png` (375×812).
+Limits: the automation window was occluded (display asleep), so interactions
+were driven by DOM-dispatched events through the same Vue handlers rather than
+trusted pointer/keyboard input, the picker change was simulated by a `change`
+event, and the harness reported `visibilityState` as visible so the polling
+path ran. These are mock UI evidence, not provider onboarding or WebKit
+rendering evidence.
+
+### G1 WebKit window proof
+
+Built online on 2026-09-06 at `8f00434` with
+`npm run tauri -- build --features app-proof --bundles app -- --locked`
+(`--offline` was not used: the local cargo registry is not fully cached); the
+release profile compiled in 51 s. The generated app was copied with `cp -cRp`
+into the new private parent `.build/native-app-g1-window-01/insto.app`: strict
+ad-hoc `codesign --verify --strict --deep` passed, all 3,139 entries match the
+built bundle, executable SHA-256
+`2ca303e1bce13fa696430d200715dd0245a2e96803c5cd0dcecc1da95e0d729b`, bundled
+build id `a910ea75d07236f49db324d24766b7ddad6980d89e09334fff6c62ad79c9978c`.
+The probe ran as `/opt/homebrew/bin/python3 -B -m scripts.app_native_probe
+<copied app> .build/native-app-g1-window-01/insto-app-proof-g1-01 --mode window`.
+
+Result: **failed** — `passed: false`, `TimeoutError: proof signal timed out`
+after 260.047 s, `app_group_cleaned` and `cleanup_confirmed` true. The real
+application emitted `window_opened`, `prepare_started`, `script_started` and
+`prepare_ready`: it opened the production WebKit window and published the
+pinned runtime into the fresh root, which afterwards contains only private
+`runtime.lock` and `runtimes/<build_id>`, not a profile. It never reached
+`inspect_started` or `ui_ready`. The console session was locked for the whole
+run (`CGSSessionScreenIsLocked` yes, user idle about 3.8 h), so the WebKit view
+stayed occluded; one PID/executable-validated AppKit activation of the exact
+app and one display wake (`caffeinate -u`) did not resume it. This is the
+documented backgrounded-WebKit stall (P1 saw the same gap between
+`prepare_ready` and `inspect_started`), not a G1 regression, and it was not
+retried into the same root. The retained
+`.build/native-app-g1-window-01/insto-app-proof-g1-01-result.json` holds the
+bounded evidence (empty app stderr). The window proof must be rerun in a new
+artifact parent (for example `.build/native-app-g1-window-02`) from an
+unlocked, foreground session before G1 is treated as WebKit-verified. No
+`--mode native` run and no LaunchAgent were used.
+
+The ordinary build (`npm run tauri -- build --bundles app -- --locked`, no
+proof feature, compiled in 20.87 s) is retained at
+`.build/app-g1-ordinary-01/insto.app`; its executable SHA-256 is
+`dc0d8568ab461543fcf3639a2b8844785d4f05b0ed1e0bb8458e7f3828e73a07` and strict
+ad-hoc signature verification passes. With a clean environment, both
+`--proof-window /tmp/x` and `--proof-root /tmp/x` returned exit 1, empty
+stdout and exactly `unsupported_arguments`; `/tmp/x` was not created and the
+default profile was not opened.
+
+### G1 gates
+
+Run in order on 2026-09-06 at `8f00434` with the docs above staged: 16 Vitest
+files / 75 tests and the TypeScript production build passed; `cargo fmt` for
+both crates and strict all-target Clippy passed; the host crate ran 55 tests
+with one failure, `owner::tests::local_mutation_uses_its_own_deadline_and_the_mutation_slot`
+(its 400 ms local-mutation budget expired before the `/usr/bin/python3`
+fixture wrote its `started` marker while the host carried a load average of
+about 16 on 14 cores from unrelated workloads); rerun alone it failed once
+more and then passed on the second spaced attempt under the same load, which
+is the known load-sensitive fixture timing, not a policy change. The real
+bridge test `c2_bridge` against `.build/runtime-c2-01` passed (1 test, 4.16 s),
+the Tauri crate's 9 tests passed, 103 Python unittest cases passed,
+`git diff --check` was clean and the trailer/home-path grep matched only the
+`Co-authored-by` rule text in `AGENTS.md`.

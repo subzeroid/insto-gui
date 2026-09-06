@@ -5,7 +5,7 @@ are for developers, **not end-user installation steps**. P1 adds a local GUI
 and a Rust runtime publisher, but no public installer. The target user flow remains:
 install the app, enter a HikerAPI token, add accounts, start monitoring.
 
-## P1 local shell
+## P1/G1 local app
 
 The Rust host strictly decodes C1 JSONL, bounds bridge I/O and lifetime, and
 publishes the pinned runtime into a private versioned directory. Vue provides
@@ -13,11 +13,17 @@ token setup/replacement and explicit service Start/Stop/Repair. Opening the
 app only prepares and inspects; closing must never stop the background service.
 Cached quota and native process state are not monitoring-health guarantees.
 
+G1 adds eleven commands on the C2 bridge: `read_overview`, `list_watches`,
+`add_watch`, `update_watch`, `pause_watch`, `resume_watch`, `remove_watch`,
+`search_targets`, `list_snapshots`, `compare_snapshots` and `list_changes`.
+Vue polls `read_overview` every five seconds while the window is visible and
+reconciles with one read after every mutation; it never replays a mutation.
+
 Use the clean C2 revision (insto 0.7.21) in `packaging/core-pin.json` as the read-only build
 input. After preparing a new runtime, stage it with:
 
 ```sh
-python3 -B -m scripts.stage_app_runtime .build/runtime-c1-01
+python3 -B -m scripts.stage_app_runtime .build/runtime-c2-01
 npm ci --ignore-scripts
 npm test
 npm run build
