@@ -194,11 +194,78 @@ pub struct Overview {
 pub struct Removed {
     pub removed_user: String,
 }
-// Placeholders so `Response` compiles; Task 5 defines the history DTOs.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct Snapshot {
+    pub id: String,
+    pub target_pk: String,
+    pub captured_at: u64,
+}
+#[derive(Debug, Serialize, Clone)]
+#[serde(untagged)]
+pub enum ChangeValue {
+    Null,
+    Bool(bool),
+    Integer(u64),
+    Text(String),
+}
 #[derive(Debug, Serialize)]
-pub struct HistoryPage {}
+pub struct Change {
+    pub field: String,
+    pub old: ChangeValue,
+    pub new: ChangeValue,
+}
 #[derive(Debug, Serialize)]
-pub struct Comparison {}
+pub struct Comparison {
+    pub older: Snapshot,
+    pub newer: Snapshot,
+    pub changes: Vec<Change>,
+    pub unknown_fields: Vec<String>,
+}
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticCode {
+    HistoryCorrupt,
+    HistoryOversized,
+    HistoryIdentityUnknown,
+}
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HistoryItem {
+    Target {
+        target_pk: String,
+        snapshot: Snapshot,
+    },
+    Snapshot {
+        snapshot: Snapshot,
+    },
+    Baseline {
+        snapshot: Snapshot,
+    },
+    Comparison {
+        older: Snapshot,
+        newer: Snapshot,
+        changes: Vec<Change>,
+        unknown_fields: Vec<String>,
+    },
+    Incomplete {
+        older: Snapshot,
+        newer: Snapshot,
+        changes: Vec<Change>,
+        unknown_fields: Vec<String>,
+    },
+    Diagnostic {
+        snapshot: Snapshot,
+        code: DiagnosticCode,
+    },
+}
+#[derive(Debug, Serialize)]
+pub struct HistoryPage {
+    pub items: Vec<HistoryItem>,
+    pub next_cursor: Option<String>,
+    pub scan_complete: bool,
+    pub scanned: u64,
+}
 #[derive(Debug, Serialize)]
 pub struct SafeError {
     pub code: &'static str,
@@ -716,6 +783,236 @@ fn removed(result: &Value, user: &str) -> Result<Removed, HostError> {
     }
     Ok(removed)
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PageKind {
+    Targets,
+    List,
+    Changes,
+}
+fn snapshot(value: &Value) -> Result<Snapshot, HostError> {
+    exact_keys(value, &["id", "target_pk", "captured_at"])?;
+    let snapshot: Snapshot =
+        serde_json::from_value(value.clone()).map_err(|_| HostError::Protocol)?;
+    if !snapshot_id(&snapshot.id)
+        || !target_pk(&snapshot.target_pk)
+        || snapshot.captured_at > MAX_TIME
+    {
+        return Err(HostError::Protocol);
+    }
+    Ok(snapshot)
+}
+fn key(snapshot: &Snapshot) -> (u64, i64) {
+    (
+        snapshot.captured_at,
+        snapshot.id.parse().unwrap_or_default(),
+    )
+}
+fn field_name(name: &str) -> bool {
+    (1..=64).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+}
+fn change_value(value: &Value) -> Result<ChangeValue, HostError> {
+    match value {
+        Value::Null => Ok(ChangeValue::Null),
+        Value::Bool(b) => Ok(ChangeValue::Bool(*b)),
+        Value::Number(n) => n
+            .as_u64()
+            .filter(|n| *n <= MAX_SAFE)
+            .map(ChangeValue::Integer)
+            .ok_or(HostError::Protocol),
+        Value::String(s) => Ok(ChangeValue::Text(s.clone())),
+        _ => Err(HostError::Protocol),
+    }
+}
+fn comparison(value: &Value, expected_kind: &str) -> Result<Comparison, HostError> {
+    let obj = exact_keys(
+        value,
+        &["kind", "older", "newer", "changes", "unknown_fields"],
+    )?;
+    if obj["kind"].as_str() != Some(expected_kind) {
+        return Err(HostError::Protocol);
+    }
+    let older = snapshot(&obj["older"])?;
+    let newer = snapshot(&obj["newer"])?;
+    if older.target_pk != newer.target_pk || key(&older) >= key(&newer) {
+        return Err(HostError::Protocol);
+    }
+    let mut changes = Vec::new();
+    for change in obj["changes"].as_array().ok_or(HostError::Protocol)? {
+        let item = exact_keys(change, &["field", "old", "new"])?;
+        let field = item["field"]
+            .as_str()
+            .filter(|f| field_name(f))
+            .ok_or(HostError::Protocol)?;
+        changes.push(Change {
+            field: field.to_owned(),
+            old: change_value(&item["old"])?,
+            new: change_value(&item["new"])?,
+        });
+    }
+    let mut unknown_fields = Vec::new();
+    for name in obj["unknown_fields"]
+        .as_array()
+        .ok_or(HostError::Protocol)?
+    {
+        unknown_fields.push(
+            name.as_str()
+                .filter(|f| field_name(f))
+                .ok_or(HostError::Protocol)?
+                .to_owned(),
+        );
+    }
+    if changes.len() > 64 || unknown_fields.len() > 64 {
+        return Err(HostError::Protocol);
+    }
+    Ok(Comparison {
+        older,
+        newer,
+        changes,
+        unknown_fields,
+    })
+}
+fn history_item(value: &Value, kind: PageKind) -> Result<HistoryItem, HostError> {
+    let obj = value.as_object().ok_or(HostError::Protocol)?;
+    let tag = obj
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or(HostError::Protocol)?;
+    Ok(match (kind, tag) {
+        (PageKind::Targets, "target") => {
+            exact_keys(value, &["kind", "target_pk", "snapshot"])?;
+            let snapshot = snapshot(&obj["snapshot"])?;
+            let pk = obj["target_pk"].as_str().ok_or(HostError::Protocol)?;
+            if pk != snapshot.target_pk {
+                return Err(HostError::Protocol);
+            }
+            HistoryItem::Target {
+                target_pk: pk.to_owned(),
+                snapshot,
+            }
+        }
+        (PageKind::List, "snapshot") => {
+            exact_keys(value, &["kind", "snapshot"])?;
+            HistoryItem::Snapshot {
+                snapshot: snapshot(&obj["snapshot"])?,
+            }
+        }
+        (PageKind::Changes, "baseline") => {
+            exact_keys(value, &["kind", "snapshot"])?;
+            HistoryItem::Baseline {
+                snapshot: snapshot(&obj["snapshot"])?,
+            }
+        }
+        (PageKind::Changes, "comparison") => {
+            let c = comparison(value, "comparison")?;
+            if c.changes.is_empty() || !c.unknown_fields.is_empty() {
+                return Err(HostError::Protocol);
+            }
+            HistoryItem::Comparison {
+                older: c.older,
+                newer: c.newer,
+                changes: c.changes,
+                unknown_fields: c.unknown_fields,
+            }
+        }
+        (PageKind::Changes, "incomplete") => {
+            let c = comparison(value, "incomplete")?;
+            if c.unknown_fields.is_empty() {
+                return Err(HostError::Protocol);
+            }
+            HistoryItem::Incomplete {
+                older: c.older,
+                newer: c.newer,
+                changes: c.changes,
+                unknown_fields: c.unknown_fields,
+            }
+        }
+        (_, "diagnostic") => {
+            exact_keys(value, &["kind", "snapshot", "code"])?;
+            let code: DiagnosticCode =
+                serde_json::from_value(obj["code"].clone()).map_err(|_| HostError::Protocol)?;
+            if code == DiagnosticCode::HistoryIdentityUnknown && kind != PageKind::Targets {
+                return Err(HostError::Protocol);
+            }
+            HistoryItem::Diagnostic {
+                snapshot: snapshot(&obj["snapshot"])?,
+                code,
+            }
+        }
+        _ => return Err(HostError::Protocol),
+    })
+}
+fn history_page(
+    result: &Value,
+    kind: PageKind,
+    filter: Option<&str>,
+    limit: u8,
+) -> Result<HistoryPage, HostError> {
+    let obj = exact_keys(
+        result,
+        &["items", "next_cursor", "scan_complete", "scanned"],
+    )?;
+    let next_cursor = match &obj["next_cursor"] {
+        Value::Null => None,
+        Value::String(cursor) if history_cursor(cursor) => Some(cursor.clone()),
+        _ => return Err(HostError::Protocol),
+    };
+    let scan_complete = obj["scan_complete"].as_bool().ok_or(HostError::Protocol)?;
+    let scanned = obj["scanned"].as_u64().ok_or(HostError::Protocol)?;
+    let raw = obj["items"].as_array().ok_or(HostError::Protocol)?;
+    if scan_complete != next_cursor.is_none() || scanned > 2000 || raw.len() > usize::from(limit) {
+        return Err(HostError::Protocol);
+    }
+    let mut items = Vec::with_capacity(raw.len());
+    let mut previous: Option<(u64, i64)> = None;
+    let mut seen_targets: Vec<String> = Vec::new();
+    for value in raw {
+        let item = history_item(value, kind)?;
+        let current = match &item {
+            HistoryItem::Comparison { newer, .. } | HistoryItem::Incomplete { newer, .. } => newer,
+            HistoryItem::Target { snapshot, .. }
+            | HistoryItem::Snapshot { snapshot }
+            | HistoryItem::Baseline { snapshot }
+            | HistoryItem::Diagnostic { snapshot, .. } => snapshot,
+        };
+        if filter.is_some_and(|pk| pk != current.target_pk) {
+            return Err(HostError::Protocol);
+        }
+        if let HistoryItem::Target { target_pk, .. } = &item {
+            if seen_targets.contains(target_pk) {
+                return Err(HostError::Protocol);
+            }
+            seen_targets.push(target_pk.clone());
+        }
+        let current_key = key(current);
+        if previous.is_some_and(|p| p <= current_key) {
+            return Err(HostError::Protocol);
+        }
+        previous = Some(current_key);
+        items.push(item);
+    }
+    Ok(HistoryPage {
+        items,
+        next_cursor,
+        scan_complete,
+        scanned,
+    })
+}
+fn compare_result(
+    result: &Value,
+    pk: &str,
+    older_id: &str,
+    newer_id: &str,
+) -> Result<Comparison, HostError> {
+    let c = comparison(result, "comparison")?;
+    if c.older.target_pk != pk
+        || c.newer.target_pk != pk
+        || c.older.id != older_id
+        || c.newer.id != newer_id
+    {
+        return Err(HostError::Protocol);
+    }
+    Ok(c)
+}
 pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, HostError> {
     let bad = || HostError::Protocol;
     if raw.len() > MAX_RESPONSE
@@ -751,10 +1048,33 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
             | Operation::WatchesPause { user, .. }
             | Operation::WatchesResume { user, .. } => Response::Watch(single_watch(result, user)?),
             Operation::WatchesRemove { user, .. } => Response::Removed(removed(result, user)?),
-            Operation::SnapshotsTargets { .. }
-            | Operation::SnapshotsList { .. }
-            | Operation::SnapshotsCompare { .. }
-            | Operation::ChangesList { .. } => return Err(HostError::Protocol), // replaced in Task 5
+            Operation::SnapshotsTargets { limit, .. } => Response::HistoryPage(history_page(
+                result,
+                PageKind::Targets,
+                None,
+                limit.unwrap_or(50),
+            )?),
+            Operation::SnapshotsList {
+                target_pk, limit, ..
+            } => Response::HistoryPage(history_page(
+                result,
+                PageKind::List,
+                Some(target_pk),
+                limit.unwrap_or(50),
+            )?),
+            Operation::SnapshotsCompare {
+                target_pk,
+                older_id,
+                newer_id,
+            } => Response::Comparison(compare_result(result, target_pk, older_id, newer_id)?),
+            Operation::ChangesList {
+                target_pk, limit, ..
+            } => Response::HistoryPage(history_page(
+                result,
+                PageKind::Changes,
+                target_pk.as_deref(),
+                limit.unwrap_or(50),
+            )?),
         });
     }
     #[derive(Deserialize)]
@@ -1745,5 +2065,260 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(decode(&envelope(&single.replace("alice", "bob")), "test", &pause).is_err());
+    }
+    fn snap(id: u64, pk: &str, at: u64) -> String {
+        format!(r#"{{"id":"{id}","target_pk":"{pk}","captured_at":{at}}}"#)
+    }
+    fn page(items: &[String], cursor: Option<&str>, scanned: u64) -> String {
+        let cursor = cursor.map_or("null".to_owned(), |c| format!("\"{c}\""));
+        format!(
+            r#"{{"items":[{}],"next_cursor":{cursor},"scan_complete":{},"scanned":{scanned}}}"#,
+            items.join(","),
+            cursor == "null"
+        )
+    }
+    #[test]
+    fn history_pages_validate_kinds_order_and_filters() {
+        let targets = Operation::SnapshotsTargets {
+            username: "alice".into(),
+            limit: None,
+            cursor: None,
+        };
+        let items = [
+            format!(
+                r#"{{"kind":"target","target_pk":"8","snapshot":{}}}"#,
+                snap(3, "8", 3)
+            ),
+            format!(
+                r#"{{"kind":"target","target_pk":"7","snapshot":{}}}"#,
+                snap(2, "7", 2)
+            ),
+            format!(
+                r#"{{"kind":"diagnostic","snapshot":{},"code":"history_identity_unknown"}}"#,
+                snap(1, "9", 1)
+            ),
+        ];
+        let good = decode(&envelope(&page(&items, None, 3)), "test", &targets).unwrap();
+        assert!(
+            matches!(good, Response::HistoryPage(ref p) if p.items.len() == 3 && p.scan_complete && p.scanned == 3)
+        );
+        let with_cursor = page(&items, Some("eyJ2IjoxfQ"), 3);
+        assert!(
+            matches!(decode(&envelope(&with_cursor), "test", &targets).unwrap(), Response::HistoryPage(ref p) if !p.scan_complete)
+        );
+        for bad in [
+            page(&[items[1].clone(), items[0].clone()], None, 2),
+            page(&items, None, 3).replace("\"scan_complete\":true", "\"scan_complete\":false"),
+            page(&items, None, 2001),
+            page(
+                &[format!(
+                    r#"{{"kind":"target","target_pk":"9","snapshot":{}}}"#,
+                    snap(3, "8", 3)
+                )],
+                None,
+                1,
+            ),
+            page(
+                &[format!(
+                    r#"{{"kind":"snapshot","snapshot":{}}}"#,
+                    snap(3, "8", 3)
+                )],
+                None,
+                1,
+            ),
+            page(
+                &[format!(
+                    r#"{{"kind":"target","target_pk":"8","snapshot":{},"extra":1}}"#,
+                    snap(3, "8", 3)
+                )],
+                None,
+                1,
+            ),
+            page(
+                &[format!(
+                    r#"{{"kind":"target","target_pk":"8","snapshot":{}}}"#,
+                    snap(3, "8", 253402300800)
+                )],
+                None,
+                1,
+            ),
+            page(
+                &[format!(
+                    r#"{{"kind":"target","target_pk":"8","snapshot":{}}}"#,
+                    snap(3, "8", 3).replace("\"3\"", "\"03\"")
+                )],
+                None,
+                1,
+            ),
+        ] {
+            assert!(decode(&envelope(&bad), "test", &targets).is_err(), "{bad}");
+        }
+        let list = Operation::SnapshotsList {
+            target_pk: "7".into(),
+            limit: Some(1),
+            cursor: None,
+        };
+        let snapshots = [format!(
+            r#"{{"kind":"snapshot","snapshot":{}}}"#,
+            snap(2, "7", 2)
+        )];
+        assert!(decode(&envelope(&page(&snapshots, Some("abc"), 1)), "test", &list).is_ok());
+        assert!(decode(
+            &envelope(&page(
+                &[format!(
+                    r#"{{"kind":"snapshot","snapshot":{}}}"#,
+                    snap(2, "8", 2)
+                )],
+                None,
+                1
+            )),
+            "test",
+            &list
+        )
+        .is_err());
+        assert!(decode(
+            &envelope(&page(
+                &[
+                    snapshots[0].clone(),
+                    format!(r#"{{"kind":"snapshot","snapshot":{}}}"#, snap(1, "7", 1))
+                ],
+                None,
+                2
+            )),
+            "test",
+            &list
+        )
+        .is_err());
+    }
+    #[test]
+    fn feed_and_comparison_values_are_bounded() {
+        let comparison = format!(
+            r#"{{"kind":"comparison","older":{},"newer":{},"changes":[{{"field":"follower_count","old":1,"new":2}},{{"field":"biography","old":null,"new":"x"}},{{"field":"avatar","old":null,"new":"{}"}}],"unknown_fields":[]}}"#,
+            snap(1, "7", 1),
+            snap(2, "7", 2),
+            "a".repeat(64)
+        );
+        let feed = Operation::ChangesList {
+            target_pk: None,
+            limit: None,
+            cursor: None,
+        };
+        let baseline = format!(r#"{{"kind":"baseline","snapshot":{}}}"#, snap(1, "7", 1));
+        let incomplete = format!(
+            r#"{{"kind":"incomplete","older":{},"newer":{},"changes":[],"unknown_fields":["full_name"]}}"#,
+            snap(2, "7", 2),
+            snap(3, "7", 3)
+        );
+        let good = page(
+            &[incomplete.clone(), comparison.clone(), baseline.clone()],
+            None,
+            3,
+        );
+        assert!(
+            matches!(decode(&envelope(&good), "test", &feed).unwrap(), Response::HistoryPage(ref p) if p.items.len() == 3)
+        );
+        for bad in [
+            comparison.replace("\"old\":1,\"new\":2", "\"old\":1.5,\"new\":2"),
+            comparison.replace("\"old\":1,\"new\":2", "\"old\":-1,\"new\":2"),
+            comparison.replace("\"old\":1,\"new\":2", "\"old\":9007199254740992,\"new\":2"),
+            comparison.replace("\"old\":1,\"new\":2", "\"old\":{},\"new\":2"),
+            comparison.replace(
+                "\"field\":\"follower_count\"",
+                "\"field\":\"Follower Count\"",
+            ),
+            comparison.replace(
+                "\"unknown_fields\":[]",
+                "\"unknown_fields\":[\"full_name\"]",
+            ),
+            comparison.replace("\"changes\":[", "\"note\":\"RAW\",\"changes\":["),
+            comparison.replace(&snap(2, "7", 2), &snap(2, "8", 2)),
+            comparison.replace(&snap(2, "7", 2), &snap(2, "7", 0)),
+            incomplete.replace("[\"full_name\"]", "[]"),
+            format!(
+                r#"{{"kind":"comparison","older":{},"newer":{},"changes":[],"unknown_fields":[]}}"#,
+                snap(1, "7", 1),
+                snap(2, "7", 2)
+            ),
+        ] {
+            assert!(
+                decode(&envelope(&page(&[bad.clone()], None, 1)), "test", &feed).is_err(),
+                "{bad}"
+            );
+        }
+        let filtered = Operation::ChangesList {
+            target_pk: Some("8".into()),
+            limit: None,
+            cursor: None,
+        };
+        assert!(decode(
+            &envelope(&page(&[baseline.clone()], None, 1)),
+            "test",
+            &filtered
+        )
+        .is_err());
+        let compare = Operation::SnapshotsCompare {
+            target_pk: "7".into(),
+            older_id: "1".into(),
+            newer_id: "2".into(),
+        };
+        let bare = comparison.replace(
+            "\"unknown_fields\":[]",
+            "\"unknown_fields\":[\"full_name\"]",
+        );
+        assert!(
+            matches!(decode(&envelope(&bare), "test", &compare).unwrap(), Response::Comparison(ref c) if c.changes.len() == 3 && c.unknown_fields == ["full_name"])
+        );
+        assert!(decode(
+            &envelope(&format!(
+                r#"{{"kind":"comparison","older":{},"newer":{},"changes":[],"unknown_fields":[]}}"#,
+                snap(1, "7", 1),
+                snap(2, "7", 2)
+            )),
+            "test",
+            &compare
+        )
+        .is_ok());
+        assert!(decode(
+            &envelope(&comparison.replace(&snap(1, "7", 1), &snap(5, "7", 1))),
+            "test",
+            &compare
+        )
+        .is_err());
+        // Same second, increasing id: a valid pair (order is the (captured_at,id) tuple).
+        assert!(decode(
+            &envelope(&comparison.replace(&snap(1, "7", 1), &snap(1, "7", 2))),
+            "test",
+            &compare
+        )
+        .is_ok());
+        assert!(decode(
+            &envelope(&comparison.replace("\"kind\":\"comparison\"", "\"kind\":\"incomplete\"")),
+            "test",
+            &compare
+        )
+        .is_err());
+        let serialized =
+            serde_json::to_string(&decode(&envelope(&good), "test", &feed).unwrap()).unwrap();
+        assert!(
+            serialized.contains("\"kind\":\"history_page\"")
+                && serialized.contains("\"kind\":\"incomplete\"")
+                && serialized.contains("\"kind\":\"baseline\"")
+        );
+    }
+    #[test]
+    fn change_value_null_serializes_as_json_null() {
+        assert_eq!(serde_json::to_string(&ChangeValue::Null).unwrap(), "null");
+        assert_eq!(
+            serde_json::to_string(&ChangeValue::Bool(true)).unwrap(),
+            "true"
+        );
+        assert_eq!(
+            serde_json::to_string(&ChangeValue::Integer(MAX_SAFE)).unwrap(),
+            "9007199254740991"
+        );
+        assert_eq!(
+            serde_json::to_string(&ChangeValue::Text("x".into())).unwrap(),
+            "\"x\""
+        );
     }
 }
