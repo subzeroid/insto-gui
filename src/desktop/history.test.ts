@@ -1,0 +1,117 @@
+import { describe, expect, it, vi } from 'vitest'
+import { DesktopClient } from './client'
+import { createHistoryState } from './history'
+import { envelope, page, snap } from './fixtures'
+
+const target = (pk: string, id: string, at: number) => ({ kind: 'target' as const, target_pk: pk, snapshot: snap(id, pk, at) })
+const snapshot = (id: string, pk: string, at: number) => ({ kind: 'snapshot' as const, snapshot: snap(id, pk, at) })
+const bare = { older: snap('1', '7', 1), newer: snap('2', '7', 2), changes: [{ field: 'follower_count', old: 1, new: 2 }], unknown_fields: [] }
+const comparison = { kind: 'comparison' as const, ...bare }
+
+describe('history state', () => {
+  it('zero targets means no history, one target auto-selects and compares the two newest snapshots', async () => {
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(envelope('history_page', page([])))
+      .mockResolvedValueOnce(envelope('history_page', page([target('7', '2', 2)])))
+      .mockResolvedValueOnce(envelope('history_page', page([snapshot('2', '7', 2), snapshot('1', '7', 1)])))
+      .mockResolvedValueOnce(envelope('comparison', bare))
+    const history = createHistoryState(new DesktopClient(invoke))
+    await history.load('nobody')
+    expect(history.state.targets.pks).toEqual([]); expect(history.state.targets.scanComplete).toBe(true); expect(history.state.targetPk).toBeNull()
+    await history.load('alice')
+    expect(history.state.targetPk).toBe('7'); expect(history.state.snapshots.items).toHaveLength(2)
+    expect(history.state.pair).toEqual({ olderId: '1', newerId: '2' }); expect(history.state.comparison.value?.changes).toHaveLength(1)
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['search_targets', 'search_targets', 'list_snapshots', 'compare_snapshots'])
+    expect(invoke.mock.calls[3][1]).toEqual({ pair: { target_pk: '7', older_id: '1', newer_id: '2' } })
+  })
+  it('several targets or an incomplete scan require an explicit choice', async () => {
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(envelope('history_page', page([target('8', '3', 3), target('7', '2', 2), { kind: 'diagnostic', snapshot: snap('1', '9', 1), code: 'history_identity_unknown' }], 'more', 3)))
+      .mockResolvedValueOnce(envelope('history_page', page([target('6', '0', 0)].map(item => ({ ...item, snapshot: snap('1', '6', 0), target_pk: '6' })), null, 1)))
+      .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '8', 3)])))
+    const history = createHistoryState(new DesktopClient(invoke))
+    await history.load('alice')
+    expect(history.state.targets.pks).toEqual(['8', '7']); expect(history.state.targets.diagnostics).toBe(1); expect(history.state.targets.scanComplete).toBe(false); expect(history.state.targetPk).toBeNull()
+    await history.continueSearch()
+    expect(history.state.targets.pks).toEqual(['8', '7', '6']); expect(history.state.targets.scanComplete).toBe(true); expect(history.state.targets.scanned).toBe(4)
+    expect(invoke.mock.calls[1]).toEqual(['search_targets', { query: { username: 'alice', cursor: 'more' } }])
+    await history.chooseTarget('8')
+    expect(history.state.snapshots.items.map(item => item.id)).toEqual(['3']); expect(history.state.comparison.value).toBeNull(); expect(history.state.pair.newerId).toBeNull()
+  })
+  it('an unavailable snapshot reloads the list and clears the pair', async () => {
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(envelope('history_page', page([target('7', '2', 2)])))
+      .mockResolvedValueOnce(envelope('history_page', page([snapshot('2', '7', 2), snapshot('1', '7', 1)])))
+      .mockResolvedValueOnce(envelope('error', { code: 'snapshot_unavailable', message: 'x', retryable: false }))
+      .mockResolvedValueOnce(envelope('history_page', page([snapshot('2', '7', 2)])))
+    const history = createHistoryState(new DesktopClient(invoke))
+    await history.load('alice')
+    expect(history.state.comparison.error?.code).toBe('snapshot_unavailable')
+    expect(history.state.snapshots.items).toHaveLength(1); expect(history.state.pair).toEqual({ olderId: null, newerId: null })
+  })
+  it('the feed keeps continuation across an empty page and supports a PK filter', async () => {
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(envelope('history_page', page([], 'cursor-1', 200)))
+      .mockResolvedValueOnce(envelope('history_page', page([{ kind: 'baseline', snapshot: snap('1', '7', 1) }], null, 1)))
+      .mockResolvedValueOnce(envelope('history_page', page([comparison], null, 2)))
+    const history = createHistoryState(new DesktopClient(invoke))
+    await history.loadFeed()
+    expect(history.state.feed.items).toHaveLength(0); expect(history.state.feed.scanComplete).toBe(false); expect(history.state.feed.scanned).toBe(200)
+    await history.moreFeed()
+    expect(history.state.feed.items.map(item => item.kind)).toEqual(['baseline']); expect(history.state.feed.scanComplete).toBe(true)
+    await history.loadFeed('7')
+    expect(history.state.feed.items.map(item => item.kind)).toEqual(['comparison']); expect(history.state.feed.filterPk).toBe('7')
+    expect(invoke.mock.calls.map(call => call[1])).toEqual([{ query: {} }, { query: { cursor: 'cursor-1' } }, { query: { target_pk: '7' } }])
+  })
+  it('a single PK is opened automatically only after a complete, diagnostic-free scan', async () => {
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(envelope('history_page', page([target('7', '2', 2)], 'more', 1)))
+      .mockResolvedValueOnce(envelope('history_page', page([], null, 3)))
+      .mockResolvedValueOnce(envelope('history_page', page([snapshot('2', '7', 2)])))
+      .mockResolvedValueOnce(envelope('history_page', page([target('9', '5', 5), { kind: 'diagnostic', snapshot: snap('1', '3', 1), code: 'history_identity_unknown' }])))
+    const history = createHistoryState(new DesktopClient(invoke))
+    await history.load('alice')
+    expect(history.state.targets.pks).toEqual(['7']); expect(history.state.targetPk).toBeNull()
+    await history.continueSearch()
+    expect(history.state.targets.scanComplete).toBe(true); expect(history.state.targetPk).toBe('7')
+    await history.load('bob')
+    expect(history.state.targets.pks).toEqual(['9']); expect(history.state.targets.diagnostics).toBe(1); expect(history.state.targetPk).toBeNull()
+  })
+  it('a late result for a superseded PK selection is dropped', async () => {
+    const pending: Record<string, (value: unknown) => void> = {}
+    const invoke = vi.fn((_command: string, args?: Record<string, unknown>) => new Promise(resolve => { pending[String((args?.query as { target_pk: string }).target_pk)] = resolve }))
+    const history = createHistoryState(new DesktopClient(invoke))
+    const first = history.chooseTarget('7'), second = history.chooseTarget('8')
+    pending['8'](envelope('history_page', page([snapshot('2', '8', 2)]))); await second
+    pending['7'](envelope('history_page', page([snapshot('1', '7', 1)]))); await first
+    expect(history.state.targetPk).toBe('8'); expect(history.state.snapshots.items.map(item => item.target_pk)).toEqual(['8'])
+  })
+  it('retention recovery with two remaining snapshots falls back to the newest pair', async () => {
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(envelope('history_page', page([target('7', '3', 3)])))
+      .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('1', '7', 1)])))
+      .mockResolvedValueOnce(envelope('error', { code: 'snapshot_unavailable', message: 'x', retryable: false }))
+      .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('2', '7', 2)])))
+      .mockResolvedValueOnce(envelope('comparison', { ...bare, older: snap('2', '7', 2), newer: snap('3', '7', 3) }))
+    const history = createHistoryState(new DesktopClient(invoke))
+    await history.load('alice')
+    expect(history.state.pair).toEqual({ olderId: '2', newerId: '3' }); expect(history.state.comparison.value?.newer.id).toBe('3'); expect(history.state.comparison.error).toBeNull()
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['search_targets', 'list_snapshots', 'compare_snapshots', 'list_snapshots', 'compare_snapshots'])
+  })
+  it('reload repeats the search for the current username', async () => {
+    const invoke = vi.fn().mockResolvedValue(envelope('history_page', page([])))
+    const history = createHistoryState(new DesktopClient(invoke))
+    await history.load('alice'); await history.reload()
+    expect(invoke.mock.calls.map(call => call[1])).toEqual([{ query: { username: 'alice' } }, { query: { username: 'alice' } }])
+  })
+  it('a stale load result is dropped after reset', async () => {
+    let release!: (value: unknown) => void
+    const invoke = vi.fn().mockImplementationOnce(() => new Promise(resolve => { release = resolve })).mockResolvedValueOnce(envelope('history_page', page([])))
+    const history = createHistoryState(new DesktopClient(invoke))
+    const first = history.load('alice')
+    const second = history.load('bob')
+    release(envelope('history_page', page([target('7', '2', 2)])))
+    await first; await second
+    expect(history.state.username).toBe('bob'); expect(history.state.targets.pks).toEqual([]); expect(history.state.targetPk).toBeNull()
+  })
+})
