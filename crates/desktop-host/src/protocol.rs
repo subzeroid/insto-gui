@@ -166,6 +166,7 @@ pub struct Watch {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WatchPage {
+    #[serde(deserialize_with = "watches")]
     pub items: Vec<Watch>,
     pub next_cursor: Option<String>,
 }
@@ -184,6 +185,7 @@ pub struct Overview {
     pub service_state: ServiceState,
     pub quota_remaining: Option<u64>,
     pub quota_checked_at: Option<u64>,
+    #[serde(deserialize_with = "watches")]
     pub watches: Vec<Watch>,
     pub next_cursor: Option<String>,
 }
@@ -627,15 +629,36 @@ fn check_watch(watch: &Watch) -> Result<(), HostError> {
         Err(HostError::Protocol)
     }
 }
+const WATCH_KEYS: [&str; 8] = [
+    "user",
+    "status",
+    "interval_seconds",
+    "last_ok",
+    "waiting_first_check",
+    "has_error",
+    "consecutive_errors",
+    "revision",
+];
+fn watch(value: &Value) -> Result<Watch, HostError> {
+    exact_keys(value, &WATCH_KEYS)?;
+    let watch: Watch = serde_json::from_value(value.clone()).map_err(|_| HostError::Protocol)?;
+    check_watch(&watch)?;
+    Ok(watch)
+}
+// Routes every nested watch of a derived page through `watch`, so each item
+// keeps the exact key set instead of serde's missing-Option-as-null default.
+fn watches<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Watch>, D::Error> {
+    Vec::<Value>::deserialize(d)?
+        .iter()
+        .map(|item| watch(item).map_err(serde::de::Error::custom))
+        .collect()
+}
 fn check_watch_list(items: &[Watch], cursor: Option<&str>) -> Result<(), HostError> {
     if items.len() > 50 || cursor.is_some_and(|c| !watch_cursor(c)) {
         return Err(HostError::Protocol);
     }
-    for (index, watch) in items.iter().enumerate() {
-        check_watch(watch)?;
-        if index > 0 && items[index - 1].user >= watch.user {
-            return Err(HostError::Protocol);
-        }
+    if items.windows(2).any(|pair| pair[0].user >= pair[1].user) {
+        return Err(HostError::Protocol);
     }
     Ok(())
 }
@@ -677,14 +700,11 @@ fn overview(result: &Value) -> Result<Overview, HostError> {
     Ok(overview)
 }
 fn single_watch(result: &Value, user: &str) -> Result<Watch, HostError> {
-    let obj = exact_keys(result, &["watch"])?;
-    let watch: Watch =
-        serde_json::from_value(obj["watch"].clone()).map_err(|_| HostError::Protocol)?;
-    check_watch(&watch)?;
-    if watch.user != user {
+    let item = watch(&exact_keys(result, &["watch"])?["watch"])?;
+    if item.user != user {
         return Err(HostError::Protocol);
     }
-    Ok(watch)
+    Ok(item)
 }
 fn removed(result: &Value, user: &str) -> Result<Removed, HostError> {
     exact_keys(result, &["removed_user"])?;
@@ -1574,5 +1594,68 @@ mod tests {
             );
         }
         assert!(decode(b"{\"protocol_version\":1,\"request_id\":\"test\",\"error\":{\"code\":\"history_identity_unknown\",\"message\":\"x\",\"retryable\":false}}\n", "test", &Operation::Overview).is_err());
+    }
+    #[test]
+    fn nested_watches_require_exact_keys() {
+        let fields = [
+            r#""user":"alice""#,
+            r#""status":"active""#,
+            r#""interval_seconds":300"#,
+            r#""last_ok":null"#,
+            r#""waiting_first_check":true"#,
+            r#""has_error":false"#,
+            r#""consecutive_errors":0"#,
+            r#""revision":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef""#,
+        ];
+        let shapes = |watch: &str| -> [(Operation, String); 3] {
+            [
+                (Operation::Overview, overview_json(watch)),
+                (
+                    Operation::WatchesList {
+                        limit: None,
+                        cursor: None,
+                    },
+                    format!(r#"{{"items":[{watch}],"next_cursor":null}}"#),
+                ),
+                (
+                    Operation::WatchesAdd {
+                        user: "alice".into(),
+                        interval_seconds: None,
+                    },
+                    format!(r#"{{"watch":{watch}}}"#),
+                ),
+            ]
+        };
+        let full = format!("{{{}}}", fields.join(","));
+        for (operation, result) in shapes(&full) {
+            assert!(
+                decode(&envelope(&result), "test", &operation).is_ok(),
+                "{result}"
+            );
+        }
+        for missing in 0..fields.len() {
+            let kept: Vec<&str> = fields
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != missing)
+                .map(|(_, field)| *field)
+                .collect();
+            let watch = format!("{{{}}}", kept.join(","));
+            for (operation, result) in shapes(&watch) {
+                assert_eq!(
+                    decode(&envelope(&result), "test", &operation).unwrap_err(),
+                    HostError::Protocol,
+                    "{result}"
+                );
+            }
+        }
+        let renamed = full.replace("\"last_ok\":null", "\"last_error\":null");
+        for (operation, result) in shapes(&renamed) {
+            assert_eq!(
+                decode(&envelope(&result), "test", &operation).unwrap_err(),
+                HostError::Protocol,
+                "{result}"
+            );
+        }
     }
 }
