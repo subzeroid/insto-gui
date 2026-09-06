@@ -21,11 +21,11 @@ async function submit() {
   <form class="add-watch" @submit.prevent="submit">
     <h2>Добавить аккаунт</h2>
     <label for="watch-user">Имя пользователя Instagram</label>
-    <input id="watch-user" v-model="user" name="user" autocomplete="off" autocapitalize="off" autocorrect="off" :spellcheck="false" :disabled="busy" maxlength="257" placeholder="@username" />
+    <input id="watch-user" v-model="user" name="user" autocomplete="off" autocapitalize="off" autocorrect="off" :spellcheck="false" :disabled="busy" maxlength="257" placeholder="@username" @input="localError = ''" />
     <label for="watch-interval">Интервал проверки, секунд</label>
-    <input id="watch-interval" v-model="interval" name="interval" type="number" inputmode="numeric" :min="MIN_INTERVAL" step="1" :disabled="busy" />
+    <input id="watch-interval" v-model="interval" name="interval" type="number" inputmode="numeric" :min="MIN_INTERVAL" step="1" :disabled="busy" @input="localError = ''" />
     <p v-if="localError" role="alert" class="notice danger">{{ localError }}</p>
-    <button type="submit" class="primary" :disabled="busy">{{ busy ? 'Сохраняем…' : 'Добавить аккаунт' }}</button>
+    <button type="submit" class="primary" :disabled="busy">{{ pending ? 'Сохраняем…' : 'Добавить аккаунт' }}</button>
     <p class="fine-print">Каждая проверка расходует лимит HikerAPI. Не более трёх активных наблюдений; минимальный интервал {{ MIN_INTERVAL }} секунд. Первый снимок соберёт служба; регистрация не делает пробный запрос.</p>
   </form>
 </template>

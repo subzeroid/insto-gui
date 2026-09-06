@@ -21,6 +21,7 @@ describe('watch details', () => {
     expect(actions.resume).toHaveBeenCalledTimes(1)
     await wrapper.get('button[data-action="remove"]').trigger('click')
     expect(wrapper.find('button[data-action="confirm-remove"]').exists()).toBe(true)
+    expect(wrapper.get('button[data-action="remove"]').attributes('disabled')).toBeUndefined() // the trigger keeps focus while confirming
     await wrapper.get('button[data-action="cancel-remove"]').trigger('click')
     expect(wrapper.find('button[data-action="confirm-remove"]').exists()).toBe(false)
     await wrapper.setProps({ stale: true })

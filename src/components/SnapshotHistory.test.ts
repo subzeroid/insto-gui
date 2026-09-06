@@ -4,6 +4,7 @@ import SnapshotHistory from './SnapshotHistory.vue'
 import { DesktopClient } from '../desktop/client'
 import { createHistoryState } from '../desktop/history'
 import { envelope, page, snap } from '../desktop/fixtures'
+import { formatCount } from '../desktop/format'
 
 const target = (pk: string, id: string, at: number) => ({ kind: 'target' as const, target_pk: pk, snapshot: snap(id, pk, at) })
 const snapshot = (id: string, pk: string, at: number) => ({ kind: 'snapshot' as const, snapshot: snap(id, pk, at) })
@@ -18,10 +19,10 @@ describe('snapshot history', () => {
     invoke.mockResolvedValueOnce(envelope('history_page', page([target('7', '2', 2)]))).mockResolvedValueOnce(envelope('history_page', page([snapshot('2', '7', 2)])))
     await history.load('alice'); await flushPromises()
     expect(wrapper.text()).toContain('Первый снимок')
-    expect(wrapper.text()).not.toContain('ничего не изменилось')
-    invoke.mockResolvedValueOnce(envelope('history_page', page([target('8', '3', 3), target('7', '2', 2)], 'more', 2)))
+    expect(wrapper.text()).not.toContain('не изменились')
+    invoke.mockResolvedValueOnce(envelope('history_page', page([target('8', '3', 3), target('7', '2', 2)], 'more', 1500)))
     await history.load('alice'); await flushPromises()
-    expect(wrapper.text()).toContain('Поиск не завершён')
+    expect(wrapper.text()).toContain(`Поиск не завершён: просмотрено ${formatCount(1500)} снимков`)
     expect(wrapper.findAll('button[data-target]')).toHaveLength(2)
     expect(wrapper.text()).toContain('Выберите сохранённую историю')
     invoke.mockResolvedValueOnce(envelope('history_page', page([target('7', '2', 2)], 'more', 1)))

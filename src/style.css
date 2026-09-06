@@ -55,7 +55,8 @@ footer { display: flex; gap: 8px; align-items: center; padding: 17px 28px; color
 .watch-row { padding: 12px 14px; border: 1px solid #28313b; border-radius: 9px; margin-bottom: 8px; cursor: pointer; }
 .watch-row.selected { border-color: #87bbc9; background: #131a23; }
 .watch-row.stale { opacity: .7; }
-.watch-user { font-weight: 600; }
+.watch-user { font-weight: 600; overflow-wrap: anywhere; }
+.watch-details h2 { overflow-wrap: anywhere; }
 .watch-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: #8c97a5; margin-top: 4px; }
 .danger-text { color: #e2b4b6; }
 .empty, .loading { color: #85929f; font-size: 13px; }
