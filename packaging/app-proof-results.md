@@ -239,3 +239,10 @@ additional execution gates. Final independent Astra extension integration
 review approved `5617966..4e434d2` and this measured evidence for local P1
 handoff, with no blockers. All planned P1 gates are complete; full watch/history
 product completion and distribution remain separate stages.
+
+## G1 runtime
+
+Prepared `.build/runtime-c2-01` from insto `7a1872568bd90a642a3df838fd9854286f251d03`
+(0.7.21) with `scripts.prepare_runtime`; probe passed; hello advertises the
+nineteen pinned capabilities. Staged into `.build/app-resources/runtime`
+(build id `a910ea75d07236f49db324d24766b7ddad6980d89e09334fff6c62ad79c9978c`). Developer evidence only, not a release artifact.
