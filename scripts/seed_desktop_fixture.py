@@ -2,10 +2,13 @@
 
 Usage (with the prepared runtime interpreter, never a user machine):
     python3 -I -B scripts/seed_desktop_fixture.py /abs/fresh/root '[{"pk":"7","stamp":1,"fields":{"username":"alice"}}]'
-The root must exist, be canonical, private (0700) and empty. The token written
+The root must exist, be canonical, private (0700) and empty. The core's Profile
+also enforces its own ancestor-permission policy on the root's parents: the
+macOS per-user temp dir satisfies it, a 1777 /tmp may not. The token written
 is a fake offline value; the bridge never contacts a provider for C2 reads.
 """
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -34,7 +37,12 @@ def main() -> None:
     except ValueError:
         fail("rows must be JSON")
     if not isinstance(rows, list) or any(
-        not isinstance(row, dict) or set(row) != {"pk", "stamp", "fields"} or not isinstance(row["fields"], dict)
+        not isinstance(row, dict)
+        or set(row) != {"pk", "stamp", "fields"}
+        or not isinstance(row["pk"], str)
+        or not isinstance(row["stamp"], int)
+        or isinstance(row["stamp"], bool)
+        or not isinstance(row["fields"], dict)
         for row in rows
     ):
         fail("rows must be [{pk, stamp, fields}]")
@@ -47,14 +55,15 @@ def main() -> None:
         initialize_database(profile.home / "store.db")
         profile.write_config(config_bytes(profile, "offline-fixture-token-not-real"))
         profile.write_state(profile.new_state(remaining=8, desired="stopped"))
-    with sqlite3.connect(profile.home / "store.db") as db:
-        for row in rows:
-            fields = dict.fromkeys(_PROFILE_TRACKED_FIELDS, None)
-            fields.update(row["fields"])
-            db.execute(
-                "INSERT INTO snapshots(target_pk,captured_at,profile_fields_json,last_post_pks_json) VALUES (?,?,?,?)",
-                (str(row["pk"]), int(row["stamp"]), json.dumps(fields, ensure_ascii=False), "[]"),
-            )
+    with contextlib.closing(sqlite3.connect(profile.home / "store.db")) as db:
+        with db:
+            for row in rows:
+                fields = dict.fromkeys(_PROFILE_TRACKED_FIELDS, None)
+                fields.update(row["fields"])
+                db.execute(
+                    "INSERT INTO snapshots(target_pk,captured_at,profile_fields_json,last_post_pks_json) VALUES (?,?,?,?)",
+                    (row["pk"], row["stamp"], json.dumps(fields, ensure_ascii=False), "[]"),
+                )
     print(json.dumps({"seeded": len(rows), "store": str(profile.home / "store.db")}))
 
 

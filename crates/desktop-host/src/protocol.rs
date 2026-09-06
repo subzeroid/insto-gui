@@ -2241,7 +2241,12 @@ mod tests {
             ),
         ] {
             assert!(
-                decode(&envelope(&page(&[bad.clone()], None, 1)), "test", &feed).is_err(),
+                decode(
+                    &envelope(&page(std::slice::from_ref(&bad), None, 1)),
+                    "test",
+                    &feed
+                )
+                .is_err(),
                 "{bad}"
             );
         }
@@ -2251,7 +2256,7 @@ mod tests {
             cursor: None,
         };
         assert!(decode(
-            &envelope(&page(&[baseline.clone()], None, 1)),
+            &envelope(&page(std::slice::from_ref(&baseline), None, 1)),
             "test",
             &filtered
         )

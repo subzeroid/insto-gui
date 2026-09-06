@@ -62,7 +62,7 @@ async fn c2_bridge_round_trip() {
     let python = PathBuf::from(runtime)
         .join("python/bin/python3")
         .canonicalize()
-        .unwrap();
+        .expect("INSTO_GUI_RUNTIME must contain python/bin/python3");
     let dir = tempfile::Builder::new()
         .prefix("insto-gui-c2-")
         .tempdir()
@@ -371,13 +371,10 @@ async fn c2_bridge_round_trip() {
     assert_eq!(filtered.items.len(), 2);
 
     owner.shutdown().await;
-    let names: Vec<String> = std::fs::read_dir(&root)
+    let mut names: Vec<String> = std::fs::read_dir(&root)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
-    let expected = ["profile", "desktop-state.json", ".desktop.lock"];
-    assert!(
-        names.iter().all(|name| expected.contains(&name.as_str())),
-        "{names:?}"
-    );
+    names.sort();
+    assert_eq!(names, [".desktop.lock", "desktop-state.json", "profile"]);
 }
