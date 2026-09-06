@@ -46,13 +46,13 @@ describe('application integration', () => {
     await wrapper.get('input').setValue('TOKEN_SENTINEL')
     await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(wrapper.find('input[type="password"]').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('TOKEN_SENTINEL'); expect(wrapper.text()).not.toContain('/private/secret')
+    expect(wrapper.html()).not.toContain('TOKEN_SENTINEL'); expect(wrapper.html()).not.toContain('/private/secret')
     expect(wrapper.find('[role="alert"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Нужно восстановление') // landed on the service section, recovery visible
     expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Служба')
     expect(invoke.mock.calls.slice(0, 4).map(call => call[0])).toEqual(['prepare_desktop', 'inspect_setup', 'configure_setup', 'inspect_setup'])
   })
-  it('the feed filter is owned by the app: clearing it reloads the global feed everywhere', async () => {
+  it('opening the changes section loads the global feed with no filter', async () => {
     const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(stopped)).mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
     invoke.mockResolvedValueOnce(envelope('history_page', { items: [], next_cursor: null, scan_complete: true, scanned: 0 }))
@@ -95,6 +95,29 @@ describe('application integration', () => {
     expect(wrapper.get('button[data-action="replace"]').attributes('disabled')).toBeDefined()
     expect(wrapper.get('button[data-action="uninstall"]').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('Состояние настройки устарело')
+  })
+  it('a profile needing recovery opens the service section and the global notice brings it back from any other section', async () => {
+    const recovery = { ...stopped, status: 'recovery_required' as const }
+    const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(recovery)).mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
+    wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
+    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Служба')
+    expect(wrapper.find('button[data-action="open-service"]').exists()).toBe(false)
+    await wrapper.findAll('.app-nav button')[3].trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('Служба требует внимания')
+    expect(wrapper.get('button[data-action="replace"]').attributes('disabled')).toBeDefined() // recovery guards token replacement
+    await wrapper.get('button[data-action="open-service"]').trigger('click'); await flushPromises()
+    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Служба')
+    expect(wrapper.text()).toContain('Нужно восстановление')
+  })
+  it('a service action is followed by one overview read', async () => {
+    const running: Profile = { ...stopped, status: 'running', desired_service: 'running', service_running: true }
+    const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(stopped)).mockResolvedValueOnce(envelope('overview', { ...overview, watches: [] }))
+      .mockResolvedValueOnce(wrap(running)).mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
+    wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
+    await wrapper.findAll('.app-nav button')[2].trigger('click'); await flushPromises()
+    await wrapper.get('button[data-action="start"]').trigger('click'); await flushPromises()
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['prepare_desktop', 'inspect_setup', 'read_overview', 'start_service', 'read_overview'])
+    expect(wrapper.text()).toContain('Служба запущена')
   })
   it('failed preparation only retries when requested and never starts the service', async () => {
     const invoke = vi.fn().mockRejectedValueOnce('runtime_integrity').mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(stopped)).mockResolvedValue(envelope('overview', overview))

@@ -27,7 +27,8 @@ observe(() => state.phase === 'ready' && state.profile?.configured === true, con
 const attention = computed(() => state.profile?.status === 'recovery_required' || state.profile?.status === 'service_error')
 observe(attention, needed => { if (needed) section.value = 'service' })
 function showChanges(pk: string) { feedFilter.value = pk; section.value = 'changes' }
-async function serviceAction(action: () => Promise<boolean>) { const ok = await action(); await monitoring.refresh(); return ok }
+// Reconcile (not refresh): a service action must not acknowledge an uncertain watch outcome on the user's behalf.
+async function serviceAction(action: () => Promise<boolean>) { const ok = await action(); await monitoring.reconcile(); return ok }
 </script>
 <template>
   <div class="app-shell">
@@ -55,7 +56,7 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
             <div class="refresh-row"><span>Состояние читается локально, без запросов HikerAPI.</span><button class="text-button" :disabled="state.busy" @click="ui.refresh">Обновить</button></div>
           </template>
           <template v-else>
-            <SettingsView :busy="state.busy" :stale="state.stale" :configured="state.profile.configured" :service-running="state.profile.service_running" :core-version="state.runtime?.core_version ?? null" :build-id="state.runtime?.build_id ?? null" :replace="ui.replace" :stop="() => serviceAction(ui.stop)" :open-token-page="() => client.openTokenPage()" />
+            <SettingsView :busy="state.busy" :stale="state.stale" :configured="state.profile.configured" :recovery="state.profile.status === 'recovery_required'" :service-running="state.profile.service_running" :core-version="state.runtime?.core_version ?? null" :build-id="state.runtime?.build_id ?? null" :replace="ui.replace" :stop="() => serviceAction(ui.stop)" :open-token-page="() => client.openTokenPage()" />
           </template>
         </template>
       </template>

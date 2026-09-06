@@ -80,6 +80,18 @@ describe('monitoring state', () => {
     expect(ui.state.outcomeUnknown).toBe(false)
     ui.dispose()
   })
+  it('reconcile re-reads the overview without acknowledging an uncertain outcome', async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(envelope('overview', overview)).mockRejectedValueOnce('outcome_unknown').mockResolvedValue(envelope('overview', overview))
+    const ui = make(invoke)
+    await ui.refresh()
+    expect(await ui.pause(watch)).toBe(false)
+    expect(ui.state.outcomeUnknown).toBe(true)
+    expect(await ui.reconcile()).toBe(true)
+    expect(ui.state.outcomeUnknown).toBe(true) // only the user's refresh acknowledges it
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['read_overview', 'pause_watch', 'read_overview', 'read_overview'])
+    await ui.refresh()
+    expect(ui.state.outcomeUnknown).toBe(false)
+  })
   it('follows the overview cursor so registrations beyond the first page stay visible', async () => {
     const many = Array.from({ length: 50 }, (_, i) => ({ ...watch, user: `user${String(i).padStart(2, '0')}`, status: 'paused' as const }))
     const invoke = vi.fn()

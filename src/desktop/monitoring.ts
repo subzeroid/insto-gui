@@ -86,7 +86,7 @@ export function createMonitoringState(client: DesktopClient, options: Monitoring
     } finally { state.busy = false }
   }
   return {
-    state, selected, refresh, start, stop,
+    state, selected, refresh, reconcile, start, stop,
     select(user: string | null) { state.selectedUser = user },
     add: (user: string, interval: number) => mutate(() => client.addWatch(user, interval)),
     update: (watch: Watch, interval: number) => mutate(() => client.updateWatch(watch, interval)),
