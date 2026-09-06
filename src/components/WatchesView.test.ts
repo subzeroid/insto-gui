@@ -1,0 +1,71 @@
+import { flushPromises, mount } from '@vue/test-utils'
+import { describe, expect, it, vi } from 'vitest'
+import WatchesView from './WatchesView.vue'
+import { DesktopClient } from '../desktop/client'
+import { createHistoryState } from '../desktop/history'
+import { createMonitoringState } from '../desktop/monitoring'
+import { envelope, overview, page, watch } from '../desktop/fixtures'
+
+describe('watches view', () => {
+  it('selects a row without network, confirms removal in page and shows the empty call to action', async () => {
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(envelope('overview', overview))
+      .mockResolvedValueOnce(envelope('history_page', page([])))
+      .mockResolvedValueOnce(envelope('removed', { removed_user: 'alice' }))
+      .mockResolvedValueOnce(envelope('overview', { ...overview, watches: [] }))
+    const client = new DesktopClient(invoke)
+    const monitoring = createMonitoringState(client, { target: null })
+    const history = createHistoryState(client)
+    const wrapper = mount(WatchesView, { props: { monitoring, history } })
+    await monitoring.refresh(); await flushPromises()
+    await wrapper.get('[role="option"]').trigger('click'); await flushPromises()
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['read_overview', 'search_targets'])
+    await wrapper.get('button[data-action="remove"]').trigger('click')
+    expect(invoke).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('История снимков сохранится')
+    await wrapper.get('button[data-action="confirm-remove"]').trigger('click'); await flushPromises()
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['read_overview', 'search_targets', 'remove_watch', 'read_overview'])
+    expect(wrapper.text()).toContain('Добавить аккаунт')
+    expect(window.localStorage.length).toBe(0)
+  })
+  it('reloads the selected history when a new check lands or the same row is clicked again', async () => {
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(envelope('overview', overview))
+      .mockResolvedValueOnce(envelope('history_page', page([])))
+      .mockResolvedValueOnce(envelope('overview', { ...overview, watches: [{ ...watch, last_ok: 1_700_000_000, waiting_first_check: false }] }))
+      .mockResolvedValueOnce(envelope('history_page', page([])))
+      .mockResolvedValueOnce(envelope('history_page', page([])))
+    const client = new DesktopClient(invoke)
+    const monitoring = createMonitoringState(client, { target: null })
+    const wrapper = mount(WatchesView, { props: { monitoring, history: createHistoryState(client) } })
+    await monitoring.refresh(); await flushPromises()
+    await wrapper.get('[role="option"]').trigger('click'); await flushPromises()
+    await monitoring.refresh(); await flushPromises()
+    await wrapper.get('[role="option"]').trigger('click'); await flushPromises()
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['read_overview', 'search_targets', 'read_overview', 'search_targets', 'search_targets'])
+  })
+  it('keeps the loaded history across a poll that brought no new check', async () => {
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(envelope('overview', overview))
+      .mockResolvedValueOnce(envelope('history_page', page([])))
+      .mockResolvedValueOnce(envelope('overview', overview))
+    const client = new DesktopClient(invoke)
+    const monitoring = createMonitoringState(client, { target: null })
+    const wrapper = mount(WatchesView, { props: { monitoring, history: createHistoryState(client) } })
+    await monitoring.refresh(); await flushPromises()
+    await wrapper.get('[role="option"]').trigger('click'); await flushPromises()
+    await monitoring.refresh(); await flushPromises()
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['read_overview', 'search_targets', 'read_overview'])
+    expect(wrapper.text()).toContain('Истории ещё нет')
+  })
+  it('shows the stale banner and disables actions while stale', async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(envelope('overview', overview)).mockRejectedValueOnce('transport')
+    const client = new DesktopClient(invoke)
+    const monitoring = createMonitoringState(client, { target: null, now: () => 0 })
+    const wrapper = mount(WatchesView, { props: { monitoring, history: createHistoryState(client) } })
+    await monitoring.refresh(); await monitoring.refresh(); await flushPromises()
+    expect(wrapper.text()).toContain('Данные устарели')
+    expect(wrapper.findAll('button[data-action]').every(button => button.attributes('disabled') !== undefined)).toBe(true)
+    expect(wrapper.text()).not.toContain(watch.revision)
+  })
+})
