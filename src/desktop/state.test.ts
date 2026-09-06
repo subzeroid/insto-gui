@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DesktopClient, type Profile } from './client'
+import { CORE_VERSION, DesktopClient, type Profile } from './client'
 import { createDesktopState } from './state'
 
 const empty: Profile = { configured: false, status: 'unconfigured', desired_service: null, service_running: false, quota_remaining: null, quota_checked_at: null, revision: null }
 const stopped: Profile = { configured: true, status: 'stopped', desired_service: 'stopped', service_running: false, quota_remaining: 10, quota_checked_at: 100, revision: 'a'.repeat(32) }
 const wrap = (data: Profile) => ({ kind: 'profile', data })
-const prepared = { core_version: '0.7.20', build_id: 'a'.repeat(64) }
+const prepared = { core_version: CORE_VERSION, build_id: 'a'.repeat(64) }
 function pending<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
 
 describe('desktop state', () => {

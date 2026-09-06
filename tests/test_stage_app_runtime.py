@@ -40,7 +40,7 @@ class StageTests(unittest.TestCase):
             "manifest_version": 1,
             "inputs": {
                 "core_commit": self.pin["core_commit"],
-                "core_wheel_name": "insto-0.7.20-py3-none-any.whl",
+                "core_wheel_name": f"insto-{self.pin['core_version']}-py3-none-any.whl",
                 "core_wheel_sha256": "a" * 64,
                 "requirements_sha256": "b" * 64,
                 "build_constraints_sha256": "c" * 64,

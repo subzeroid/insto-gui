@@ -13,7 +13,7 @@ token setup/replacement and explicit service Start/Stop/Repair. Opening the
 app only prepares and inspects; closing must never stop the background service.
 Cached quota and native process state are not monitoring-health guarantees.
 
-Use the clean C1 revision in `packaging/core-pin.json` as the read-only build
+Use the clean C2 revision (insto 0.7.21) in `packaging/core-pin.json` as the read-only build
 input. After preparing a new runtime, stage it with:
 
 ```sh

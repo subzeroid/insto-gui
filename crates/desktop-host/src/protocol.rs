@@ -3,15 +3,27 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub const MAX_REQUEST: usize = 64 * 1024;
 pub const MAX_RESPONSE: usize = 2 * 1024 * 1024;
-pub const CAPABILITIES: [&str; 8] = [
+pub const CORE_VERSION: &str = "0.7.21";
+pub const CAPABILITIES: [&str; 19] = [
     "hello",
     "setup.inspect",
-    "settings.inspect",
     "setup.configure",
+    "settings.inspect",
     "credentials.replace",
     "service.start",
     "service.stop",
     "service.repair",
+    "overview",
+    "watches.list",
+    "watches.add",
+    "watches.update",
+    "watches.pause",
+    "watches.resume",
+    "watches.remove",
+    "snapshots.targets",
+    "snapshots.list",
+    "snapshots.compare",
+    "changes.list",
 ];
 pub enum Operation {
     Hello,
@@ -218,9 +230,9 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
     if let Some(result) = obj.get("result") {
         if matches!(operation, Operation::Hello) {
             let hello: Hello = serde_json::from_value(result.clone()).map_err(|_| bad())?;
-            if hello.core_version != "0.7.20"
+            if hello.core_version != CORE_VERSION
                 || hello.schema_version_supported != 2
-                || hello.capabilities.len() != 8
+                || hello.capabilities.len() != CAPABILITIES.len()
                 || !CAPABILITIES.iter().all(|c| {
                     hello
                         .capabilities
@@ -372,7 +384,7 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
 #[cfg(test)]
 mod tests {
     use super::*;
-    const HELLO: &str = r#"{"core_version":"0.7.20","schema_version_supported":2,"capabilities":["hello","setup.inspect","settings.inspect","setup.configure","credentials.replace","service.start","service.stop","service.repair"]}"#;
+    const HELLO: &str = r#"{"core_version":"0.7.21","schema_version_supported":2,"capabilities":["hello","setup.inspect","setup.configure","settings.inspect","credentials.replace","service.start","service.stop","service.repair","overview","watches.list","watches.add","watches.update","watches.pause","watches.resume","watches.remove","snapshots.targets","snapshots.list","snapshots.compare","changes.list"]}"#;
     fn envelope(result: &str) -> Vec<u8> {
         format!("{{\"protocol_version\":1,\"request_id\":\"test\",\"result\":{result}}}\n")
             .into_bytes()
@@ -417,7 +429,7 @@ mod tests {
                 .replace("\"result\":", "\"request_id\":\"test\",\"result\":"),
             String::from_utf8(valid.clone())
                 .unwrap()
-                .replace("0.7.20", "0.7.19"),
+                .replace(CORE_VERSION, "0.7.19"),
             String::from_utf8(valid.clone()).unwrap().replace(
                 "\"schema_version_supported\":2",
                 "\"schema_version_supported\":2,\"schema_version_supported\":2",

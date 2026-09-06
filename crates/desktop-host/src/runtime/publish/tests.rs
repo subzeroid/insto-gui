@@ -25,6 +25,11 @@ impl Fixture {
         ] {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        let pin: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../packaging/core-pin.json"
+        )))
+        .unwrap();
         let python: serde_json::Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../packaging/python-distributions.json"
@@ -32,7 +37,7 @@ impl Fixture {
         .unwrap();
         let arch = architecture();
         let mut value = json!({"manifest_version":1,"inputs":{
-            "core_commit":"1abf3fbdea04d3da4e56ec9bec1090d7737a9727", "core_wheel_name":"insto-0.7.20-py3-none-any.whl",
+            "core_commit":pin["core_commit"], "core_wheel_name":format!("insto-{}-py3-none-any.whl", pin["core_version"].as_str().unwrap()),
             "core_wheel_sha256":"a".repeat(64),"requirements_sha256":"b".repeat(64),"build_constraints_sha256":"c".repeat(64),
             "uv_version":"uv 0.8.13","architecture":arch,"python_version":python["python_version"],"upstream_url":python["targets"][arch]["url"],"upstream_sha256":python["targets"][arch]["sha256"]},
             "files":[{"path":".","type":"directory","mode":493},{"path":"bin","type":"directory","mode":493},
@@ -68,7 +73,15 @@ impl Fixture {
     }
     fn script(&mut self, extra: &str, version: &str) {
         use sha2::{Digest, Sha256};
-        let script=format!("#!/usr/bin/python3\nimport sys,json,os\nr=json.load(sys.stdin)\n{extra}\nprint(json.dumps(dict(protocol_version=1,request_id=r['request_id'],result=dict(core_version='{version}',schema_version_supported=2,capabilities=['hello','setup.inspect','settings.inspect','setup.configure','credentials.replace','service.start','service.stop','service.repair']))))\n");
+        let caps = format!(
+            "[{}]",
+            crate::protocol::CAPABILITIES
+                .iter()
+                .map(|name| format!("'{name}'"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let script=format!("#!/usr/bin/python3\nimport sys,json,os\nr=json.load(sys.stdin)\n{extra}\nprint(json.dumps(dict(protocol_version=1,request_id=r['request_id'],result=dict(core_version='{version}',schema_version_supported=2,capabilities={caps}))))\n");
         std::fs::write(self.bundle.join("python/bin/python3"), script.as_bytes()).unwrap();
         let path = self.bundle.join("manifest.json");
         let mut value: serde_json::Value =
@@ -148,7 +161,7 @@ async fn false_hello_and_mutation_during_hello_never_publish() {
         ("", "0.7.19", RuntimeError::Handshake),
         (
             "open(sys.argv[0],'a').write('# changed')",
-            "0.7.20",
+            crate::protocol::CORE_VERSION,
             RuntimeError::Integrity,
         ),
     ] {
@@ -173,7 +186,7 @@ async fn hello_uses_remaining_transaction_deadline_and_drains_owned_child() {
     let mut fixture = Fixture::new();
     fixture.script(
         "open('child-pid','w').write(str(os.getpid()))\nimport time\ntime.sleep(30)",
-        "0.7.20",
+        crate::protocol::CORE_VERSION,
     );
     let start = Instant::now();
     let result = publish_until(
@@ -196,7 +209,7 @@ async fn hello_uses_remaining_transaction_deadline_and_drains_owned_child() {
 #[tokio::test]
 async fn concurrent_publishers_verify_and_reuse_one_build() {
     let mut fixture = Fixture::new();
-    fixture.script("", "0.7.20");
+    fixture.script("", crate::protocol::CORE_VERSION);
     let (first, second) = tokio::join!(
         publish(&fixture.bundle, &fixture.root, &fixture.home),
         publish(&fixture.bundle, &fixture.root, &fixture.home)

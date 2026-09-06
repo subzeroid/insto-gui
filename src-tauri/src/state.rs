@@ -85,7 +85,7 @@ impl DesktopState {
                 Ok(Arc::new(Ready {
                     owner: Owner::new(launcher),
                     prepared: Prepared {
-                        core_version: "0.7.20",
+                        core_version: insto_desktop_host::protocol::CORE_VERSION,
                         build_id: published.build_id().to_owned(),
                     },
                 }))

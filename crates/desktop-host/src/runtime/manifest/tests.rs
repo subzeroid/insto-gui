@@ -16,7 +16,7 @@ fn fixture() -> Value {
     json!({
         "manifest_version": 1,
         "inputs": {
-            "core_commit": pin["core_commit"], "core_wheel_name": "insto-0.7.20-py3-none-any.whl",
+            "core_commit": pin["core_commit"], "core_wheel_name": format!("insto-{}-py3-none-any.whl", pin["core_version"].as_str().unwrap()),
             "core_wheel_sha256": "a".repeat(64), "requirements_sha256": "b".repeat(64),
             "build_constraints_sha256": "c".repeat(64), "uv_version": "uv 0.8.13",
             "architecture": "arm64", "python_version": python["python_version"],
@@ -46,7 +46,7 @@ fn valid_pinned_v1_manifest() {
     // separators=(",", ":"), ensure_ascii=True), then hashlib.sha256.
     assert_eq!(
         manifest.build_id,
-        "fb99381d4ecbdcbde6eac1d87f3a5299a1db56abe90c3aa33bda6166a7844b91"
+        "2698eabdc8f313b9953865adedce03086289a1dedb2fdbee86318571ff20d323"
     );
 }
 

@@ -1,4 +1,5 @@
 import { DesktopFailure, safeFailure } from './messages'
+export const CORE_VERSION = '0.7.21'
 export type Invoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>
 export type Status = 'unconfigured' | 'recovery_required' | 'quota_exhausted' | 'running' | 'stopped' | 'service_error'
 export interface Profile {
@@ -35,7 +36,7 @@ export class DesktopClient {
   }
   async prepare(): Promise<RuntimeInfo> {
     const result = await this.call('prepare_desktop')
-    if (!record(result) || Object.keys(result).length !== 2 || result.core_version !== '0.7.20' || typeof result.build_id !== 'string' || !/^[0-9a-f]{64}$/.test(result.build_id)) throw new DesktopFailure('protocol')
+    if (!record(result) || Object.keys(result).length !== 2 || result.core_version !== CORE_VERSION || typeof result.build_id !== 'string' || !/^[0-9a-f]{64}$/.test(result.build_id)) throw new DesktopFailure('protocol')
     return result as unknown as RuntimeInfo
   }
   inspect() { return this.readProfile('inspect_setup') }
