@@ -11,4 +11,4 @@ Python, uv or the CLI separately. There is no public installer or release yet.
 Developer packaging commands live in
 [packaging/README.md](packaging/README.md) and are not user installation instructions.
 
-Current evidence and remaining gates: [P1 app proof](packaging/app-proof-results.md).
+Current evidence and remaining gates: [P1/G1 app proof](packaging/app-proof-results.md).

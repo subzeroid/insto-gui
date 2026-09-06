@@ -61,6 +61,9 @@ cp -cRp src-tauri/target/release/bundle/macos/insto.app "$PWD/.build/native-app-
   "$PWD/.build/native-app-example-01/insto-app-proof-example-01" --mode window
 ```
 
+Drop `--offline` if the local cargo registry cache is incomplete (it was on the
+G1 host, so the G1 builds ran online).
+
 The supervisor needs developer Python with working `os.waitid` and WNOWAIT
 (Homebrew Python 3.14.7 on this host). This is not an end-user dependency.
 Before running, verify the copied runtime inventory and ad-hoc bundle signature.

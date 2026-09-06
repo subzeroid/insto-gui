@@ -1,6 +1,6 @@
-# P1 local application evidence
+# P1/G1 local application evidence
 
-Date: 2026-09-05. Scope: local macOS arm64 developer shell, not a release.
+Date: 2026-09-05 (G1 sections: 2026-09-06). Scope: local macOS arm64 developer shell, not a release.
 No GitHub publication, Developer ID credentials, notarization, real HikerAPI
 requests or live profiles were used.
 
@@ -274,7 +274,9 @@ snapshots, a comparison with one change plus one unknown field, a change feed
 page with baseline, comparison, incomplete and diagnostic entries followed by
 an empty complete page, a new watch on `add_watch`, one `watch_conflict` on
 `pause_watch`, and a variant where `read_overview` rejected with `transport`
-after the first success. Verified at a 980×820 app viewport and 375×812:
+after the first success. Verified at a 980×820 app viewport and at 375×812
+(both are the viewport of an iframe sized inside the automation window, whose
+own top-level viewport was pinned at 980×757):
 
 - Setup → configured flow landed on «Наблюдения» with the empty call to
   action and the four sections; the token input was unmounted and its value
@@ -298,19 +300,29 @@ after the first success. Verified at a 980×820 app viewport and 375×812:
   appeared; the service section showed the observed state, «Ядро и база» and
   the last successful read, and start/stop each reconciled with one read;
   settings showed «Заменить токен» (password field, «Сохранить токен») and the
-  uninstall confirmation with the Trash note.
+  uninstall confirmation with the Trash note (DOM-verified).
 - No console errors, no requests outside `127.0.0.1:1420`, empty
   `localStorage`/`sessionStorage`, and no horizontal overflow in any section
   at 375 px (scroll width equal to client width).
 
 Retained screenshots in ignored `.build/`: `browser-g1-watches.png`,
-`browser-g1-changes.png`, `browser-g1-service.png`, `browser-g1-settings.png`,
-`browser-g1-stale.png` (980×820) and `browser-g1-mobile.png` (375×812).
-Limits: the automation window was occluded (display asleep), so interactions
-were driven by DOM-dispatched events through the same Vue handlers rather than
-trusted pointer/keyboard input, the picker change was simulated by a `change`
-event, and the harness reported `visibilityState` as visible so the polling
-path ran. These are mock UI evidence, not provider onboarding or WebKit
+`browser-g1-changes.png`, `browser-g1-service.png`, `browser-g1-settings.png`
+and `browser-g1-stale.png` capture the 980×820 iframe viewport, and
+`browser-g1-mobile.png` the 375×812 one. The "980×820" and "375×812" figures
+are the app viewport of an iframe sized inside the automation window (whose
+top-level viewport was pinned at 980×757); the PNGs are scaled captures of
+that iframe at their actual pixel sizes, 1203×1008 for the five desktop shots
+and 698×1510 for the mobile shot, not 1:1 window pixels. The
+`browser-g1-settings.png` capture shows only the top of the uninstall
+confirmation box; its text, including the Trash note, was verified in the DOM.
+Limits: the console session was locked during the browser QA
+(`CGSSessionScreenIsLocked` yes) and the automation window was occluded, so
+interactions were driven by DOM-dispatched events through the same Vue
+handlers rather than trusted pointer/keyboard input, the picker change was
+simulated by a `change` event, and the harness reported `visibilityState` as
+visible so the polling path ran. The QA mock returned
+`read_overview.service_state` as `stopped` (the dispatch suggested `unknown`);
+both decode. These are mock UI evidence, not provider onboarding or WebKit
 rendering evidence.
 
 ### G1 WebKit window proof
@@ -336,10 +348,11 @@ pinned runtime into the fresh root, which afterwards contains only private
 `inspect_started` or `ui_ready`. The console session was locked for the whole
 run (`CGSSessionScreenIsLocked` yes, user idle about 3.8 h), so the WebKit view
 stayed occluded; one PID/executable-validated AppKit activation of the exact
-app and one display wake (`caffeinate -u`) did not resume it. This is the
-documented backgrounded-WebKit stall (P1 saw the same gap between
-`prepare_ready` and `inspect_started`), not a G1 regression, and it was not
-retried into the same root. The retained
+app and one display wake (`caffeinate -u`) did not resume it. This is
+consistent with the documented P1 stall (the same gap between `prepare_ready`
+and `inspect_started`) and is attributed to the locked session; that
+attribution is unverified until the `-02` rerun passes. It was not retried
+into the same root. The retained
 `.build/native-app-g1-window-01/insto-app-proof-g1-01-result.json` holds the
 bounded evidence (empty app stderr). The window proof must be rerun in a new
 artifact parent (for example `.build/native-app-g1-window-02`) from an
@@ -365,7 +378,12 @@ with one failure, `owner::tests::local_mutation_uses_its_own_deadline_and_the_mu
 fixture wrote its `started` marker while the host carried a load average of
 about 16 on 14 cores from unrelated workloads); rerun alone it failed once
 more and then passed on the second spaced attempt under the same load, which
-is the known load-sensitive fixture timing, not a policy change. The real
+is the known load-sensitive fixture timing, not a policy change. The flaking
+test was `owner::tests::local_mutation_uses_its_own_deadline_and_the_mutation_slot`,
+not the `shutdown_preserves_original_mutation_deadline_and_never_replays` test
+the plan names; it passed alone on the second spaced rerun, and the full host
+suite was not observed green in a single run under the host load of about 16.
+The real
 bridge test `c2_bridge` against `.build/runtime-c2-01` passed (1 test, 4.16 s),
 the Tauri crate's 9 tests passed, 103 Python unittest cases passed,
 `git diff --check` was clean and the trailer/home-path grep matched only the
