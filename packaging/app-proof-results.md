@@ -246,3 +246,17 @@ Prepared `.build/runtime-c2-01` from insto `7a1872568bd90a642a3df838fd9854286f25
 (0.7.21) with `scripts.prepare_runtime`; probe passed; hello advertises the
 nineteen pinned capabilities. Staged into `.build/app-resources/runtime`
 (build id `a910ea75d07236f49db324d24766b7ddad6980d89e09334fff6c62ad79c9978c`). Developer evidence only, not a release artifact.
+
+### G1 real-bridge proof
+
+`crates/desktop-host/tests/c2_bridge.rs` executed against
+`.build/runtime-c2-01` on 2026-09-06 with a fresh seeded fake profile: hello (19
+capabilities), overview, add/limit/exists/conflict/pause/resume/update/remove,
+paginated list, targets with identity diagnostic, snapshot list, comparison,
+`snapshot_unavailable`, `snapshot_identity_mismatch`, global and filtered feed.
+Result: 1 passed in 3.94 s. No provider call, no LaunchAgent, token absent from
+every decoded response. The fixture is seeded by the developer-only
+`scripts/seed_desktop_fixture.py` through the runtime interpreter into a private
+temporary root that only contains `profile`, `desktop-state.json` and
+`.desktop.lock` after shutdown. This is offline fake evidence, not user
+onboarding.
