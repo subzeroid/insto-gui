@@ -1,6 +1,17 @@
 import { DesktopFailure, safeFailure } from './messages'
-import { CHANGE_KINDS, HISTORY_CURSOR, SNAPSHOT_KINDS, TARGET_KINDS, TARGET_PK, REVISION, USERNAME, WATCH_CURSOR, decodeComparison, decodeHistoryPage, decodeOverview, decodeRemoved, decodeWatch, decodeWatchPage, record, validSnapshotId, type Comparison, type HistoryPage, type Overview, type Watch, type WatchPage } from './dto'
+import { CHANGE_KINDS, HISTORY_CURSOR, SNAPSHOT_KINDS, TARGET_KINDS, TARGET_PK, REVISION, USERNAME, WATCH_CURSOR, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeOverview, decodeRemoved, decodeServiceFacts, decodeWatch, decodeWatchPage, record, validSnapshotId, type Binding, type Comparison, type HistoryPage, type HomeReport, type Overview, type ServiceFacts, type Watch, type WatchPage } from './dto'
 export const CORE_VERSION = '0.7.22'
+export type { Binding, HomeReport, ServiceFacts } from './dto'
+export { RESPONSE_PATH_LIMIT } from './dto'
+export const HOME_PATH_LIMIT = 1024
+// Mirrors the host's `home_path_ok`: absolute or `~`/`~/…`, at most 1024 UTF-8
+// bytes (bytes, not characters), no NUL and no `..` segment. Responses obey a
+// different, larger rule — see `RESPONSE_PATH_LIMIT` in `dto.ts`.
+export function validHomePath(raw: string): boolean {
+  if (raw !== '~' && !raw.startsWith('/') && !raw.startsWith('~/')) return false
+  if (raw.includes('\0') || new TextEncoder().encode(raw).length > HOME_PATH_LIMIT) return false
+  return raw.split('/').every(segment => segment !== '..')
+}
 export type Invoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>
 export type Status = 'unconfigured' | 'recovery_required' | 'quota_exhausted' | 'running' | 'stopped' | 'service_error'
 export interface Profile {
@@ -19,6 +30,15 @@ const profileKeys = ['configured', 'status', 'desired_service', 'service_running
 function nullableNumber(value: unknown) { return value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) }
 function profile(value: unknown): Profile {
   if (!record(value) || Object.keys(value).length !== 7 || !profileKeys.every(key => Object.hasOwn(value, key)) || typeof value.configured !== 'boolean' || typeof value.service_running !== 'boolean' || typeof value.status !== 'string' || !statuses.has(value.status) || ![null, 'running', 'stopped'].includes(value.desired_service as null | string) || !nullableNumber(value.quota_remaining) || !nullableNumber(value.quota_checked_at) || !(value.revision === null || typeof value.revision === 'string' && /^[0-9a-f]{32}$/.test(value.revision))) throw new DesktopFailure('protocol')
+  const configured = value.configured as boolean
+  // `_dto`: an unconfigured profile carries no state at all, and a configured one
+  // always names its desired service and revision. The two quota fields are written
+  // together (`new_state`), so an adopted home reports both null until its next
+  // credential check — both-or-neither, never "quota present means configured".
+  if ((value.desired_service !== null) !== configured || (value.revision !== null) !== configured) throw new DesktopFailure('protocol')
+  if ((value.quota_remaining === null) !== (value.quota_checked_at === null)) throw new DesktopFailure('protocol')
+  if (!configured && value.quota_remaining !== null) throw new DesktopFailure('protocol')
+  if (value.status === 'quota_exhausted' && value.quota_remaining !== 0) throw new DesktopFailure('protocol')
   return value as unknown as Profile
 }
 export const MIN_INTERVAL = 300
@@ -33,7 +53,7 @@ export interface Page { limit?: number; cursor?: string }
 // The host admits two concurrent reads; a third would fail with `busy`. Queue
 // reads in the client so polling, history and service reads never collide.
 export const READ_SLOTS = 2
-const READ_COMMANDS = new Set(['inspect_setup', 'read_overview', 'list_watches', 'search_targets', 'list_snapshots', 'compare_snapshots', 'list_changes'])
+const READ_COMMANDS = new Set(['inspect_setup', 'read_overview', 'list_watches', 'search_targets', 'list_snapshots', 'compare_snapshots', 'list_changes', 'inspect_service', 'inspect_home'])
 class ReadGate {
   private active = 0
   private readonly waiting: (() => void)[] = []
@@ -122,4 +142,19 @@ export class DesktopClient {
     const filter = query.target_pk === undefined ? null : pk(query.target_pk)
     return this.read('list_changes', 'history_page', data => decodeHistoryPage(data, CHANGE_KINDS, filter, query.limit ?? 50), { query: { ...(filter === null ? {} : { target_pk: filter }), ...pageArgs(query, HISTORY_CURSOR, 'invalid_history_input') } })
   }
+  inspectService(): Promise<ServiceFacts> { return this.read('inspect_service', 'service_inspection', decodeServiceFacts) }
+  migrateService(): Promise<Profile> { return this.readProfile('migrate_service') }
+  uninstallService(): Promise<Profile> { return this.readProfile('uninstall_service') }
+  async inspectHome(path: string): Promise<HomeReport> {
+    if (!validHomePath(path)) throw new DesktopFailure('invalid_home_input')
+    return this.read('inspect_home', 'home_inspection', decodeHomeReport, { query: { path } })
+  }
+  async selectHome(path: string | null): Promise<Profile> {
+    if (path !== null && !validHomePath(path)) throw new DesktopFailure('invalid_home_input')
+    return this.readProfile('select_home', { home: { path } })
+  }
+  // A host-local read of the desktop root's binding file: no bridge call, no
+  // `{kind, data}` envelope and no read slot. It answers after a failed core
+  // inspection, which is exactly when a broken binding has to be released.
+  async inspectBinding(): Promise<Binding> { return decodeBinding(await this.call('inspect_binding')) }
 }

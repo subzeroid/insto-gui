@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { CORE_VERSION, DesktopClient, type Profile } from './client'
+import { CORE_VERSION, DesktopClient, HOME_PATH_LIMIT, RESPONSE_PATH_LIMIT, validHomePath, type Profile } from './client'
+import { adoptedBinding, adoptedProfile, facts, homeAdoptable, running, serviceOwnedOther } from './fixtures'
 
 export const unconfigured: Profile = { configured: false, status: 'unconfigured', desired_service: null, service_running: false, quota_remaining: null, quota_checked_at: null, revision: null }
 
@@ -95,5 +96,70 @@ describe('desktop boundary', () => {
     pending[2]({ kind: 'watch_page', data: { items: [], next_cursor: null } })
     pending[3]({ kind: 'overview', data: overviewData })
     await Promise.all([third, fourth])
+  })
+  it('pairs the two quota fields on a profile instead of tying them to configured', async () => {
+    // An adopted home is configured with no quota yet; it must decode.
+    expect(await new DesktopClient(vi.fn().mockResolvedValue({ kind: 'profile', data: adoptedProfile })).inspect()).toEqual(adoptedProfile)
+    for (const data of [
+      { ...running, quota_remaining: null }, { ...running, quota_checked_at: null },
+      { ...running, configured: false }, { ...running, revision: null },
+      { ...unconfigured, quota_remaining: 5, quota_checked_at: 100 },
+      { ...running, status: 'quota_exhausted' },
+    ]) {
+      await expect(new DesktopClient(vi.fn().mockResolvedValue({ kind: 'profile', data })).inspect())
+        .rejects.toMatchObject({ code: 'protocol' })
+    }
+  })
+  it('mirrors the two path bounds and sends exact C3 arguments', async () => {
+    expect(HOME_PATH_LIMIT).toBe(1024)
+    expect(RESPONSE_PATH_LIMIT).toBe(4096)
+    for (const good of ['~', '~/.insto', '/Users/x/.insto', '/a b', '/Users/x/…/insto', `/${'a'.repeat(HOME_PATH_LIMIT - 1)}`]) expect(validHomePath(good)).toBe(true)
+    // Bytes, not characters: 512 three-byte characters exceed the request bound.
+    for (const bad of ['', '.insto', './insto', '~user/.insto', '~~/.insto', '/Users/x/../root', '..', '/a\0b', `/${'a'.repeat(HOME_PATH_LIMIT)}`, `/${'…'.repeat(512)}`]) expect(validHomePath(bad)).toBe(false)
+    const invoke = vi.fn()
+    const client = new DesktopClient(invoke)
+    await expect(client.inspectHome('relative/insto')).rejects.toMatchObject({ code: 'invalid_home_input' })
+    await expect(client.selectHome('/Users/x/../root')).rejects.toMatchObject({ code: 'invalid_home_input' })
+    expect(invoke).not.toHaveBeenCalled()
+    invoke.mockResolvedValueOnce({ kind: 'service_inspection', data: serviceOwnedOther })
+      .mockResolvedValueOnce({ kind: 'profile', data: running })
+      .mockResolvedValueOnce({ kind: 'profile', data: running })
+      .mockResolvedValueOnce({ kind: 'home_inspection', data: homeAdoptable })
+      .mockResolvedValueOnce({ kind: 'profile', data: running })
+      .mockResolvedValueOnce({ kind: 'profile', data: running })
+      .mockResolvedValueOnce(adoptedBinding)
+    expect(await client.inspectService()).toEqual(facts)
+    expect(await client.migrateService()).toEqual(running)
+    expect(await client.uninstallService()).toEqual(running)
+    expect(await client.inspectHome('~/.insto')).toEqual(homeAdoptable)
+    expect(await client.selectHome('/Users/x/.insto')).toEqual(running)
+    expect(await client.selectHome(null)).toEqual(running)
+    // The binding read has no `{kind, data}` envelope: it never reaches the bridge.
+    expect(await client.inspectBinding()).toEqual({ state: 'adopted', home: '/Users/x/.insto' })
+    expect(invoke.mock.calls).toEqual([
+      ['inspect_service'], ['migrate_service'], ['uninstall_service'],
+      ['inspect_home', { query: { path: '~/.insto' } }],
+      ['select_home', { home: { path: '/Users/x/.insto' } }],
+      ['select_home', { home: { path: null } }],
+      ['inspect_binding'],
+    ])
+  })
+  it('rejects a mistyped C3 envelope and never shows a raw core message', async () => {
+    for (const response of [
+      { kind: 'profile', data: serviceOwnedOther }, { kind: 'service_inspection', data: homeAdoptable },
+      { kind: 'service_inspection', data: { ...serviceOwnedOther, python: 'RAW_SENTINEL' } },
+    ]) {
+      await expect(new DesktopClient(vi.fn().mockResolvedValue(response)).inspectService())
+        .rejects.toMatchObject({ code: 'protocol' })
+    }
+    // The binding read takes the bare object, so an envelope is a protocol error too.
+    await expect(new DesktopClient(vi.fn().mockResolvedValue({ kind: 'binding', data: adoptedBinding })).inspectBinding())
+      .rejects.toMatchObject({ code: 'protocol' })
+    for (const code of ['service_ownership_unknown', 'service_config_mismatch', 'home_invalid', 'home_backend_unsupported']) {
+      const invoke = vi.fn().mockResolvedValue({ kind: 'error', data: { code, message: 'RAW_SENTINEL', retryable: false } })
+      const failure = await new DesktopClient(invoke).migrateService().catch(error => error)
+      expect(failure.code).toBe(code)
+      expect(String(failure)).not.toContain('RAW_SENTINEL')
+    }
   })
 })
