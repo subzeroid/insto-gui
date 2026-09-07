@@ -548,9 +548,8 @@ against a 400 ms local-mutation budget, and under load the operation's own
 deadline expires first, so the call returns `OutcomeUnknown` before the marker
 appears. Confirmed the same way as in G1 — run alone, the eight `owner::` tests
 failed once and passed on the immediately following isolated rerun (8 passed).
-The machine carried a load average near 8.5 from unrelated work at the time
-(Godot, a Genymotion emulator, OrbStack and another project's pytest run), and no
-process belonging to this proof was left running. The full host suite was not
+The machine carried a load average near 8.5 from unrelated concurrent work at
+the time, and no process belonging to this proof was left running. The full host suite was not
 observed green in a single run under that load. Making that fixture wait
 robustly is G1 code and a separate change; it is listed as a follow-up rather
 than fixed here.

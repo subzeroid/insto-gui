@@ -11,3 +11,4 @@ src-tauri/gen/
 .pytest_cache/
 .superpowers/
 .context/
+docs/superpowers/
