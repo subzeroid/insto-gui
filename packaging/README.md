@@ -35,6 +35,17 @@ historical evidence. Rust is the production runtime-copy path; Python staging
 is a developer packaging helper only. Bundled app commands and measured results
 are recorded in [app-proof-results.md](app-proof-results.md).
 
+P1 source locations must have safe, non-group-writable ancestors. Standard
+`/Applications` (`root:admin 0775` on this Mac) is currently rejected. Run local
+proofs only from a private user location; normal `/Applications` installation
+requires a reviewed source-trust policy before R1. Destination ownership is
+always current UID, never weakened to accommodate source installation paths.
+
+The frontend is a bounded numeric client: unusual Python quota/timestamp
+integers outside Rust `u64`, or outside JavaScript safe integers, are rejected
+rather than silently rounded. No browser storage or general filesystem,
+shell, provider-network or arbitrary-URL IPC is exposed.
+
 ## G2 runtime
 
 G2 adds the five C3 operations on the 0.7.22 bridge: `service.inspect`,
@@ -49,17 +60,6 @@ retained 0.7.21 runtime `.build/runtime-c2-01` in the app-shell worktree is the
 deleted. Gated bridge tests now need `INSTO_GUI_RUNTIME=$PWD/.build/runtime-c3-01`
 — the host rejects a 0.7.21 handshake. Developer evidence only, not a release
 artifact.
-
-P1 source locations must have safe, non-group-writable ancestors. Standard
-`/Applications` (`root:admin 0775` on this Mac) is currently rejected. Run local
-proofs only from a private user location; normal `/Applications` installation
-requires a reviewed source-trust policy before R1. Destination ownership is
-always current UID, never weakened to accommodate source installation paths.
-
-The frontend is a bounded numeric client: unusual Python quota/timestamp
-integers outside Rust `u64`, or outside JavaScript safe integers, are rejected
-rather than silently rounded. No browser storage or general filesystem,
-shell, provider-network or arbitrary-URL IPC is exposed.
 
 ## P1 real-window and native proof
 
