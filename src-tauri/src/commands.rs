@@ -459,12 +459,25 @@ pub async fn inspect_service(
     state.execute(Operation::ServiceInspect).await
 }
 #[tauri::command]
-pub async fn migrate_service(
+pub async fn migrate_service<R: tauri::Runtime>(
+    _app: tauri::AppHandle<R>,
     state: tauri::State<'_, Arc<DesktopState>>,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Response, &'static str> {
     no_arguments(request)?;
-    state.execute(Operation::ServiceMigrate).await
+    #[cfg(feature = "app-proof")]
+    crate::proof_window::progress(&_app, "migrate_started", None);
+    let result = state.execute(Operation::ServiceMigrate).await;
+    #[cfg(feature = "app-proof")]
+    match &result {
+        Ok(Response::Profile(_)) => crate::proof_window::progress(&_app, "migrate_ready", None),
+        Ok(Response::Error(error)) => {
+            crate::proof_window::progress(&_app, "migrate_failed", Some(error.code))
+        }
+        Ok(_) => crate::proof_window::progress(&_app, "migrate_failed", Some("protocol")),
+        Err(code) => crate::proof_window::progress(&_app, "migrate_failed", Some(code)),
+    }
+    result
 }
 #[tauri::command]
 pub async fn uninstall_service(

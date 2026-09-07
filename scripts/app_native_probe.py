@@ -3,6 +3,7 @@
 import argparse
 from builtins import BaseExceptionGroup
 from contextlib import closing
+import fcntl
 import hashlib
 import json
 import os
@@ -349,6 +350,8 @@ def window_marker(child, expected, deadline):
         "prepare_ready",
         "inspect_started",
         "inspect_ready",
+        "migrate_started",
+        "migrate_ready",
     }
     if expected not in progress:
         raise ValueError("unsupported static proof marker")
@@ -370,6 +373,7 @@ def window_marker(child, expected, deadline):
             "ui_failed",
             "prepare_failed",
             "inspect_failed",
+            "migrate_failed",
         ):
             raise RuntimeError("real WebKit proof failed; retain bounded evidence")
         if any(value == {"proof": event} for event in progress):
@@ -572,7 +576,434 @@ class NativeDriver:
         return manifest_exists or plist_exists
 
 
-def run(source, root, mode):
+CLI_TOKEN = "isolated-migration-credential"
+DESKTOP_TOKEN = "offline-fixture-token-not-real"
+STAGE = "staged.json"
+# The bridge always runs isolated and without bytecode, so the plist it writes
+# on migration carries exactly these interpreter flags.
+BRIDGE_FLAGS = ["-I", "-B"]
+# What the product records as the manifest's `python`. It depends on the
+# spawning environment, so it can only be observed, never guessed.
+IDENTITY_SOURCE = "import os, sys; print(os.path.abspath(sys.executable))"
+
+
+def account_home():
+    """The home the host derives from the account database, ignoring HOME."""
+    return Path(pwd.getpwuid(os.getuid()).pw_dir)
+
+
+def label_for(home):
+    return f"io.insto.watch.{os.getuid()}.{hashlib.sha256(os.fsencode(home)).hexdigest()[:16]}"
+
+
+def stage_document(home):
+    return {"schema_version": 1, "home": None if home is None else str(home)}
+
+
+def redacted(document):
+    raw = encoded(document)
+    if CLI_TOKEN.encode() in raw or DESKTOP_TOKEN.encode() in raw:
+        raise RuntimeError("refusing to record a fixture credential")
+    return raw
+
+
+def checked_child(argv, cwd, deadline, env=None, what="child"):
+    result = run_child(argv, cwd, deadline, env)
+    if result.returncode:
+        # Diagnostics stay in the private 0600 result file, never on the console.
+        raise NativeCLIError(f"{what} failed; diagnostics retained privately")
+    return result
+
+
+class StagedFixture:
+    """One staged insto home and exactly one temporary LaunchAgent label.
+
+    `migrate` stages the application's OWN profile inside the fresh proof root,
+    so the binding the app reads is `own` and its startup flow may migrate
+    automatically. `adopt` stages an ordinary CLI home beside the root — never
+    inside it, and never under a parent carrying a desktop-root marker, because
+    the core refuses such a home as `home_invalid`.
+    """
+
+    @classmethod
+    def create(cls, root, source, manifest, previous_python, mode, agents=None):
+        private_directory(root)
+        private_directory(source.parent)
+        safe_ancestors(source)
+        if source.name != "insto.app" or source.parent != root.parent:
+            raise ValueError("source must be this proof's copied insto.app sibling")
+        if not root.name.startswith("insto-app-proof-") or not re.fullmatch(
+            "[0-9a-f]{64}", manifest["build_id"]
+        ):
+            raise ValueError("invalid proof identity")
+        if mode not in ("migrate", "adopt"):
+            raise ValueError("unsupported staged mode")
+        if any(root.iterdir()):
+            raise ValueError("staging needs the root before the app publishes into it")
+        bundled = (
+            source / "Contents/Resources/runtime/python/bin/python3"
+        ).resolve(strict=True)
+        safe_ancestors(previous_python.parent)
+        if (
+            not previous_python.is_file()
+            or previous_python.resolve(strict=True) != previous_python
+            or previous_python == bundled
+        ):
+            raise ValueError(
+                "previous interpreter must be an existing canonical other file"
+            )
+        fixture = cls()
+        fixture.root, fixture.source, fixture.mode = root, source, mode
+        fixture.bundled, fixture.previous = bundled, previous_python
+        fixture.runtime_manifest = manifest
+        fixture.published = (
+            root / "runtimes" / manifest["build_id"] / "python/bin/python3"
+        )
+        if mode == "migrate":
+            fixture.home = root / "profile"
+            fixture.staged_home = None
+        else:
+            native = root.parent / "native"
+            if os.path.lexists(native):
+                raise ValueError("refusing a reused staging directory")
+            native.mkdir(mode=0o700)
+            fixture.home = native / "cli home"
+            fixture.staged_home = fixture.home
+        fixture.label = label_for(fixture.home)
+        fixture.agents = (
+            account_home() / "Library/LaunchAgents" if agents is None else agents
+        )
+        fixture.plist = fixture.agents / f"{fixture.label}.plist"
+        fixture.manifest = fixture.home / "services/watch/manifest.json"
+        if os.path.lexists(fixture.plist):
+            raise ValueError("refusing existing exact registration")
+        fixture.context = root.parent / f"{root.name}-identity.json"
+        fixture.identity = {
+            "mode": mode,
+            "root": str(root),
+            "home": str(fixture.home),
+            "label": fixture.label,
+            "plist": str(fixture.plist),
+            "manifest": str(fixture.manifest),
+            "bundled_python": str(bundled),
+            "previous_python": str(previous_python),
+            "published_python": str(fixture.published),
+            "build_id": manifest["build_id"],
+            "uid": os.getuid(),
+        }
+        fixture.raw = encoded(fixture.identity)
+        write_new(fixture.context, fixture.raw)
+        return fixture
+
+    def validate(self):
+        if private_read(self.context) != self.raw:
+            raise ValueError("immutable identity changed")
+        private_directory(self.root)
+        private_directory(self.home)
+
+    def seed(self, deadline):
+        if self.mode == "migrate":
+            checked_child(
+                [
+                    str(self.bundled),
+                    "-I",
+                    "-B",
+                    str(REPO / "scripts/seed_desktop_fixture.py"),
+                    str(self.root),
+                    "[]",
+                    "--desired=running",
+                ],
+                self.root.parent,
+                min(deadline, time.monotonic() + 90),
+                {**ENV, "HOME": str(self.root)},
+                what="desktop profile seed",
+            )
+        else:
+            checked_child(
+                [
+                    str(self.bundled),
+                    "-I",
+                    "-B",
+                    str(REPO / "scripts/seed_cli_home.py"),
+                    str(self.home),
+                ],
+                self.root.parent,
+                min(deadline, time.monotonic() + 90),
+                {**ENV, "HOME": str(self.home.parent)},
+                what="cli home seed",
+            )
+        self.validate()
+
+    def install_previous(self, deadline):
+        """Register the service with the previous runtime, from a foreign cwd.
+
+        The CLI pins its default `./output` against the working directory, and
+        the bridge normalizes that to the home on migration; installing from
+        elsewhere is the realistic case the migration must accept.
+        """
+        if not label_absent(self.label, self.root.parent, deadline):
+            raise ValueError("refusing an already loaded exact label")
+        checked_child(
+            [str(self.previous), "-I", "-B", "-m", "insto", "watch-service", "install"],
+            self.root.parent,
+            min(deadline, time.monotonic() + 120),
+            {**ENV, "INSTO_HOME": str(self.home)},
+            what="previous-version install",
+        )
+        manifest = json.loads(private_read(self.manifest))
+        plist = plistlib.loads(private_read(self.plist))
+        if manifest["config_home"] != str(self.home) or plist.get("Label") != self.label:
+            raise ValueError("installed registration is not this fixture's")
+        if manifest["python"] != plist["ProgramArguments"][0]:
+            raise ValueError("manifest and plist disagree about the interpreter")
+        return manifest["python"]
+
+    def bridge_identity(self, deadline):
+        """The interpreter path a bridge process records for itself.
+
+        Spawned exactly as the host spawns the bridge — same interpreter,
+        `-I -B`, working directory and environment — because a framework build
+        can report a different executable under a different spawn.
+        """
+        result = checked_child(
+            [str(self.published), *BRIDGE_FLAGS, "-c", IDENTITY_SOURCE],
+            self.root,
+            min(deadline, time.monotonic() + 60),
+            {
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "LANG": "en_US.UTF-8",
+                "LC_ALL": "en_US.UTF-8",
+                "HOME": str(account_home()),
+                "INSTO_DESKTOP_ROOT": str(self.root),
+            },
+            what="published interpreter identity",
+        )
+        return result.stdout.decode("ascii").strip()
+
+    def registered_identity(self, expected):
+        """Both files the product owns must name the same interpreter."""
+        manifest = json.loads(private_read(self.manifest))
+        if manifest["python"] != expected:
+            raise ValueError("registration manifest names another interpreter")
+        arguments = plistlib.loads(private_read(self.plist))["ProgramArguments"]
+        if arguments != [
+            expected,
+            *BRIDGE_FLAGS,
+            "-m",
+            "insto.service.watch_service_runner",
+            str(self.manifest),
+        ]:
+            raise ValueError("registration plist names another interpreter")
+        return manifest
+
+    def executor_pid(self, deadline):
+        lock = Path(f"{self.home / 'store.db'}.watch.lock")
+        end = min(deadline, time.monotonic() + 120)
+        while time.monotonic() < end:
+            try:
+                pid = int(private_read(lock).strip())
+            except (FileNotFoundError, ValueError, OSError):
+                pid = 0
+            if pid > 1:
+                return pid
+            time.sleep(0.2)
+        raise TimeoutError("no verified service executor")
+
+    def running_service(self, deadline):
+        """The live PID, proven to be this fixture's runner.
+
+        Only the command suffix is asserted: on a macOS framework build
+        `bin/python` re-execs another binary and `ps -o command=` prints that
+        one. Interpreter identity is proven from the manifest and the plist the
+        product writes, never from `ps`.
+        """
+        pid = self.executor_pid(deadline)
+        result = checked_child(
+            ["/bin/ps", "-ww", "-p", str(pid), "-o", "command="],
+            self.root.parent,
+            min(deadline, time.monotonic() + 10),
+            what="service command",
+        )
+        command = result.stdout.decode("utf-8", "replace").rstrip()
+        suffix = f" {' '.join(BRIDGE_FLAGS)} -m insto.service.watch_service_runner {self.manifest}"
+        if not command.endswith(suffix):
+            raise RuntimeError("live service is not this fixture's runner")
+        return pid
+
+    def stage(self):
+        write_new(self.root / STAGE, encoded(stage_document(self.staged_home)))
+
+    def cleanup(self, deadline):
+        """Fixture-owned cleanup that needs no application and no healthy journal.
+
+        Boots the label out if loaded, removes this fixture's own files (plist
+        first), then proves the job is gone and that no executor still holds the
+        watch lock, whatever state a failed migration left behind.
+        """
+        target = f"gui/{os.getuid()}/{self.label}"
+        loaded = run_child(
+            ["/bin/launchctl", "print", target],
+            self.root.parent,
+            min(deadline, time.monotonic() + 10),
+        )
+        if loaded.returncode == 0:
+            run_child(
+                ["/bin/launchctl", "bootout", target],
+                self.root.parent,
+                min(deadline, time.monotonic() + 60),
+            )
+        for path in (self.plist, self.manifest):
+            if os.path.lexists(path):
+                private_read(path)  # links and foreign files are refused before any unlink
+                path.unlink()
+        while time.monotonic() < deadline:
+            # bootout of a live job returns before launchd drops the label.
+            if label_absent(self.label, self.root.parent, deadline):
+                break
+            time.sleep(0.5)
+        lock = Path(f"{self.home / 'store.db'}.watch.lock")
+        if os.path.lexists(lock):
+            with open(lock, "rb") as stream:  # a live executor would hold this flock
+                while True:
+                    try:
+                        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError(
+                                "an executor still holds the watch lock"
+                            ) from None
+                        time.sleep(0.5)
+                        continue
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                    break
+        if (
+            os.path.lexists(self.manifest)
+            or os.path.lexists(self.plist)
+            or not label_absent(self.label, self.root.parent, deadline)
+        ):
+            raise RuntimeError("exact native cleanup unconfirmed; retain all artifacts")
+
+
+class StagedDriver:
+    def __init__(self, fixture, app, deadline):
+        self.fixture, self.app, self.deadline = fixture, app, deadline
+        self.cleanup_confirmed = False
+        self.evidence = []
+
+    def stage(self):
+        self.fixture.seed(self.deadline)
+        previous_identity = self.fixture.install_previous(self.deadline)
+        previous_pid = self.fixture.running_service(self.deadline)
+        self.evidence.append(
+            {
+                "phase": "previous_registration",
+                "interpreter": previous_identity,
+                "service_pid": previous_pid,
+                "label": self.fixture.label,
+            }
+        )
+        self.previous_identity, self.previous_pid = previous_identity, previous_pid
+        self.fixture.stage()
+
+    def observe(self):
+        markers = [
+            "window_opened",
+            "prepare_started",
+            "prepare_ready",
+            "inspect_started",
+            "inspect_ready",
+        ]
+        if self.fixture.mode == "migrate":
+            # Emitted by the command the application's own startup flow calls.
+            markers += ["migrate_started", "migrate_ready"]
+        for marker in [*markers, "ui_ready"]:
+            window_marker(self.app, marker, self.deadline)
+
+    def verify(self):
+        published = self.fixture.bridge_identity(self.deadline)
+        if published == self.previous_identity:
+            raise ValueError(
+                "the two runtimes resolve to the same interpreter; nothing is proven"
+            )
+        if self.fixture.mode == "migrate":
+            self.fixture.registered_identity(published)
+            pid = self.fixture.running_service(self.deadline)
+            if pid == self.previous_pid:
+                raise RuntimeError("the previous runner survived the migration")
+            self.evidence.append(
+                {"phase": "migrated", "interpreter": published, "service_pid": pid}
+            )
+        else:
+            if os.path.lexists(self.fixture.manifest) or os.path.lexists(
+                self.fixture.plist
+            ):
+                raise RuntimeError(
+                    "the application did not remove the registration it took over"
+                )
+            if not label_absent(
+                self.fixture.label, self.fixture.root.parent, self.deadline
+            ):
+                raise RuntimeError("the exact label is still loaded")
+            for leaf in ("config.toml", "store.db"):
+                private_read(self.fixture.home / leaf, 32 * 1024 * 1024)
+            if os.path.lexists(self.fixture.root / "desktop-home.json"):
+                raise RuntimeError("the binding was not released")
+            self.evidence.append(
+                {
+                    "phase": "adopted_and_released",
+                    "interpreter": published,
+                    "label": self.fixture.label,
+                }
+            )
+
+    def close_app(self):
+        close_window(self.app, min(self.deadline, time.monotonic() + 180))
+        self.evidence.append(
+            {
+                "phase": "app_exited",
+                "exit_code": self.app.process.returncode,
+                "owned_group_cleaned": True,
+            }
+        )
+
+    def stop_app(self):
+        if not self.app.reaped:
+            self.app.abort()
+
+    def cleanup(self):
+        self.fixture.cleanup(time.monotonic() + 180)
+        self.cleanup_confirmed = True
+
+
+def staged_sequence(driver):
+    errors = []
+    try:
+        driver.stage()
+        driver.observe()
+        driver.verify()
+        driver.close_app()
+    except BaseException as caught:
+        errors.append(caught)
+    app_stopped = False
+    try:
+        driver.stop_app()
+        app_stopped = True
+    except BaseException as caught:
+        errors.append(caught)
+    if app_stopped and not any(
+        isinstance(error, UnsafeProcessGroup) for error in errors
+    ):
+        try:
+            driver.cleanup()
+        except BaseException as caught:
+            errors.append(caught)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup("staged proof and finalization failed", errors)
+
+
+def run(source, root, mode, previous_runtime=None):
     if sys.platform != "darwin" or not callable(getattr(os, "waitid", None)):
         raise RuntimeError("native proof requires macOS developer Python with waitid")
     build = REPO / ".build"
@@ -596,36 +1027,55 @@ def run(source, root, mode):
         json.loads((REPO / "packaging/python-distributions.json").read_text()),
     )
     verify(bundle / "python", manifest["files"])
-    app = OwnedChild.start(
-        [str(source / "Contents/MacOS/insto-gui"), "--proof-window", str(root)],
-        cwd=source.parent,
-        env=ENV,
-    )
+    staged = mode in ("migrate", "adopt")
+    launch = [str(source / "Contents/MacOS/insto-gui"), "--proof-window", str(root)]
+    if staged:
+        launch.append("--staged")
+    app = OwnedChild.start(launch, cwd=source.parent, env=ENV)
     driver = None
     started_at = time.monotonic()
     result = {
         "mode": mode,
         "passed": False,
-        "cleanup_confirmed": mode != "native",
+        # Every mode that installs a real registration must earn this flag from
+        # its own driver; only the pure window modes start out clean.
+        "cleanup_confirmed": mode not in ("native", "migrate", "adopt"),
         "build_id": manifest["build_id"],
     }
     try:
-        deadline = time.monotonic() + 260
-        window_marker(app, "window_opened", deadline)
-        if mode == "close-preparing":
-            while not os.path.lexists(root / "runtime.lock"):
+        deadline = time.monotonic() + (600 if staged else 260)
+        if staged:
+            # `new_root` creates the root before the window is built and the app
+            # then waits for `staged.json`, so the fixture is staged into a root
+            # that is still empty.
+            while not os.path.lexists(root):
                 if time.monotonic() >= deadline or app.observe_exit() is not None:
-                    raise RuntimeError("runtime preparation did not begin")
+                    raise RuntimeError("the app did not create its proof root")
                 time.sleep(0.01)
-            close_window(app, deadline)
+            previous_python = (previous_runtime / "python/bin/python3").resolve(
+                strict=True
+            )
+            fixture = StagedFixture.create(root, source, manifest, previous_python, mode)
+            driver = StagedDriver(fixture, app, deadline)
+            staged_sequence(driver)
         else:
-            window_marker(app, "ui_ready", deadline)
-            if mode == "native":
-                fixture = Fixture.create(root, source, manifest)
-                driver = NativeDriver(fixture, app, deadline)
-                persistence_sequence(driver)
+            window_marker(app, "window_opened", deadline)
+            if mode == "close-preparing":
+                while not os.path.lexists(root / "runtime.lock"):
+                    if time.monotonic() >= deadline or app.observe_exit() is not None:
+                        raise RuntimeError("runtime preparation did not begin")
+                    time.sleep(0.01)
+                close_window(app, deadline)
             else:
-                close_window(app, deadline, b"quit\n" if mode == "quit" else b"close\n")
+                window_marker(app, "ui_ready", deadline)
+                if mode == "native":
+                    fixture = Fixture.create(root, source, manifest)
+                    driver = NativeDriver(fixture, app, deadline)
+                    persistence_sequence(driver)
+                else:
+                    close_window(
+                        app, deadline, b"quit\n" if mode == "quit" else b"close\n"
+                    )
         result["passed"] = True
     except BaseException as error:
         result["failure_type"] = type(error).__name__
@@ -643,7 +1093,7 @@ def run(source, root, mode):
                 result["native_events"] = driver.evidence
             result["app_stdout"] = bytes(app.stdout).decode("utf-8", "replace")
             result["app_stderr"] = bytes(app.stderr).decode("utf-8", "replace")
-            write_new(source.parent / f"{root.name}-result.json", encoded(result))
+            write_new(source.parent / f"{root.name}-result.json", redacted(result))
     return result
 
 
@@ -653,14 +1103,17 @@ def main():
     parser.add_argument("root", type=Path)
     parser.add_argument(
         "--mode",
-        choices=("window", "quit", "close-preparing", "native"),
+        choices=("window", "quit", "close-preparing", "native", "migrate", "adopt"),
         default="window",
     )
     parser.add_argument("--allow-native-fake", action="store_true")
+    parser.add_argument("--previous-runtime", type=Path)
     args = parser.parse_args()
     if args.mode == "native" and not args.allow_native_fake:
         parser.error("native mode requires explicit --allow-native-fake")
-    result = run(args.source, args.root, args.mode)
+    if (args.mode in ("migrate", "adopt")) != (args.previous_runtime is not None):
+        parser.error("--previous-runtime is required by, and only by, the staged modes")
+    result = run(args.source, args.root, args.mode, args.previous_runtime)
     print(
         json.dumps(
             {

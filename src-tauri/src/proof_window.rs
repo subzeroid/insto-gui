@@ -1,11 +1,89 @@
 //! Fixed developer proof controls; never compiled into ordinary builds.
 use std::{
     io::{Read, Write},
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    path::Path,
     sync::atomic::{AtomicBool, AtomicU16, Ordering},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::Manager;
 pub const SCRIPT: &str = include_str!("proof_window.js");
+/// The probe writes this file into the proof root once its fixture is staged.
+/// Until it appears the app publishes nothing, so the probe can seed a profile
+/// or a CLI home into a root that is still empty.
+pub const STAGED_FILE: &str = "staged.json";
+const MAX_STAGE_BYTES: u64 = 8 * 1024;
+const MAX_FIXTURE_PATH: usize = 4096;
+pub const STAGE_SECONDS: u64 = 240;
+pub const WATCHDOG_SECONDS: u64 = 300;
+/// A staged run adds a fixture install, a runtime publish and one service
+/// migration to the same window; the ordinary budget cannot cover it.
+pub const STAGED_WATCHDOG_SECONDS: u64 = 900;
+fn read_stage(path: &Path) -> Result<Vec<u8>, &'static str> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| "proof_stage")?;
+    let info = file.metadata().map_err(|_| "proof_stage")?;
+    if !info.is_file()
+        || info.uid() != unsafe { libc::getuid() }
+        || info.nlink() != 1
+        || info.mode() & 0o7777 != 0o600
+        || info.len() > MAX_STAGE_BYTES
+    {
+        return Err("proof_stage");
+    }
+    let mut raw = Vec::new();
+    file.take(MAX_STAGE_BYTES)
+        .read_to_end(&mut raw)
+        .map_err(|_| "proof_stage")?;
+    Ok(raw)
+}
+fn fixture_home(raw: &[u8]) -> Result<Option<String>, &'static str> {
+    let value: serde_json::Value = serde_json::from_slice(raw).map_err(|_| "proof_stage")?;
+    let object = value.as_object().ok_or("proof_stage")?;
+    if object.len() != 2 || object.get("schema_version") != Some(&serde_json::json!(1)) {
+        return Err("proof_stage");
+    }
+    match object.get("home").ok_or("proof_stage")? {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(home) => {
+            // Absolute, bounded, and free of anything a JS source line could
+            // not carry verbatim. The JSON encoding below is the second guard.
+            if !home.starts_with('/')
+                || home.len() > MAX_FIXTURE_PATH
+                || home.chars().any(|c| c < ' ' || c == '\u{7f}')
+            {
+                return Err("proof_stage");
+            }
+            Ok(Some(home.clone()))
+        }
+        _ => Err("proof_stage"),
+    }
+}
+/// Block until the probe has staged its fixture, then read the home it names.
+pub fn await_stage(root: &Path) -> Result<Option<String>, &'static str> {
+    let path = root.join(STAGED_FILE);
+    let deadline = Instant::now() + Duration::from_secs(STAGE_SECONDS);
+    loop {
+        if std::fs::symlink_metadata(&path).is_ok() {
+            return fixture_home(&read_stage(&path)?);
+        }
+        if Instant::now() >= deadline {
+            return Err("proof_stage_timeout");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+/// The developer script with its fixture constant prepended. The path is
+/// serialized as a JSON string, so no staged path can end the statement or the
+/// script; the two keys are written in a fixed order rather than through a map,
+/// so the emitted line does not depend on serde_json's feature flags.
+pub fn script(staged: bool, home: Option<&str>) -> String {
+    let home = serde_json::to_string(&home).unwrap_or_else(|_| "null".into());
+    format!("globalThis.__INSTO_PROOF__={{\"staged\":{staged},\"home\":{home}}};\n{SCRIPT}")
+}
 #[derive(Default)]
 pub struct ProofWindow {
     failed: AtomicBool,
@@ -56,7 +134,7 @@ pub fn title(app: &tauri::AppHandle, title: &str) {
         }
     }
 }
-pub fn start(app: &tauri::AppHandle) {
+pub fn start(app: &tauri::AppHandle, watchdog: Duration) {
     signal("window_opened");
     let reader_app = app.clone();
     std::thread::spawn(move || match read_control(std::io::stdin().lock()) {
@@ -69,7 +147,7 @@ pub fn start(app: &tauri::AppHandle) {
     });
     let timeout_app = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(300)).await;
+        tokio::time::sleep(watchdog).await;
         if !timeout_app
             .state::<std::sync::Arc<crate::state::DesktopState>>()
             .drained()
@@ -137,6 +215,9 @@ fn progress_code(event: &str) -> Option<(u16, &'static str)> {
         "inspect_started" => Some((32, "inspect_started")),
         "inspect_ready" => Some((64, "inspect_ready")),
         "inspect_failed" => Some((128, "inspect_failed")),
+        "migrate_started" => Some((256, "migrate_started")),
+        "migrate_ready" => Some((512, "migrate_ready")),
+        "migrate_failed" => Some((1024, "migrate_failed")),
         _ => None,
     }
 }
@@ -255,9 +336,65 @@ mod tests {
             progress_code("inspect_failed"),
             Some((128, "inspect_failed"))
         );
+        assert_eq!(
+            progress_code("migrate_started"),
+            Some((256, "migrate_started"))
+        );
+        assert_eq!(progress_code("migrate_ready"), Some((512, "migrate_ready")));
+        assert_eq!(
+            progress_code("migrate_failed"),
+            Some((1024, "migrate_failed"))
+        );
         for code in ["secret", "prepare_failed\nsecret", "ui_ready", "quit"] {
             assert_eq!(progress_code(code), None);
         }
+    }
+    #[test]
+    fn staged_fixture_accepts_only_the_documented_document() {
+        assert_eq!(
+            fixture_home(br#"{"schema_version":1,"home":null}"#),
+            Ok(None)
+        );
+        assert_eq!(
+            fixture_home(br#"{"schema_version":1,"home":"/private/proof/cli home"}"#),
+            Ok(Some("/private/proof/cli home".into()))
+        );
+        for body in [
+            br#"{"schema_version":1}"#.as_slice(),
+            br#"{"schema_version":2,"home":null}"#,
+            br#"{"schema_version":1.0,"home":null}"#,
+            br#"{"schema_version":1,"home":null,"extra":1}"#,
+            br#"{"schema_version":1,"home":"relative/home"}"#,
+            br#"{"schema_version":1,"home":""}"#,
+            br#"{"schema_version":1,"home":7}"#,
+            b"{\"schema_version\":1,\"home\":\"/a\\u0000b\"}",
+            b"[]",
+            b"not json",
+        ] {
+            assert_eq!(
+                fixture_home(body),
+                Err("proof_stage"),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+        let long = format!(r#"{{"schema_version":1,"home":"/{}"}}"#, "a".repeat(4096));
+        assert_eq!(fixture_home(long.as_bytes()), Err("proof_stage"));
+    }
+    #[test]
+    fn the_injected_fixture_is_json_and_never_raw_text() {
+        let plain = script(false, None);
+        assert_eq!(
+            plain.lines().next(),
+            Some("globalThis.__INSTO_PROOF__={\"staged\":false,\"home\":null};")
+        );
+        assert!(plain.ends_with(SCRIPT));
+        let hostile = script(true, Some("/a\"b</script>"));
+        assert_eq!(
+            hostile.lines().next(),
+            Some("globalThis.__INSTO_PROOF__={\"staged\":true,\"home\":\"/a\\\"b</script>\"};")
+        );
+        assert!(hostile.ends_with(SCRIPT));
     }
     #[test]
     fn milestone_errors_never_forward_unknown_text() {
