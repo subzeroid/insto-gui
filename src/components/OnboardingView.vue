@@ -9,7 +9,7 @@ defineProps<{ busy: boolean; stale: boolean; error: DesktopFailure | null; home:
 <template>
   <section class="onboarding-view">
     <div v-if="error" class="notice danger" role="alert">{{ error.message }}</div>
-    <div v-if="stale" class="notice warning" role="status">Данные устарели. Изменения заблокированы до обновления. <button type="button" class="text-button" :disabled="busy" @click="refresh">Обновить</button></div>
+    <div v-if="stale" class="notice warning" role="status">Данные устарели. Изменения заблокированы до обновления. <button type="button" class="text-button" data-action="refresh-setup" aria-label="Обновить состояние настройки" :disabled="busy" @click="refresh">Обновить</button></div>
     <SetupPanel :busy="busy || stale" :connect="connect" :open-token-page="openTokenPage" />
     <p class="fine-print">Токен нужен только для новой установки. Если insto уже настроен в терминале, подключите его папку ниже — токен вводить не придётся.</p>
     <HomeAdoption :home="home" :binding="binding" :busy="busy || stale" :disabled="false" />

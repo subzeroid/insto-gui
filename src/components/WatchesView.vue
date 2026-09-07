@@ -27,7 +27,7 @@ function select(user: string) {
 <template>
   <section class="watches-view">
     <div v-if="state.error" class="notice danger" role="alert">{{ state.error.message }}</div>
-    <div v-if="state.stale" class="notice warning" role="status">Данные устарели. Последнее успешное чтение: {{ state.lastReadAt === null ? 'не выполнено' : localTime(Math.floor(state.lastReadAt / 1000)) }}. Изменения заблокированы до обновления. <button type="button" class="text-button" :disabled="state.loading" @click="monitoring.refresh()">Обновить</button></div>
+    <div v-if="state.stale" class="notice warning" role="status">Данные устарели. Последнее успешное чтение: {{ state.lastReadAt === null ? 'не выполнено' : localTime(Math.floor(state.lastReadAt / 1000)) }}. Изменения заблокированы до обновления. <button type="button" class="text-button" data-action="refresh-watches" aria-label="Обновить список наблюдений" :disabled="state.loading" @click="monitoring.refresh()">Обновить</button></div>
     <p v-else-if="state.outcomeUnknown" class="notice" role="status">Результат действия неизвестен; состояние перечитано и показано ниже. Действие не повторялось.</p>
     <p v-if="state.readError && !state.overview" role="alert" class="notice danger">{{ state.readError.message }} <button type="button" class="text-button" @click="monitoring.refresh()">Повторить</button></p>
     <p v-else-if="!state.overview" role="status" class="loading">Читаем наблюдения…</p>

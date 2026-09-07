@@ -131,19 +131,23 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
         <template v-else>
           <!-- Setup/service state is global: its errors and recovery needs show on every section. -->
           <div v-if="state.error" class="notice danger" role="alert">{{ state.error.message }}</div>
-          <div v-if="state.stale" class="notice warning" role="status">Состояние настройки устарело. Изменения службы заблокированы до обновления. <button type="button" class="text-button" :disabled="state.busy" @click="ui.refresh">Обновить</button></div>
+          <div v-if="state.stale" class="notice warning" role="status">Состояние настройки устарело. Изменения службы заблокированы до обновления. <button type="button" class="text-button" data-action="refresh-setup" aria-label="Обновить состояние настройки" :disabled="state.busy" @click="ui.refresh">Обновить</button></div>
           <p v-else-if="state.outcomeUnknown" class="notice" role="status">Текущее состояние перечитано и показано ниже. Операция не повторялась автоматически.</p>
           <p v-if="migrationNotice" class="notice" :class="{ warning: service.state.notice !== 'migrated' }" role="status">{{ migrationNotice }}</p>
           <p v-if="attention && section !== 'service'" class="notice warning" role="status">Служба требует внимания. <button type="button" class="text-button" data-action="open-service" @click="section = 'service'">Открыть раздел «Служба»</button></p>
-          <WatchesView v-if="section === 'watches'" :monitoring="monitoring" :history="history" @show-changes="showChanges" />
-          <ChangesView v-else-if="section === 'changes'" :history="history" :filter-pk="feedFilter" @clear-filter="feedFilter = null" />
-          <template v-else-if="section === 'service'">
+          <div v-if="section === 'watches'" id="panel-watches" role="tabpanel" aria-labelledby="tab-watches">
+            <WatchesView :monitoring="monitoring" :history="history" @show-changes="showChanges" />
+          </div>
+          <div v-else-if="section === 'changes'" id="panel-changes" role="tabpanel" aria-labelledby="tab-changes">
+            <ChangesView :history="history" :filter-pk="feedFilter" @clear-filter="feedFilter = null" />
+          </div>
+          <div v-else-if="section === 'service'" id="panel-service" role="tabpanel" aria-labelledby="tab-service">
             <ServiceView :profile="state.profile" :overview="monitoring.state.overview" :last-read-at="monitoring.state.lastReadAt" :stale="state.stale" :monitoring-stale="monitoring.state.stale" :read-error="monitoring.state.readError" :busy="state.busy" :service="service" :refresh-overview="monitoring.refresh" :refresh-facts="service.refreshFacts" :start="() => serviceAction(ui.start)" :stop="() => serviceAction(ui.stop)" :repair="() => serviceAction(ui.repair)" />
-            <div class="refresh-row"><span>Состояние читается локально, без запросов HikerAPI.</span><button class="text-button" :disabled="state.busy" @click="ui.refresh">Обновить</button></div>
-          </template>
-          <template v-else>
+            <div class="refresh-row"><span>Состояние читается локально, без запросов HikerAPI.</span><button class="text-button" data-action="refresh-service" aria-label="Обновить состояние службы" :disabled="state.busy" @click="ui.refresh">Обновить</button></div>
+          </div>
+          <div v-else id="panel-settings" role="tabpanel" aria-labelledby="tab-settings">
             <SettingsView :busy="state.busy" :stale="state.stale" :configured="state.profile.configured" :recovery="state.profile.status === 'recovery_required'" :service-running="state.profile.service_running" :core-version="state.runtime?.core_version ?? null" :build-id="state.runtime?.build_id ?? null" :service="service" :home="home" :binding="service.state.binding" :replace="replaceToken" :uninstall="service.uninstall" :open-token-page="() => client.openTokenPage()" />
-          </template>
+          </div>
         </template>
       </template>
     </main>

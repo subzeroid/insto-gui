@@ -40,4 +40,17 @@ describe('changes feed', () => {
     expect(wrapper.emitted('clear-filter')).toHaveLength(1)
     expect(invoke).toHaveBeenCalledTimes(2) // the parent owns the filter; nothing is reloaded until it changes the prop
   })
+  it('reads the feed again on remount and shows no row from the previous mount', async () => {
+    const invoke = vi.fn().mockResolvedValue(envelope('history_page', page([])))
+    const history = createHistoryState(new DesktopClient(invoke))
+    history.state.feed.items = [{ kind: 'baseline', snapshot: snap('1', '7', 1) }]
+    history.state.feed.loaded = true
+    const loadFeed = vi.spyOn(history, 'loadFeed')
+    const view = mount(ChangesView, { props: { history, filterPk: null } })
+    expect(loadFeed).toHaveBeenCalledTimes(1)
+    // `loadFeed` empties the feed synchronously before the request, so the
+    // previous mount's rows are never painted under the new one.
+    expect(view.findAll('.feed-item')).toHaveLength(0)
+    view.unmount()
+  })
 })

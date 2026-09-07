@@ -31,7 +31,7 @@ async function migrate() { confirming.value = false; await props.service.migrate
 <template>
   <div class="service-view">
     <ServicePanel :profile="profile" :busy="busy" :stale="stale" :readonly="readonly" :start="start" :stop="stop" :repair="repair" />
-    <p v-if="monitoringStale" class="notice warning" role="status">Наблюдаемое состояние устарело: последнее чтение не удалось. <button type="button" class="text-button" data-action="refresh-overview" @click="refreshOverview">Обновить</button></p>
+    <p v-if="monitoringStale" class="notice warning" role="status">Наблюдаемое состояние устарело: последнее чтение не удалось. <button type="button" class="text-button" data-action="refresh-overview" aria-label="Обновить наблюдаемое состояние" @click="refreshOverview">Обновить</button></p>
     <dl class="service-facts">
       <div><dt>Наблюдаемое состояние службы</dt><dd>{{ overview ? labels[overview.service_state] + (monitoringStale ? ' (устарело)' : '') : 'нет данных' }}</dd></div>
       <div><dt>Ядро и база</dt><dd>{{ readError ? 'последнее чтение не удалось' : overview ? 'доступны' : 'проверяются' }}</dd></div>

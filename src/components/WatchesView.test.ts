@@ -70,8 +70,13 @@ describe('watches view', () => {
     await wrapper.get('[role="option"]').trigger('click'); await flushPromises()
     await monitoring.refresh(); await flushPromises()
     expect(wrapper.text()).toContain('Данные устарели')
-    // Reads («Обновить историю») stay available while stale; every mutation is blocked.
-    const mutations = wrapper.findAll('button[data-action]').filter(button => button.attributes('data-action') !== 'reload-history')
+    // The banner's own control is a named read, like the history reload: only the
+    // mutations are blocked.
+    const banner = wrapper.get('button[data-action="refresh-watches"]')
+    expect(banner.text()).toBe('Обновить')
+    expect(banner.attributes('aria-label')).toBe('Обновить список наблюдений')
+    const reads = ['reload-history', 'refresh-watches']
+    const mutations = wrapper.findAll('button[data-action]').filter(button => !reads.includes(button.attributes('data-action')!))
     expect(mutations.map(button => button.attributes('data-action'))).toEqual(['pause', 'remove', 'interval'])
     expect(mutations.every(button => button.attributes('disabled') !== undefined)).toBe(true)
     expect(wrapper.get('button[data-action="reload-history"]').attributes('disabled')).toBeUndefined()
