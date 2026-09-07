@@ -1,6 +1,6 @@
 {
-  "core_commit": "7a1872568bd90a642a3df838fd9854286f251d03",
-  "core_version": "0.7.21",
+  "core_commit": "c7d20c9618774acb0952e85c4fe05e3281ca8b5c",
+  "core_version": "0.7.22",
   "schema_version_supported": 2,
   "capabilities": [
     "hello",
@@ -21,6 +21,11 @@
     "snapshots.targets",
     "snapshots.list",
     "snapshots.compare",
-    "changes.list"
+    "changes.list",
+    "service.inspect",
+    "service.migrate",
+    "service.uninstall",
+    "home.inspect",
+    "home.select"
   ]
 }

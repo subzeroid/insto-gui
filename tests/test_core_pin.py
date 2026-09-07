@@ -13,15 +13,15 @@ class CorePinConsistency(unittest.TestCase):
         pin = json.loads((REPO / "packaging/core-pin.json").read_text())
         protocol = (REPO / "crates/desktop-host/src/protocol.rs").read_text()
         client = (REPO / "src/desktop/client.ts").read_text()
-        self.assertEqual(pin["core_version"], "0.7.21")
-        self.assertEqual(pin["core_commit"], "7a1872568bd90a642a3df838fd9854286f251d03")
+        self.assertEqual(pin["core_version"], "0.7.22")
+        self.assertEqual(pin["core_commit"], "c7d20c9618774acb0952e85c4fe05e3281ca8b5c")
         self.assertIn(f'pub const CORE_VERSION: &str = "{pin["core_version"]}";', protocol)
         self.assertIn(f"export const CORE_VERSION = '{pin['core_version']}'", client)
         table = re.search(r"pub const CAPABILITIES: \[&str; (\d+)\] = \[(.*?)\];", protocol, re.S)
         self.assertIsNotNone(table)
         self.assertEqual(int(table.group(1)), len(pin["capabilities"]))
-        self.assertEqual(sorted(re.findall(r'"([a-z.]+)"', table.group(2))), sorted(pin["capabilities"]))
-        self.assertEqual(len(set(pin["capabilities"])), 19)
+        self.assertEqual(re.findall(r'"([a-z.]+)"', table.group(2)), pin["capabilities"])
+        self.assertEqual(len(set(pin["capabilities"])), 24)
 
 
 if __name__ == "__main__":

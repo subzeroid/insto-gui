@@ -1,6 +1,6 @@
 import { DesktopFailure, safeFailure } from './messages'
 import { CHANGE_KINDS, HISTORY_CURSOR, SNAPSHOT_KINDS, TARGET_KINDS, TARGET_PK, REVISION, USERNAME, WATCH_CURSOR, decodeComparison, decodeHistoryPage, decodeOverview, decodeRemoved, decodeWatch, decodeWatchPage, record, validSnapshotId, type Comparison, type HistoryPage, type Overview, type Watch, type WatchPage } from './dto'
-export const CORE_VERSION = '0.7.21'
+export const CORE_VERSION = '0.7.22'
 export type Invoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>
 export type Status = 'unconfigured' | 'recovery_required' | 'quota_exhausted' | 'running' | 'stopped' | 'service_error'
 export interface Profile {
