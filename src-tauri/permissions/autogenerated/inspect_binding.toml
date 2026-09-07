@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-inspect-binding"
+description = "Enables the inspect_binding command without any pre-configured scope."
+commands.allow = ["inspect_binding"]
+
+[[permission]]
+identifier = "deny-inspect-binding"
+description = "Denies the inspect_binding command without any pre-configured scope."
+commands.deny = ["inspect_binding"]

@@ -1,5 +1,6 @@
 use crate::lifecycle::Initialization;
 use insto_desktop_host::{
+    binding::{read_binding, Binding},
     owner::Owner,
     process::TrustedLauncher,
     runtime::{self, RuntimeError},
@@ -21,6 +22,9 @@ pub struct Prepared {
 struct Ready {
     owner: Arc<Owner>,
     prepared: Prepared,
+    // The desktop root the bridge runs against (`INSTO_DESKTOP_ROOT`). Kept so the
+    // binding file can be read without the bridge, after a failed core inspection.
+    root: PathBuf,
 }
 pub struct DesktopState {
     bundle: PathBuf,
@@ -88,6 +92,7 @@ impl DesktopState {
                         core_version: insto_desktop_host::protocol::CORE_VERSION,
                         build_id: published.build_id().to_owned(),
                     },
+                    root: published.root().to_path_buf(),
                 }))
             })
             .await?;
@@ -99,6 +104,15 @@ impl DesktopState {
         let ready = self.initialization.ready()?;
         self.check_open()?;
         ready.owner.execute(operation).await.map_err(host_error)
+    }
+    /// The desktop root's `desktop-home.json`, read here and never through the
+    /// bridge. `read_binding` never writes and never fails, so this answers as
+    /// long as `prepare` completed — including when the first core inspection
+    /// failed and the user has to release a broken binding.
+    pub fn binding(&self) -> Result<Binding, &'static str> {
+        self.check_open()?;
+        let ready = self.initialization.ready()?;
+        Ok(read_binding(&ready.root))
     }
     pub async fn shutdown(&self) {
         self.close();

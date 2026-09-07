@@ -20,6 +20,12 @@ fn main() {
             "list_snapshots",
             "compare_snapshots",
             "list_changes",
+            "inspect_service",
+            "migrate_service",
+            "uninstall_service",
+            "inspect_home",
+            "select_home",
+            "inspect_binding",
         ]),
     ))
     .expect("application configuration is invalid");

@@ -296,3 +296,240 @@ fn c2_commands_validate_arguments_before_the_host() {
         .to_string()
         .contains("not allowed"));
 }
+
+#[test]
+fn c3_commands_map_to_operations_and_budgets() {
+    use insto_desktop_host::{protocol::Budget, Operation};
+    let long = format!("/{}", "a".repeat(1024)); // 1025 bytes
+    for (operation, name, budget, params) in [
+        (
+            Operation::ServiceInspect,
+            "service.inspect",
+            Budget::Read,
+            serde_json::json!({}),
+        ),
+        (
+            Operation::ServiceMigrate,
+            "service.migrate",
+            Budget::ServiceMutation,
+            serde_json::json!({}),
+        ),
+        (
+            Operation::ServiceUninstall,
+            "service.uninstall",
+            Budget::ServiceMutation,
+            serde_json::json!({}),
+        ),
+        (
+            crate::commands::home_operation(false, r#"{"path":"~/.insto"}"#).unwrap(),
+            "home.inspect",
+            Budget::Read,
+            serde_json::json!({"path": "~/.insto"}),
+        ),
+        (
+            crate::commands::home_operation(true, r#"{"path":"/Users/x/.insto"}"#).unwrap(),
+            "home.select",
+            Budget::ServiceMutation,
+            serde_json::json!({"path": "/Users/x/.insto"}),
+        ),
+        (
+            crate::commands::home_operation(true, r#"{"path":null}"#).unwrap(),
+            "home.select",
+            Budget::ServiceMutation,
+            serde_json::json!({"path": null}),
+        ),
+    ] {
+        assert_eq!(operation.name(), name);
+        assert_eq!(operation.budget(), budget);
+        let request: serde_json::Value =
+            serde_json::from_slice(&operation.request("t").unwrap()).unwrap();
+        assert_eq!(request["operation"], name);
+        assert_eq!(request["params"], params);
+    }
+    // The adapter refuses a bad path itself: no operation is ever built.
+    for payload in [
+        r#"{"path":"relative/insto"}"#,
+        r#"{"path":"~user/.insto"}"#,
+        r#"{"path":"/Users/x/../root/.insto"}"#,
+        r#"{"path":".."}"#,
+        r#"{"path":""}"#,
+        "{\"path\":\"/Users/x/\u{0}/.insto\"}",
+        r#"{"path":7}"#,
+        r#"{"path":"~/.insto","extra":1}"#,
+        r#"{}"#,
+    ] {
+        // Compare the error side only. `Operation` derives nothing on purpose:
+        // two of its variants carry the HikerAPI token, so a `Debug` derive
+        // would make a secret printable inside a failing assertion's panic.
+        assert_eq!(
+            crate::commands::home_operation(false, payload).err(),
+            Some("invalid_home_input"),
+            "{payload}"
+        );
+        assert_eq!(
+            crate::commands::home_operation(true, payload).err(),
+            Some("invalid_home_input"),
+            "{payload}"
+        );
+    }
+    assert_eq!(
+        crate::commands::home_operation(false, &format!(r#"{{"path":"{long}"}}"#)).err(),
+        Some("invalid_home_input")
+    );
+    assert!(crate::commands::home_operation(false, r#"{"path":null}"#).is_err());
+}
+
+#[test]
+fn c3_binding_report_carries_a_home_only_for_an_adopted_root() {
+    use insto_desktop_host::binding::Binding;
+    for (binding, state, home) in [
+        (Binding::Own, "own", None),
+        (
+            Binding::Adopted {
+                home: "/Users/x/.insto".into(),
+            },
+            "adopted",
+            Some("/Users/x/.insto"),
+        ),
+        (Binding::Unknown, "unknown", None),
+    ] {
+        // The exact JSON `client.inspectBinding()` decodes: two keys, no envelope.
+        assert_eq!(
+            serde_json::to_value(crate::commands::BindingReport::from(binding)).unwrap(),
+            serde_json::json!({"state": state, "home": home}),
+            "{state}"
+        );
+    }
+}
+
+#[test]
+fn c3_commands_validate_arguments_before_the_host() {
+    let state = std::sync::Arc::new(crate::state::DesktopState::new("/unused".into()));
+    state.close();
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .invoke_handler(tauri::generate_handler![
+            crate::commands::inspect_service,
+            crate::commands::migrate_service,
+            crate::commands::uninstall_service,
+            crate::commands::inspect_home,
+            crate::commands::select_home,
+            crate::commands::inspect_binding
+        ])
+        .build(tauri::generate_context!())
+        .unwrap();
+    // A closed state proves the argument was accepted: execution is refused with "closed".
+    let accepted = [
+        ("inspect_service", serde_json::json!({})),
+        ("migrate_service", serde_json::json!({})),
+        ("uninstall_service", serde_json::json!({})),
+        ("inspect_binding", serde_json::json!({})),
+        ("inspect_home", serde_json::json!({"query": {"path": "~"}})),
+        (
+            "inspect_home",
+            serde_json::json!({"query": {"path": "~/.insto"}}),
+        ),
+        (
+            "inspect_home",
+            serde_json::json!({"query": {"path": "/Users/x/.insto"}}),
+        ),
+        ("select_home", serde_json::json!({"home": {"path": null}})),
+        (
+            "select_home",
+            serde_json::json!({"home": {"path": "/Users/x/.insto"}}),
+        ),
+    ];
+    for (cmd, body) in accepted {
+        assert_eq!(
+            ipc(&app, "main", cmd, body.clone()).unwrap_err(),
+            serde_json::json!("closed"),
+            "{cmd} {body}"
+        );
+    }
+    let rejected = [
+        // The no-argument rule: any key at all is a protocol error.
+        (
+            "inspect_service",
+            serde_json::json!({"query": {"path": "~"}}),
+            "protocol",
+        ),
+        (
+            "migrate_service",
+            serde_json::json!({"home": null}),
+            "protocol",
+        ),
+        (
+            "uninstall_service",
+            serde_json::json!({"SECRET_SENTINEL": 1}),
+            "protocol",
+        ),
+        (
+            "inspect_binding",
+            serde_json::json!({"home": {"path": null}}),
+            "protocol",
+        ),
+        // The one-key rule and path validation, both before the host.
+        ("inspect_home", serde_json::json!({}), "invalid_home_input"),
+        (
+            "inspect_home",
+            serde_json::json!({"query": {"path": "~/.insto"}, "extra": 1}),
+            "invalid_home_input",
+        ),
+        (
+            "inspect_home",
+            serde_json::json!({"home": {"path": "~/.insto"}}),
+            "invalid_home_input",
+        ),
+        (
+            "inspect_home",
+            serde_json::json!({"query": {"path": "~/.insto", "SECRET_SENTINEL": true}}),
+            "invalid_home_input",
+        ),
+        (
+            "inspect_home",
+            serde_json::json!({"query": {"path": "SECRET_SENTINEL/insto"}}),
+            "invalid_home_input",
+        ),
+        (
+            "inspect_home",
+            serde_json::json!({"query": {"path": "/Users/x/../root"}}),
+            "invalid_home_input",
+        ),
+        (
+            "inspect_home",
+            serde_json::json!({"query": {"path": null}}),
+            "invalid_home_input",
+        ),
+        (
+            "select_home",
+            serde_json::json!({"home": {}}),
+            "invalid_home_input",
+        ),
+        (
+            "select_home",
+            serde_json::json!({"home": {"path": 7}}),
+            "invalid_home_input",
+        ),
+        (
+            "select_home",
+            serde_json::json!({"home": {"path": "~user/.insto"}}),
+            "invalid_home_input",
+        ),
+    ];
+    for (cmd, body, code) in rejected {
+        let result = ipc(&app, "main", cmd, body.clone()).unwrap_err();
+        assert_eq!(result, serde_json::json!(code), "{cmd} {body}");
+        assert!(!result.to_string().contains("SECRET_SENTINEL"));
+    }
+    for cmd in [
+        "inspect_service",
+        "migrate_service",
+        "uninstall_service",
+        "inspect_binding",
+    ] {
+        assert!(ipc(&app, "other", cmd, serde_json::json!({}))
+            .unwrap_err()
+            .to_string()
+            .contains("not allowed"));
+    }
+}

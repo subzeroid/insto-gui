@@ -1,6 +1,6 @@
 use crate::state::{DesktopState, Prepared};
-use insto_desktop_host::{Operation, Response};
-use serde::Deserialize;
+use insto_desktop_host::{binding::Binding, Operation, Response};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -387,4 +387,125 @@ pub async fn list_changes(
             HISTORY,
         )?)
         .await
+}
+const HOME: &str = "invalid_home_input";
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HomeQueryInput {
+    path: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HomeInput {
+    // A required key that may be null. `Option<String>` would accept a *missing*
+    // `path` as null, and null means "return to the own profile" — a mutation.
+    path: serde_json::Value,
+}
+impl HomeInput {
+    fn selected(self) -> Result<Option<String>, &'static str> {
+        match self.path {
+            serde_json::Value::Null => Ok(None),
+            serde_json::Value::String(path) => Ok(Some(path)),
+            _ => Err(HOME),
+        }
+    }
+}
+#[cfg(test)]
+pub fn home_operation(select: bool, payload: &str) -> Result<Operation, &'static str> {
+    if select {
+        let input: HomeInput = serde_json::from_str(payload).map_err(|_| HOME)?;
+        checked(
+            Operation::HomeSelect {
+                path: input.selected()?,
+            },
+            HOME,
+        )
+    } else {
+        let input: HomeQueryInput = serde_json::from_str(payload).map_err(|_| HOME)?;
+        checked(Operation::HomeInspect { path: input.path }, HOME)
+    }
+}
+/// The wire shape of `inspect_binding`: two keys, no `{kind, data}` envelope,
+/// because no bridge answered it.
+#[derive(Debug, Serialize)]
+pub struct BindingReport {
+    state: &'static str,
+    home: Option<String>,
+}
+impl From<Binding> for BindingReport {
+    fn from(binding: Binding) -> Self {
+        match binding {
+            Binding::Own => Self {
+                state: "own",
+                home: None,
+            },
+            Binding::Adopted { home } => Self {
+                state: "adopted",
+                home: Some(home),
+            },
+            Binding::Unknown => Self {
+                state: "unknown",
+                home: None,
+            },
+        }
+    }
+}
+#[tauri::command]
+pub async fn inspect_service(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    no_arguments(request)?;
+    state.execute(Operation::ServiceInspect).await
+}
+#[tauri::command]
+pub async fn migrate_service(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    no_arguments(request)?;
+    state.execute(Operation::ServiceMigrate).await
+}
+#[tauri::command]
+pub async fn uninstall_service(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    no_arguments(request)?;
+    state.execute(Operation::ServiceUninstall).await
+}
+#[tauri::command]
+pub async fn inspect_home(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: HomeQueryInput = argument(request, "query", HOME)?;
+    state
+        .execute(checked(Operation::HomeInspect { path: input.path }, HOME)?)
+        .await
+}
+#[tauri::command]
+pub async fn select_home(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: HomeInput = argument(request, "home", HOME)?;
+    state
+        .execute(checked(
+            Operation::HomeSelect {
+                path: input.selected()?,
+            },
+            HOME,
+        )?)
+        .await
+}
+#[tauri::command]
+pub async fn inspect_binding(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<BindingReport, &'static str> {
+    no_arguments(request)?;
+    // One bounded read of a local file, no bridge call: the answer must survive a
+    // failed core inspection, and it must not spend one of the host's two read slots.
+    state.binding().map(BindingReport::from)
 }
