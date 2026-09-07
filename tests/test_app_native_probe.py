@@ -17,10 +17,14 @@ from unittest.mock import patch
 from scripts.app_native_probe import (
     Fixture,
     NativeDriver,
+    StagedFixture,
     close_window,
     fresh_tick,
+    label_for,
     persistence_sequence,
     private_read,
+    redacted,
+    stage_document,
     write_new,
     window_marker,
 )
@@ -506,6 +510,96 @@ class SequenceTests(unittest.TestCase):
                 persistence_sequence(driver)
         self.assertIs(caught.exception.exceptions[1], unsafe)
         self.assertNotIn("cleanup", driver.events)
+
+
+class StagedFixtureTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.base = Path(self.temp.name).resolve()
+        self.base.chmod(0o700)
+        self.root = self.base / "insto-app-proof-staged-test"
+        self.root.mkdir(mode=0o700)
+        self.source = self.base / "insto.app"
+        (self.source / "Contents/Resources/runtime/python/bin").mkdir(parents=True, mode=0o700)
+        self.bundled = self.source / "Contents/Resources/runtime/python/bin/python3"
+        self.bundled.write_bytes(b"bundled interpreter")
+        self.previous = self.base / "previous/python/bin/python3"
+        self.previous.parent.mkdir(parents=True, mode=0o700)
+        self.previous.write_bytes(b"previous interpreter")
+        self.agents = self.base / "LaunchAgents"
+        self.agents.mkdir(mode=0o700)
+        self.manifest = {"build_id": "a" * 64}
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def create(self, mode="adopt", previous=None):
+        return StagedFixture.create(
+            self.root,
+            self.source,
+            self.manifest,
+            self.previous if previous is None else previous,
+            mode,
+            agents=self.agents,
+        )
+
+    def test_label_is_the_products_own_derivation(self):
+        home = self.base / "native/cli home"
+        digest = hashlib.sha256(os.fsencode(home)).hexdigest()[:16]
+        self.assertEqual(label_for(home), f"io.insto.watch.{os.getuid()}.{digest}")
+
+    def test_migrate_binds_the_apps_own_profile(self):
+        fixture = self.create(mode="migrate")
+        self.assertEqual(fixture.home, self.root / "profile")
+        self.assertIsNone(fixture.staged_home)
+
+    def test_adopt_stages_a_home_outside_the_desktop_root(self):
+        fixture = self.create(mode="adopt")
+        self.assertEqual(fixture.home, self.base / "native/cli home")
+        self.assertEqual(fixture.staged_home, fixture.home)
+        # A home inside the desktop root, or beside its markers, is never adoptable.
+        self.assertNotIn(self.root, fixture.home.parents)
+
+    def test_refuses_a_root_the_app_has_already_published_into(self):
+        (self.root / "runtimes").mkdir(mode=0o700)
+        with self.assertRaises(ValueError):
+            self.create()
+
+    def test_refuses_a_previous_interpreter_that_is_the_bundled_one(self):
+        with self.assertRaises(ValueError):
+            self.create(previous=self.bundled)
+
+    def test_refuses_an_existing_exact_registration(self):
+        (self.agents / f"{label_for(self.base / 'native/cli home')}.plist").write_bytes(b"")
+        with self.assertRaises(ValueError):
+            self.create()
+
+    def test_refuses_a_group_writable_artifact_parent(self):
+        self.base.chmod(0o777)
+        with self.assertRaises(ValueError):
+            self.create()
+
+    def test_stage_document_is_the_documented_two_key_object(self):
+        self.assertEqual(stage_document(None), {"schema_version": 1, "home": None})
+        self.assertEqual(
+            stage_document(Path("/private/cli home")),
+            {"schema_version": 1, "home": "/private/cli home"},
+        )
+
+    def test_stage_file_is_private_and_written_once(self):
+        fixture = self.create()
+        fixture.stage()
+        path = self.root / "staged.json"
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(private_read(path))["home"], str(fixture.home))
+        with self.assertRaises(FileExistsError):
+            fixture.stage()
+
+    def test_recorded_evidence_never_carries_a_fixture_credential(self):
+        self.assertEqual(json.loads(redacted({"ok": True})), {"ok": True})
+        for secret in ("isolated-migration-credential", "offline-fixture-token-not-real"):
+            with self.assertRaises(RuntimeError):
+                redacted({"stderr": f"boom {secret}"})
 
 
 if __name__ == "__main__":

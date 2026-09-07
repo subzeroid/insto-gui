@@ -13,8 +13,13 @@ fn admitted_arguments(args: &[std::ffi::OsString]) -> bool {
         return true;
     }
     #[cfg(feature = "app-proof")]
-    if args.len() == 2 && (args[0] == "--proof-root" || args[0] == "--proof-window") {
-        return true;
+    {
+        if args.len() == 2 && (args[0] == "--proof-root" || args[0] == "--proof-window") {
+            return true;
+        }
+        if args.len() == 3 && args[0] == "--proof-window" && args[2] == "--staged" {
+            return true;
+        }
     }
     false
 }
@@ -40,6 +45,29 @@ mod argument_tests {
                 "extra".into()
             ]));
         }
+    }
+    #[test]
+    fn launch_arguments_admit_the_staged_window_mode_only() {
+        assert_eq!(
+            admitted_arguments(&[
+                "--proof-window".into(),
+                "/private/insto-app-proof-test".into(),
+                "--staged".into()
+            ]),
+            cfg!(feature = "app-proof")
+        );
+        for extra in ["--stage", "--staged extra", ""] {
+            assert!(!admitted_arguments(&[
+                "--proof-window".into(),
+                "/private/insto-app-proof-test".into(),
+                extra.into()
+            ]));
+        }
+        assert!(!admitted_arguments(&[
+            "--proof-root".into(),
+            "/private/insto-app-proof-test".into(),
+            "--staged".into()
+        ]));
     }
 }
 
@@ -71,9 +99,20 @@ pub fn run() {
         return;
     }
     #[cfg(feature = "app-proof")]
-    let proof_root = if args.first().is_some_and(|arg| arg == "--proof-window") {
-        match proof::new_root(&args) {
-            Ok(root) => Some(root),
+    let proof = if args.first().is_some_and(|arg| arg == "--proof-window") {
+        // `new_root` creates the root; the probe polls for it, stages its
+        // fixture into the still-empty root, and only then releases the app.
+        let resolved = proof::new_root(&args).and_then(|root| {
+            let staged = proof::staged(&args);
+            let fixture = if staged {
+                proof_window::await_stage(&root)?
+            } else {
+                None
+            };
+            Ok((root, staged, fixture))
+        });
+        match resolved {
+            Ok(value) => Some(value),
             Err(code) => {
                 println!("{}", serde_json::json!({"error":code}));
                 std::process::exit(1);
@@ -113,10 +152,10 @@ pub fn run() {
         .setup(move |app| {
             let bundle = app.path().resource_dir()?.join("runtime");
             #[cfg(feature = "app-proof")]
-            let state = match proof_root {
-                Some(root) => {
+            let state = match &proof {
+                Some((root, _, _)) => {
                     app.manage(proof_window::ProofWindow::default());
-                    DesktopState::proof(bundle, root)
+                    DesktopState::proof(bundle, root.clone())
                 }
                 None => DesktopState::new(bundle),
             };
@@ -134,19 +173,25 @@ pub fn run() {
             .on_navigation(local_navigation)
             .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
             #[cfg(feature = "app-proof")]
-            let builder = if app.try_state::<proof_window::ProofWindow>().is_some() {
-                builder
-                    .initialization_script(proof_window::SCRIPT)
+            let builder = match &proof {
+                Some((_, staged, fixture)) => builder
+                    .initialization_script(proof_window::script(*staged, fixture.as_deref()))
                     .on_document_title_changed(|window, title| {
                         proof_window::title(window.app_handle(), &title)
-                    })
-            } else {
-                builder
+                    }),
+                None => builder,
             };
             builder.build()?;
             #[cfg(feature = "app-proof")]
-            if app.try_state::<proof_window::ProofWindow>().is_some() {
-                proof_window::start(app.handle());
+            if let Some((_, staged, _)) = &proof {
+                proof_window::start(
+                    app.handle(),
+                    std::time::Duration::from_secs(if *staged {
+                        proof_window::STAGED_WATCHDOG_SECONDS
+                    } else {
+                        proof_window::WATCHDOG_SECONDS
+                    }),
+                );
             }
             Ok(())
         })

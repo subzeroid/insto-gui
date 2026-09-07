@@ -7,8 +7,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(crate) fn staged(args: &[OsString]) -> bool {
+    args.len() == 3 && args[2] == "--staged"
+}
 pub(crate) fn new_root(args: &[OsString]) -> Result<PathBuf, &'static str> {
-    if args.len() != 2 || (args[0] != "--proof-root" && args[0] != "--proof-window") {
+    if args.is_empty()
+        || (args[0] != "--proof-root" && args[0] != "--proof-window")
+        || !(args.len() == 2 || (args[0] == "--proof-window" && staged(args)))
+    {
         return Err("proof_arguments");
     }
     let root = PathBuf::from(&args[1]);

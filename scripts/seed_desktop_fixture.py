@@ -1,7 +1,7 @@
 """Developer-only: seed one fresh isolated desktop profile with saved snapshots.
 
 Usage (with the prepared runtime interpreter, never a user machine):
-    python3 -I -B scripts/seed_desktop_fixture.py /abs/fresh/root '[{"pk":"7","stamp":1,"fields":{"username":"alice"}}]'
+    python3 -I -B scripts/seed_desktop_fixture.py /abs/fresh/root ROWS_JSON [--desired=running|stopped]
 The root must exist, be canonical, private (0700) and empty. The core's Profile
 also enforces its own ancestor-permission policy on the root's parents: the
 macOS per-user temp dir satisfies it, a 1777 /tmp may not. The token written
@@ -24,8 +24,15 @@ def fail(message: str) -> NoReturn:
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        fail("usage: seed_desktop_fixture.py ROOT ROWS_JSON")
+    if not 3 <= len(sys.argv) <= 4:
+        fail("usage: seed_desktop_fixture.py ROOT ROWS_JSON [--desired=running|stopped]")
+    desired = "stopped"
+    if len(sys.argv) == 4:
+        if not sys.argv[3].startswith("--desired="):
+            fail("the optional third argument is --desired=running or --desired=stopped")
+        desired = sys.argv[3].removeprefix("--desired=")
+        if desired not in {"running", "stopped"}:
+            fail("--desired must be running or stopped")
     root = Path(sys.argv[1])
     if not root.is_absolute() or not root.is_dir() or root.resolve() != root:
         fail("root must be an existing canonical absolute directory")
@@ -54,7 +61,7 @@ def main() -> None:
     with profile.locked(initialize=True):
         initialize_database(profile.home / "store.db")
         profile.write_config(config_bytes(profile, "offline-fixture-token-not-real"))
-        profile.write_state(profile.new_state(remaining=8, desired="stopped"))
+        profile.write_state(profile.new_state(remaining=8, desired=desired))
     with contextlib.closing(sqlite3.connect(profile.home / "store.db")) as db:
         with db:
             for row in rows:
