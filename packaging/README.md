@@ -19,11 +19,11 @@ G1 adds eleven commands on the C2 bridge: `read_overview`, `list_watches`,
 Vue polls `read_overview` every five seconds while the window is visible and
 reconciles with one read after every mutation; it never replays a mutation.
 
-Use the clean C2 revision (insto 0.7.21) in `packaging/core-pin.json` as the read-only build
+Use the clean C3 revision (insto 0.7.22) in `packaging/core-pin.json` as the read-only build
 input. After preparing a new runtime, stage it with:
 
 ```sh
-python3 -B -m scripts.stage_app_runtime .build/runtime-c2-01
+python3 -B -m scripts.stage_app_runtime .build/runtime-c3-01
 npm ci --ignore-scripts
 npm test
 npm run build
@@ -34,6 +34,21 @@ Staging refuses an existing `.build/app-resources/runtime`; it never overwrites
 historical evidence. Rust is the production runtime-copy path; Python staging
 is a developer packaging helper only. Bundled app commands and measured results
 are recorded in [app-proof-results.md](app-proof-results.md).
+
+## G2 runtime
+
+G2 adds the five C3 operations on the 0.7.22 bridge: `service.inspect`,
+`service.migrate`, `service.uninstall`, `home.inspect` and `home.select`.
+`.build/runtime-c3-01` was prepared with `scripts.prepare_runtime` from insto
+`c7d20c9618774acb0952e85c4fe05e3281ca8b5c` (0.7.22); its manifest validates
+against the pin, and its bridge advertises the twenty-four pinned capabilities
+in the pinned order. Staged into `.build/app-resources/runtime` (build id
+`4df54faceb61d38bd33ba2498d021384c5236d82a2431dbd932db4bee5ba7d60`). The
+retained 0.7.21 runtime `.build/runtime-c2-01` in the app-shell worktree is the
+"previous version" the native migration proof starts from; it is kept, never
+deleted. Gated bridge tests now need `INSTO_GUI_RUNTIME=$PWD/.build/runtime-c3-01`
+— the host rejects a 0.7.21 handshake. Developer evidence only, not a release
+artifact.
 
 P1 source locations must have safe, non-group-writable ancestors. Standard
 `/Applications` (`root:admin 0775` on this Mac) is currently rejected. Run local
