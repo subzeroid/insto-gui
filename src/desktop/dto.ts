@@ -78,7 +78,11 @@ export function decodeOverview(value: unknown): Overview {
   const checked = nullableCount(v.quota_checked_at, MAX_TIME)
   const list = watchList(v.watches, v.next_cursor)
   const configured = v.configured as boolean
-  if ((v.desired_service !== null) !== configured || (quota !== null) !== configured || (checked !== null) !== configured) fail()
+  // `quota_remaining` and `quota_checked_at` are written together (`new_state`),
+  // so an adopted home reports both null until its next credential check.
+  // Both-or-neither is the rule; only an unconfigured profile forces them null.
+  if ((v.desired_service !== null) !== configured || (quota === null) !== (checked === null)) fail()
+  if (!configured && quota !== null) fail()
   if (!configured && (list.items.length > 0 || list.next_cursor !== null || v.service_state !== 'unknown')) fail()
   return { configured, desired_service: v.desired_service as Overview['desired_service'], service_state: v.service_state as ServiceState, quota_remaining: quota, quota_checked_at: checked, watches: list.items, next_cursor: list.next_cursor }
 }
@@ -156,4 +160,121 @@ export function decodeHistoryPage(value: unknown, kinds: readonly HistoryKind[],
     if (index > 0 && !later(itemSnapshot(items[index - 1]), current)) fail()
   })
   return { items, next_cursor: cursor, scan_complete: v.scan_complete as boolean, scanned }
+}
+
+export type Registration = 'none' | 'owned' | 'unknown'
+export type Interpreter = 'current' | 'other'
+export type HomeReason = 'home_invalid' | 'home_backend_unsupported' | 'schema_mismatch' | 'storage_error'
+export type BindingState = 'own' | 'adopted' | 'unknown'
+export interface ServiceFacts { registration: Registration; interpreter: Interpreter | null; interpreterExists: boolean | null; loaded: boolean | null; settings: 'matching' | 'different' | null }
+export interface HomeReport { path: string; exists: boolean; private: boolean; config: 'ok' | 'missing' | 'invalid'; backend: 'hikerapi' | 'aiograpi' | 'fake' | null; database: 'ok' | 'missing' | 'schema_mismatch' | 'unreadable'; registration: Registration; interpreter: Interpreter | null; loaded: boolean | null; process: 'running' | 'stopped' | 'unknown'; adoptable: boolean; reason: HomeReason | null }
+export interface Binding { state: BindingState; home: string | null }
+
+const REGISTRATIONS: readonly Registration[] = ['none', 'owned', 'unknown']
+const INTERPRETERS: readonly Interpreter[] = ['current', 'other']
+const SETTINGS: readonly NonNullable<ServiceFacts['settings']>[] = ['matching', 'different']
+const CONFIGS: readonly HomeReport['config'][] = ['ok', 'missing', 'invalid']
+const BACKENDS: readonly NonNullable<HomeReport['backend']>[] = ['hikerapi', 'aiograpi', 'fake']
+const DATABASES: readonly HomeReport['database'][] = ['ok', 'missing', 'schema_mismatch', 'unreadable']
+const PROCESSES: readonly HomeReport['process'][] = ['running', 'stopped', 'unknown']
+const BINDING_STATES: readonly BindingState[] = ['own', 'adopted', 'unknown']
+// The core's four static reasons for a refusal (`insto/desktop/home.py:_reason`),
+// mirroring the Rust known set; every entry is a key of `messages`, so the UI
+// renders a reason through the existing catalogue without a mapping table.
+export const HOME_REASONS: readonly HomeReason[] = ['home_invalid', 'home_backend_unsupported', 'schema_mismatch', 'storage_error']
+// PATH_MAX. The *request* bound (`HOME_PATH_LIMIT`, 1024) is deliberately smaller:
+// the core expands `~` before it answers, so the absolute path it returns can be
+// longer than the path the user typed.
+export const RESPONSE_PATH_LIMIT = 4096
+
+function member<T extends string>(value: unknown, allowed: readonly T[]): T {
+  if (typeof value !== 'string' || !(allowed as readonly string[]).includes(value)) fail()
+  return value as T
+}
+const nullableMember = <T extends string>(value: unknown, allowed: readonly T[]): T | null => (value === null ? null : member(value, allowed))
+function flag(value: unknown): boolean { if (typeof value !== 'boolean') fail(); return value as boolean }
+const nullableFlag = (value: unknown): boolean | null => (value === null ? null : flag(value))
+// Every path the core returns: absolute (which also rules out the empty string),
+// no NUL, at most PATH_MAX bytes. `String.length` counts UTF-16 units, so the
+// bound is measured with TextEncoder.
+export function responsePath(value: unknown): string {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.includes('\0') || new TextEncoder().encode(value).length > RESPONSE_PATH_LIMIT) fail()
+  return value as string
+}
+
+export function decodeServiceFacts(value: unknown): ServiceFacts {
+  const v = exact(value, ['registration', 'interpreter', 'interpreter_exists', 'loaded', 'settings'])
+  const facts: ServiceFacts = {
+    registration: member(v.registration, REGISTRATIONS),
+    interpreter: nullableMember(v.interpreter, INTERPRETERS),
+    interpreterExists: nullableFlag(v.interpreter_exists),
+    loaded: nullableFlag(v.loaded),
+    settings: nullableMember(v.settings, SETTINGS),
+  }
+  if (facts.registration === 'owned') {
+    // An owned manifest always names its interpreter and whether that file is
+    // still there; `settings` alone stays null when the home has no parseable
+    // configuration to compare the registered pins against.
+    if (facts.interpreter === null || facts.interpreterExists === null) fail()
+  } else {
+    // Nothing was read from a manifest this app can trust.
+    if (facts.interpreter !== null || facts.interpreterExists !== null || facts.settings !== null) fail()
+    // A loaded job forces "unknown", so "none" is never loaded.
+    if (facts.registration === 'none' && facts.loaded === true) fail()
+  }
+  // `loaded` may be null for any registration: launchctl can be unreachable.
+  return facts
+}
+
+export function decodeHomeReport(value: unknown): HomeReport {
+  const v = exact(value, ['path', 'exists', 'private', 'config', 'backend', 'database', 'registration', 'interpreter', 'loaded', 'process', 'adoptable', 'reason'])
+  const report: HomeReport = {
+    path: responsePath(v.path),
+    exists: flag(v.exists),
+    private: flag(v.private),
+    config: member(v.config, CONFIGS),
+    backend: nullableMember(v.backend, BACKENDS),
+    database: member(v.database, DATABASES),
+    registration: member(v.registration, REGISTRATIONS),
+    interpreter: nullableMember(v.interpreter, INTERPRETERS),
+    loaded: nullableFlag(v.loaded),
+    process: member(v.process, PROCESSES),
+    adoptable: flag(v.adoptable),
+    reason: v.reason === null ? null : member(v.reason, HOME_REASONS),
+  }
+  // `_inspect` returns a fixed report for a path that does not exist, and reads
+  // nothing inside one that is not a private 0700 directory. Both are exact.
+  const closed = (config: HomeReport['config'], database: HomeReport['database'], registration: Registration) =>
+    report.config === config && report.backend === null && report.database === database &&
+    report.registration === registration && report.interpreter === null && report.loaded === null &&
+    report.process === 'unknown' && !report.adoptable && report.reason === 'home_invalid'
+  if (!report.exists && !(!report.private && closed('missing', 'missing', 'none'))) fail()
+  if (report.exists && !report.private && !closed('invalid', 'unreadable', 'unknown')) fail()
+  // Only a missing configuration file guarantees no backend name: an invalid
+  // configuration can still carry the backend it parsed, and a readable one can
+  // name a backend outside the three the app knows.
+  if (report.config === 'missing' && report.backend !== null) fail()
+  // `registration_facts`: an owned registration always names its interpreter and
+  // nothing else ever does; a loaded job forces "unknown", so "none" is never loaded.
+  if ((report.registration === 'owned') !== (report.interpreter !== null)) fail()
+  if (report.registration === 'none' && report.loaded === true) fail()
+  // The home report's process pairing.
+  if (report.loaded === false ? report.process !== 'stopped' : report.loaded === null && report.process !== 'unknown') fail()
+  // `_reason` is total, so adoptable is exactly "no reason", and the only shape it
+  // can be true for is a private HikerAPI home whose database is present or not yet
+  // created. The converse does not hold: another desktop root's own profile is
+  // refused with `home_invalid` while looking otherwise adoptable.
+  if (report.adoptable !== (report.reason === null)) fail()
+  if (report.adoptable && (!report.private || report.config !== 'ok' || report.backend !== 'hikerapi' || (report.database !== 'ok' && report.database !== 'missing'))) fail()
+  return report
+}
+
+export function decodeBinding(value: unknown): Binding {
+  const v = exact(value, ['state', 'home'])
+  const state = member(v.state, BINDING_STATES)
+  const home = v.home === null ? null : responsePath(v.home)
+  // `read_binding` returns a home only for `Adopted`; every binding file it could
+  // not fully trust became `Unknown`, with no path to show.
+  if ((home !== null) !== (state === 'adopted')) fail()
+  return { state, home }
 }

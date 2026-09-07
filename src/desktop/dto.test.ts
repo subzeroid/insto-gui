@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { decodeComparison, decodeHistoryPage, decodeOverview, decodeWatch, decodeWatchPage, CHANGE_KINDS, SNAPSHOT_KINDS, TARGET_KINDS } from './dto'
+import { HOME_REASONS, RESPONSE_PATH_LIMIT, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeOverview, decodeServiceFacts, decodeWatch, decodeWatchPage, CHANGE_KINDS, SNAPSHOT_KINDS, TARGET_KINDS } from './dto'
+import { messages } from './messages'
+import { adoptedBinding, current, expandedPath, facts, foreign, homeAdoptable, homeCliOwned, homeInvalidConfig, homeMissing, homeNotPrivate, homeRejected, homeSchemaMismatch, homeUnsupportedBackend, ownBinding, serviceForeign, serviceNone, serviceNoneStopped, serviceOwnedCurrent, serviceOwnedOther, serviceRejected, unknownBinding, unregistered, wire } from './fixtures'
 
 export const watch = { user: 'alice', status: 'active', interval_seconds: 300, last_ok: null, waiting_first_check: true, has_error: false, consecutive_errors: 0, revision: 'a'.repeat(64) }
 export const overview = { configured: true, desired_service: 'running', service_state: 'unknown', quota_remaining: 8, quota_checked_at: 100, watches: [watch], next_cursor: null }
@@ -55,5 +57,88 @@ describe('bridge decoders', () => {
     expect(decodeHistoryPage(feed, CHANGE_KINDS).items.map(item => item.kind)).toEqual(['incomplete', 'comparison', 'baseline'])
     expect(() => decodeHistoryPage(page([{ ...comparison, changes: [] }]), CHANGE_KINDS)).toThrow()
     expect(() => decodeHistoryPage(page([{ kind: 'diagnostic', snapshot: snap('1', '7', 1), code: 'history_identity_unknown' }]), CHANGE_KINDS)).toThrow()
+  })
+  it('decodes every service-inspection shape the core can return', () => {
+    // R8 1-5, straight from `registration_facts`.
+    expect(decodeServiceFacts(serviceNone)).toEqual({ registration: 'none', interpreter: null, interpreterExists: null, loaded: null, settings: null })
+    expect(decodeServiceFacts(serviceNoneStopped).loaded).toBe(false)
+    expect(decodeServiceFacts(serviceForeign).registration).toBe('unknown')
+    // The wire and the decoded fixtures are two spellings of one shape.
+    for (const [decoded, sent] of [[facts, serviceOwnedOther], [current, serviceOwnedCurrent], [unregistered, serviceNoneStopped], [foreign, serviceForeign]] as const) {
+      expect(wire(decoded)).toEqual(sent)
+      expect(decodeServiceFacts(sent)).toEqual(decoded)
+    }
+    // launchctl can be unreachable: `loaded` may be null for any registration.
+    expect(decodeServiceFacts({ ...serviceOwnedOther, loaded: null }).loaded).toBeNull()
+    expect(decodeServiceFacts({ ...serviceForeign, loaded: null }).loaded).toBeNull()
+    // R8 6, plus the type and key rules.
+    for (const bad of [
+      ...serviceRejected,
+      { ...serviceOwnedOther, registration: 'foreign' }, { ...serviceOwnedOther, interpreter: 'legacy' },
+      { ...serviceOwnedOther, settings: 'unknown' }, { ...serviceOwnedOther, interpreter_exists: null },
+      { ...serviceOwnedOther, interpreter_exists: 'yes' }, { ...serviceOwnedOther, python: '/usr/bin/python3' },
+      { registration: 'owned' },
+    ]) expect(() => decodeServiceFacts(bad)).toThrow(expect.objectContaining({ code: 'protocol' }))
+  })
+  it('decodes every home report the core can return', () => {
+    // R8 7-12.
+    expect(decodeHomeReport(homeAdoptable)).toEqual(homeAdoptable)
+    expect(decodeHomeReport(homeMissing).reason).toBe('home_invalid')
+    expect(decodeHomeReport(homeNotPrivate).registration).toBe('unknown')
+    // An invalid configuration still names the backend it parsed …
+    expect(decodeHomeReport(homeInvalidConfig).backend).toBe('hikerapi')
+    // … and a readable one may name a backend outside the three known ones.
+    expect(decodeHomeReport(homeUnsupportedBackend).backend).toBeNull()
+    expect(decodeHomeReport({ ...homeUnsupportedBackend, backend: 'aiograpi' }).adoptable).toBe(false)
+    expect(decodeHomeReport(homeSchemaMismatch).reason).toBe('schema_mismatch')
+    expect(decodeHomeReport(homeCliOwned).adoptable).toBe(true)
+    // A database that does not exist yet is still adoptable.
+    expect(decodeHomeReport({ ...homeAdoptable, database: 'missing' }).adoptable).toBe(true)
+    // Another desktop root's own profile: refused while looking otherwise fine.
+    expect(decodeHomeReport({ ...homeAdoptable, adoptable: false, reason: 'home_invalid' }).adoptable).toBe(false)
+    // R9: the core expands `~`, so a response path may exceed the 1024-byte
+    // request bound. It must still be absolute, and the bound is bytes.
+    expect(decodeHomeReport({ ...homeAdoptable, path: expandedPath }).path).toBe(expandedPath)
+    expect(HOME_REASONS.every(reason => Object.hasOwn(messages, reason))).toBe(true)
+    for (const bad of [
+      ...homeRejected,
+      { ...homeAdoptable, config: 'unreadable' }, { ...homeAdoptable, database: 'locked' },
+      { ...homeAdoptable, process: 'zombie' }, { ...homeAdoptable, registration: 'theirs' },
+      { ...homeAdoptable, reason: 'because' },
+      { ...homeAdoptable, config: 'missing', backend: 'hikerapi' },  // missing never names a backend
+      { ...homeAdoptable, registration: 'owned', interpreter: null },
+      { ...homeAdoptable, registration: 'none', loaded: true, process: 'running' },
+      { ...homeAdoptable, backend: 'fake' }, { ...homeAdoptable, database: 'schema_mismatch' },
+      { ...homeAdoptable, path: 'relative/.insto' }, { ...homeAdoptable, path: '' },
+      { ...homeAdoptable, path: '/a\0b' },
+      { ...homeAdoptable, path: `/${'ä'.repeat(RESPONSE_PATH_LIMIT / 2)}` },  // 4097 bytes, 2049 characters
+      { ...homeAdoptable, owner_uid: 501 },
+    ]) expect(() => decodeHomeReport(bad)).toThrow(expect.objectContaining({ code: 'protocol' }))
+  })
+  it('decodes the binding report and pairs the home with the adopted state', () => {
+    expect(decodeBinding(ownBinding)).toEqual({ state: 'own', home: null })
+    expect(decodeBinding(adoptedBinding)).toEqual({ state: 'adopted', home: '/Users/x/.insto' })
+    expect(decodeBinding(unknownBinding)).toEqual({ state: 'unknown', home: null })
+    expect(decodeBinding({ state: 'adopted', home: expandedPath }).home).toBe(expandedPath)
+    for (const bad of [
+      { state: 'adopted', home: null },                 // adopted always names its home
+      { state: 'own', home: '/Users/x/.insto' },        // and no other state ever does
+      { state: 'unknown', home: '/Users/x/.insto' },
+      { state: 'foreign', home: null }, { state: 'adopted', home: 'relative/.insto' },
+      { state: 'adopted', home: '' }, { state: 'adopted', home: '/a\0b' },
+      { state: 'adopted', home: `/${'ä'.repeat(RESPONSE_PATH_LIMIT / 2)}` },
+      { state: 'own' }, { state: 'own', home: null, uid: 501 },
+    ]) expect(() => decodeBinding(bad)).toThrow(expect.objectContaining({ code: 'protocol' }))
+  })
+  it('accepts a configured overview whose quota is not yet known', () => {
+    // The two quota fields are written together (`new_state`), so an adopted home
+    // reports both null until its next credential check. Both-or-neither is the
+    // rule; the old `(quota !== null) !== configured` rejected every such overview.
+    expect(decodeOverview({ ...overview, quota_remaining: null, quota_checked_at: null }).quota_remaining).toBeNull()
+    expect(decodeOverview({ ...overview, quota_remaining: 0 }).quota_remaining).toBe(0)
+    for (const bad of [
+      { ...overview, quota_checked_at: null },
+      { ...overview, configured: false, desired_service: null, watches: [], next_cursor: null, quota_checked_at: null },
+    ]) expect(() => decodeOverview(bad)).toThrow(expect.objectContaining({ code: 'protocol' }))
   })
 })
