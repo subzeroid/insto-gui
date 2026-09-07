@@ -432,7 +432,7 @@ Built on 2026-09-07 with
 silent). Executable SHA-256
 `ca22f401e4c88d053b4ebe9c6df4a696a0a974f1a2361cd69c0a1dd0a8fdda3b`; bundled
 runtime build id `4df54faceb61d38bd33ba2498d021384c5236d82a2431dbd932db4bee5ba7d60`
-(insto 0.7.22 at `c7d20c9618774acb0952e85c4fe05e3281ca8b5c`). Both legs used the
+(insto 0.7.22 at `3d2c8e7a512625c21e0e1b47c22ec14eea5da19d`). Both legs used the
 retained 0.7.21 runtime `.build/runtime-c2-01` from the app-shell worktree as the
 previous version. Machine state was snapshotted before the first run and after
 the last: `~/Library/LaunchAgents` byte-identical (7 entries, none of them

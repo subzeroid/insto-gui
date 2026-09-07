@@ -14,7 +14,7 @@ class CorePinConsistency(unittest.TestCase):
         protocol = (REPO / "crates/desktop-host/src/protocol.rs").read_text()
         client = (REPO / "src/desktop/client.ts").read_text()
         self.assertEqual(pin["core_version"], "0.7.22")
-        self.assertEqual(pin["core_commit"], "c7d20c9618774acb0952e85c4fe05e3281ca8b5c")
+        self.assertEqual(pin["core_commit"], "3d2c8e7a512625c21e0e1b47c22ec14eea5da19d")
         self.assertIn(f'pub const CORE_VERSION: &str = "{pin["core_version"]}";', protocol)
         self.assertIn(f"export const CORE_VERSION = '{pin['core_version']}'", client)
         table = re.search(r"pub const CAPABILITIES: \[&str; (\d+)\] = \[(.*?)\];", protocol, re.S)
