@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { Profile } from '../desktop/client'
-const props = defineProps<{ profile: Profile; busy: boolean; stale: boolean; start: () => Promise<boolean>; stop: () => Promise<boolean>; repair: () => Promise<boolean> }>()
+const props = defineProps<{ profile: Profile; busy: boolean; stale: boolean; readonly: boolean; start: () => Promise<boolean>; stop: () => Promise<boolean>; repair: () => Promise<boolean> }>()
 const titles = { unconfigured: 'Доступ не настроен', recovery_required: 'Нужно восстановление', quota_exhausted: 'Лимит исчерпан', running: 'Служба запущена', stopped: 'Служба остановлена', service_error: 'Нужно проверить службу' }
-const disabled = computed(() => props.busy || props.stale)
+// R12: an unknown owner, an unknown binding or unread facts mean the app has no
+// proof of what it would be changing, so no control acts — Repair included.
+const disabled = computed(() => props.busy || props.stale || props.readonly)
 const recovery = computed(() => props.profile.status === 'recovery_required')
 const checkedAt = computed(() => {
   if (props.profile.quota_checked_at === null) return 'нет данных'
