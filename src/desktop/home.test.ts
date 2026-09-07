@@ -17,7 +17,8 @@ async function boot(invoke: ReturnType<typeof vi.fn<Invoke>>) {
   const desktop = createDesktopState(client)
   await desktop.initialize()
   const invalidate = vi.fn()
-  return { desktop, invalidate, home: createHomeState(client, desktop, { invalidate }) }
+  const settled = vi.fn()
+  return { desktop, invalidate, settled, home: createHomeState(client, desktop, { invalidate, settled }) }
 }
 
 describe('home state', () => {
@@ -83,18 +84,19 @@ describe('home state', () => {
   it('never adopts a report the core refused', async () => {
     const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(empty))
       .mockResolvedValueOnce(inspection(unsupported))
-    const { home, invalidate } = await boot(invoke)
+    const { home, invalidate, settled } = await boot(invoke)
     await home.check()
     expect(home.state.checked?.report.reason).toBe('home_backend_unsupported')
     expect(await home.adopt()).toBe(false)
     expect(invalidate).not.toHaveBeenCalled()
+    expect(settled).not.toHaveBeenCalled()
     expect(names(invoke)).not.toContain('select_home')
   })
 
   it('adopts the inspected path, not the text in the field, and invalidates before the call', async () => {
     const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(empty))
       .mockResolvedValueOnce(inspection(report)).mockResolvedValueOnce(wrap(running))
-    const { home, invalidate } = await boot(invoke)
+    const { home, invalidate, settled } = await boot(invoke)
     home.edit('/Users/x/.insto')
     await home.check()
     // The component routes every keystroke through `edit`, which clears `checked`.
@@ -105,15 +107,19 @@ describe('home state', () => {
     expect(invalidate).toHaveBeenCalledTimes(1)
     expect(invoke.mock.calls.at(-1)).toEqual(['select_home', { home: { path: '/Users/x/.insto' } }])
     expect(home.state.checked).toBeNull()
+    // R11: the outcome leaves through the hook, never through a component that
+    // this very selection unmounts.
+    expect(settled).toHaveBeenCalledWith('selected')
   })
 
   it('releases with a null path and invalidates first', async () => {
     const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(running))
       .mockResolvedValueOnce(wrap(empty))
-    const { home, invalidate } = await boot(invoke)
+    const { home, invalidate, settled } = await boot(invoke)
     expect(await home.release()).toBe(true)
     expect(invalidate).toHaveBeenCalledTimes(1)
     expect(invoke.mock.calls.at(-1)).toEqual(['select_home', { home: { path: null } }])
+    expect(settled).toHaveBeenCalledWith('selected')
   })
 
   it('surfaces a core refusal, drops the report and classifies the outcome', async () => {
@@ -121,13 +127,22 @@ describe('home state', () => {
       .mockResolvedValueOnce(inspection(report))
       .mockResolvedValueOnce(envelope('error', { code: 'home_invalid', message: 'RAW_SENTINEL', retryable: false }))
       .mockResolvedValueOnce(wrap(empty))
-    const { home } = await boot(invoke)
+    const { home, settled } = await boot(invoke)
     await home.check()
     expect(await home.adopt()).toBe(false)
     expect(home.state.error?.code).toBe('home_invalid')
     expect(home.state.checked).toBeNull()
     expect(JSON.stringify(home.state)).not.toContain('RAW_SENTINEL')
     expect(outcomeOf(false, home.state.error)).toBe('refused')
+    expect(settled).toHaveBeenCalledWith('refused')
+  })
+
+  it('reports an uncertain selection through the same hook', async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(running))
+      .mockRejectedValueOnce('outcome_unknown').mockResolvedValueOnce(wrap(running))
+    const { home, settled } = await boot(invoke)
+    expect(await home.release()).toBe(false)
+    expect(settled).toHaveBeenCalledWith('uncertain')
   })
 
   it('classifies the three outcomes the App has to distinguish', () => {

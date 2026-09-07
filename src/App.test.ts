@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import App from './App.vue'
 import { CORE_VERSION, type Profile } from './desktop/client'
-import { current, envelope, facts, foreign, overview, page, snap, wire } from './desktop/fixtures'
+import { current, envelope, facts, foreign, homeAdoptable, overview, page, snap, wire } from './desktop/fixtures'
 import type { ServiceFacts } from './desktop/client'
+import { messages } from './desktop/messages'
 
 const prepared = { core_version: CORE_VERSION, build_id: 'a'.repeat(64) }
 const empty: Profile = { configured: false, status: 'unconfigured', desired_service: null, service_running: false, quota_remaining: null, quota_checked_at: null, revision: null }
@@ -233,5 +234,126 @@ describe('application integration', () => {
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
     expect(wrapper.text()).toContain('Нужно повторить проверку')
     expect(wrapper.find('button[data-action="release-binding"]').exists()).toBe(false)
+  })
+  it('adopts a home from the onboarding screen without a token', async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(empty)).mockResolvedValueOnce(ownBinding)
+      .mockResolvedValueOnce(envelope('home_inspection', homeAdoptable))
+      .mockResolvedValueOnce(wrap(runningProfile))                                  // select_home
+      .mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(runningProfile))  // re-initialize
+      .mockResolvedValueOnce(adoptedBinding).mockResolvedValueOnce(inspection(facts))
+      .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
+    wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
+    expect(wrapper.find('.home-adoption').exists()).toBe(true)
+    await wrapper.get('input[data-field="home-path"]').setValue('/Users/x/.insto')
+    await wrapper.get('button[data-action="check-home"]').trigger('click'); await flushPromises()
+    await wrapper.get('button[data-action="adopt-home"]').trigger('click')
+    await wrapper.get('button[data-action="confirm-adopt"]').trigger('click'); await flushPromises()
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['prepare_desktop', 'inspect_setup', 'inspect_binding', 'inspect_home', 'select_home', 'prepare_desktop', 'inspect_setup', 'inspect_binding', 'inspect_service', 'read_overview'])
+    expect(invoke.mock.calls[4]).toEqual(['select_home', { home: { path: '/Users/x/.insto' } }])
+    expect(wrapper.find('.app-nav').exists()).toBe(true)
+    // The adopted CLI service is never migrated behind the user's back.
+    expect(invoke.mock.calls.map(call => call[0])).not.toContain('migrate_service')
+  })
+  it('a selection clears the previous home before the call and shows nothing from it afterwards', async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(stopped))
+      .mockResolvedValueOnce(ownBinding).mockResolvedValueOnce(inspection(current))
+      .mockResolvedValueOnce(envelope('overview', overview))
+      .mockResolvedValueOnce(envelope('history_page', page([{ kind: 'target', target_pk: '7', snapshot: snap('1', '7', 1) }])))
+      .mockResolvedValueOnce(envelope('history_page', page([{ kind: 'snapshot', snapshot: snap('1', '7', 1) }])))
+      .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
+    wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
+    await wrapper.get('[role="option"]').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('PK 7')
+    invoke.mockResolvedValueOnce(envelope('home_inspection', homeAdoptable))
+      .mockResolvedValueOnce(wrap(runningProfile))
+      .mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(runningProfile))
+      .mockResolvedValueOnce(adoptedBinding).mockResolvedValueOnce(inspection(current))
+      .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
+    await wrapper.findAll('.app-nav button')[3].trigger('click'); await flushPromises()
+    await wrapper.get('input[data-field="home-path"]').setValue('/Users/x/.insto')
+    await wrapper.get('button[data-action="check-home"]').trigger('click'); await flushPromises()
+    await wrapper.get('button[data-action="adopt-home"]').trigger('click')
+    await wrapper.get('button[data-action="confirm-adopt"]').trigger('click'); await flushPromises()
+    // Nothing from the previous home is on screen or in the state.
+    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Наблюдения')
+    expect(wrapper.text()).not.toContain('PK 7')
+    expect(wrapper.text()).toContain('Добавить аккаунт')
+  })
+  it('an uncertain selection re-reads the binding and re-initializes instead of resuming polling', async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(stopped))
+      .mockResolvedValueOnce(ownBinding).mockResolvedValueOnce(inspection(current))
+      .mockResolvedValueOnce(envelope('overview', { ...overview, watches: [] }))
+      .mockResolvedValueOnce(envelope('home_inspection', homeAdoptable))
+      .mockRejectedValueOnce('outcome_unknown')                                     // select_home
+      .mockResolvedValueOnce(wrap(stopped))                                         // mutate reads back
+      .mockResolvedValueOnce(adoptedBinding)                                        // the binding is re-read first
+      .mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(runningProfile))  // then initialization starts over
+      .mockResolvedValueOnce(inspection(current))
+      .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
+    wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
+    await wrapper.findAll('.app-nav button')[3].trigger('click'); await flushPromises()
+    await wrapper.get('input[data-field="home-path"]').setValue('/Users/x/.insto')
+    await wrapper.get('button[data-action="check-home"]').trigger('click'); await flushPromises()
+    await wrapper.get('button[data-action="adopt-home"]').trigger('click')
+    await wrapper.get('button[data-action="confirm-adopt"]').trigger('click'); await flushPromises()
+    const order = invoke.mock.calls.map(call => call[0])
+    expect(order.slice(6, 12)).toEqual(['select_home', 'inspect_setup', 'inspect_binding', 'prepare_desktop', 'inspect_setup', 'inspect_service'])
+    // No overview read happened between the failed selection and the fresh
+    // initialization: nothing polls against a home nobody can name.
+    expect(order.indexOf('read_overview', 6)).toBeGreaterThan(order.indexOf('inspect_service', 6))
+    // `initialize` clears the global error banner, so the uncertainty needs a
+    // notice of its own or it would vanish without a trace.
+    expect(wrapper.get('[data-note="selection-uncertain"]').text()).toContain('Результат подключения каталога неизвестен')
+  })
+  it('a refused selection keeps the profile and reports the reason', async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(stopped))
+      .mockResolvedValueOnce(ownBinding).mockResolvedValueOnce(inspection(current))
+      .mockResolvedValueOnce(envelope('overview', { ...overview, watches: [] }))
+      .mockResolvedValueOnce(envelope('home_inspection', homeAdoptable))
+      .mockResolvedValueOnce(envelope('error', { code: 'home_invalid', message: 'RAW_SENTINEL', retryable: false }))
+      .mockResolvedValueOnce(wrap(stopped))
+      .mockResolvedValueOnce(ownBinding).mockResolvedValueOnce(inspection(current))
+      .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
+    wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
+    await wrapper.findAll('.app-nav button')[3].trigger('click'); await flushPromises()
+    await wrapper.get('input[data-field="home-path"]').setValue('/Users/x/.insto')
+    await wrapper.get('button[data-action="check-home"]').trigger('click'); await flushPromises()
+    await wrapper.get('button[data-action="adopt-home"]').trigger('click')
+    await wrapper.get('button[data-action="confirm-adopt"]').trigger('click'); await flushPromises()
+    // A refusal changed nothing, so initialization is not restarted, the user stays
+    // on the screen that asked, and the core's own reason is the one shown.
+    expect(invoke.mock.calls.filter(call => call[0] === 'prepare_desktop')).toHaveLength(1)
+    expect(wrapper.find('[data-note="selection-uncertain"]').exists()).toBe(false)
+    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Настройки')
+    expect(wrapper.get('.home-adoption [role="alert"]').text()).toContain(messages.home_invalid)
+    expect(wrapper.html()).not.toContain('RAW_SENTINEL')
+  })
+  it('an adopted CLI service is taken over only through the confirmation', async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(runningProfile))
+      .mockResolvedValueOnce(adoptedBinding).mockResolvedValueOnce(inspection(facts))
+      .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
+    wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
+    await wrapper.findAll('.app-nav button')[2].trigger('click'); await flushPromises()
+    await wrapper.get('button[data-action="migrate-service"]').trigger('click')
+    expect(invoke.mock.calls.map(call => call[0])).not.toContain('migrate_service')
+    invoke.mockResolvedValueOnce(wrap(runningProfile)).mockResolvedValueOnce(inspection(current))
+      .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
+    await wrapper.get('button[data-action="confirm-takeover"]').trigger('click'); await flushPromises()
+    expect(invoke.mock.calls.filter(call => call[0] === 'migrate_service')).toHaveLength(1)
+    expect(wrapper.text()).toContain('Служба переведена на встроенное ядро этой версии.')
+  })
+  it('an unknown ownership issues no service mutation from any surface', async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(runningProfile))
+      .mockResolvedValueOnce(ownBinding).mockResolvedValueOnce(inspection(foreign))
+      .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
+    wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
+    await wrapper.findAll('.app-nav button')[2].trigger('click'); await flushPromises()
+    for (const action of ['start', 'stop', 'repair']) expect(wrapper.get(`button[data-action="${action}"]`).attributes('disabled')).toBeDefined()
+    expect(wrapper.find('button[data-action="migrate-service"]').exists()).toBe(false)
+    await wrapper.findAll('.app-nav button')[3].trigger('click'); await flushPromises()
+    expect(wrapper.get('button[data-action="uninstall"]').attributes('disabled')).toBeDefined()
+    for (const command of ['start_service', 'stop_service', 'repair_service', 'migrate_service', 'uninstall_service']) {
+      expect(invoke.mock.calls.some(call => call[0] === command), command).toBe(false)
+    }
   })
 })

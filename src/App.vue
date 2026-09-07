@@ -6,9 +6,10 @@ import { createDesktopState } from './desktop/state'
 import { createMonitoringState } from './desktop/monitoring'
 import { createHistoryState } from './desktop/history'
 import { createServiceState, type ServiceNotice } from './desktop/service'
+import { createHomeState, type SelectOutcome } from './desktop/home'
 import { texts } from './desktop/messages'
 import AppNav, { type Section } from './components/AppNav.vue'
-import SetupPanel from './components/SetupPanel.vue'
+import OnboardingView from './components/OnboardingView.vue'
 import WatchesView from './components/WatchesView.vue'
 import ChangesView from './components/ChangesView.vue'
 import ServiceView from './components/ServiceView.vue'
@@ -18,13 +19,17 @@ const client = new DesktopClient(props.invokeCommand ?? invoke)
 const ui = createDesktopState(client)
 const monitoring = createMonitoringState(client)
 const history = createHistoryState(client)
-// One service state for the window: the service section and the settings blocks
-// must agree on the same binding, the same facts and the same freshness.
+// One service state and one home state for the window: onboarding, the service
+// section and Settings must agree on the same binding, the same facts and the same
+// checked report.
 const service = createServiceState(client, ui)
+const home = createHomeState(client, ui, { invalidate, settled: afterSelection })
 const { state } = ui
 const section = ref<Section>('watches')
 const feedFilter = ref<string | null>(null)
 const booted = ref(false)
+const selecting = ref(false)
+const selectionUncertain = ref(false)
 const NOTICE_TEXT: Record<ServiceNotice, string> = {
   migrated: texts.service_migrated,
   migration_rolled_back: texts.service_migration_rolled_back,
@@ -46,19 +51,53 @@ async function boot() {
   } else await service.refreshBinding()
   booted.value = true
 }
+// R11: everything scoped to the bound home dies before the selection IPC leaves,
+// so a response arriving from the previous home has nothing left to repopulate.
+// `selecting` holds the poll watcher off until the new binding has been proved.
+function invalidate() {
+  selecting.value = true
+  monitoring.reset()
+  history.resetHome()
+  feedFilter.value = null
+  service.clear()
+}
+async function afterSelection(outcome: SelectOutcome) {
+  // `initialize` clears the global error banner, so an uncertain outcome needs a
+  // notice of its own or it would vanish without a trace.
+  selectionUncertain.value = outcome === 'uncertain'
+  if (outcome === 'uncertain') {
+    // The binding itself is in doubt: it is re-read first, initialization starts
+    // over from it, and polling resumes only once that has proved the profile.
+    await service.refreshBinding()
+    await ui.initialize()
+    if (state.phase === 'ready') await service.refreshFacts()
+  } else {
+    // Only a selection that actually happened moves the user; a refusal changed
+    // nothing and leaves them on the screen that carries the reason.
+    if (outcome === 'selected') { await ui.initialize(); section.value = 'watches' }
+    // A refusal changed nothing either way, but the invalidation cleared the facts.
+    if (state.phase === 'ready') await service.inspect()
+  }
+  selecting.value = false
+}
 async function releaseFromFailure() {
+  invalidate()
+  selectionUncertain.value = false
   await ui.releaseBinding()
   await service.refreshBinding()
   if (state.phase === 'ready' && state.profile?.configured) await service.refreshFacts()
+  section.value = 'watches'
+  selecting.value = false
 }
 onMounted(boot)
 onBeforeUnmount(() => { monitoring.dispose(); service.dispose(); ui.dispose() })
-observe(() => booted.value && state.phase === 'ready' && state.profile?.configured === true, on => { if (on) monitoring.start(); else monitoring.stop() })
+observe(() => booted.value && !selecting.value && state.phase === 'ready' && state.profile?.configured === true, on => { if (on) monitoring.start(); else monitoring.stop() })
 // A profile that needs attention (recovery, failed start) opens the service
 // section, so a configured-but-broken setup never hides behind another tab.
 const attention = computed(() => state.profile?.status === 'recovery_required' || state.profile?.status === 'service_error')
 observe(attention, needed => { if (needed) section.value = 'service' })
-// A migration outcome is about the service: show it where it can be acted on.
+// A migration that did not simply succeed is about the service: show it where it
+// can be acted on.
 observe(() => service.state.notice, notice => { if (notice !== null && notice !== 'migrated') section.value = 'service' })
 function showChanges(pk: string) { feedFilter.value = pk; section.value = 'changes' }
 // R7: every profile mutation re-reads the registration facts. Reconcile (not
@@ -70,7 +109,7 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
 </script>
 <template>
   <div class="app-shell">
-    <header class="app-header"><div class="brand"><span class="brand-mark" aria-hidden="true">i</span>insto</div><span class="build-label">Локальная сборка · G1</span></header>
+    <header class="app-header"><div class="brand"><span class="brand-mark" aria-hidden="true">i</span>insto</div><span class="build-label">Локальная сборка · G2</span></header>
     <AppNav v-if="state.phase === 'ready' && state.profile?.configured" :current="section" @navigate="section = $event" />
     <main>
       <section v-if="state.phase === 'preparing'" class="loading-panel" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"/><div class="eyebrow">ВСЁ НУЖНОЕ УЖЕ ВНУТРИ</div><h1>Готовим ядро</h1><p class="intro">Проверяем встроенные файлы и создаём защищённую копию. Это не требует загрузок из интернета.</p></section>
@@ -85,11 +124,10 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
         </template>
       </section>
       <template v-else-if="state.phase === 'ready' && state.profile">
-        <template v-if="!state.profile.configured">
-          <div v-if="state.error" class="notice danger" role="alert">{{ state.error.message }}</div>
-          <div v-if="state.stale" class="notice warning" role="status">Данные устарели. Изменения заблокированы до обновления. <button type="button" class="text-button" :disabled="state.busy" @click="ui.refresh">Обновить</button></div>
-          <SetupPanel :busy="state.busy || state.stale" :connect="connect" :open-token-page="() => client.openTokenPage()" />
-        </template>
+        <!-- A selection whose outcome nobody can name concerns both screens, so the
+             notice sits above the configured / unconfigured split. -->
+        <p v-if="selectionUncertain" class="notice warning" role="status" data-note="selection-uncertain">Результат подключения каталога неизвестен: изменение могло примениться, а могло и нет. Проверьте в разделе «Настройки», с каким каталогом сейчас работает приложение.</p>
+        <OnboardingView v-if="!state.profile.configured" :busy="state.busy" :stale="state.stale" :error="state.error" :home="home" :binding="service.state.binding" :connect="connect" :open-token-page="() => client.openTokenPage()" :refresh="ui.refresh" />
         <template v-else>
           <!-- Setup/service state is global: its errors and recovery needs show on every section. -->
           <div v-if="state.error" class="notice danger" role="alert">{{ state.error.message }}</div>
@@ -100,11 +138,11 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
           <WatchesView v-if="section === 'watches'" :monitoring="monitoring" :history="history" @show-changes="showChanges" />
           <ChangesView v-else-if="section === 'changes'" :history="history" :filter-pk="feedFilter" @clear-filter="feedFilter = null" />
           <template v-else-if="section === 'service'">
-            <ServiceView :profile="state.profile" :overview="monitoring.state.overview" :last-read-at="monitoring.state.lastReadAt" :stale="state.stale" :monitoring-stale="monitoring.state.stale" :read-error="monitoring.state.readError" :busy="state.busy" :refresh-overview="monitoring.refresh" :start="() => serviceAction(ui.start)" :stop="() => serviceAction(ui.stop)" :repair="() => serviceAction(ui.repair)" />
+            <ServiceView :profile="state.profile" :overview="monitoring.state.overview" :last-read-at="monitoring.state.lastReadAt" :stale="state.stale" :monitoring-stale="monitoring.state.stale" :read-error="monitoring.state.readError" :busy="state.busy" :service="service" :refresh-overview="monitoring.refresh" :refresh-facts="service.refreshFacts" :start="() => serviceAction(ui.start)" :stop="() => serviceAction(ui.stop)" :repair="() => serviceAction(ui.repair)" />
             <div class="refresh-row"><span>Состояние читается локально, без запросов HikerAPI.</span><button class="text-button" :disabled="state.busy" @click="ui.refresh">Обновить</button></div>
           </template>
           <template v-else>
-            <SettingsView :busy="state.busy" :stale="state.stale" :configured="state.profile.configured" :recovery="state.profile.status === 'recovery_required'" :desired-service="state.profile.desired_service" :service-running="state.profile.service_running" :core-version="state.runtime?.core_version ?? null" :build-id="state.runtime?.build_id ?? null" :replace="replaceToken" :stop="() => serviceAction(ui.stop)" :open-token-page="() => client.openTokenPage()" />
+            <SettingsView :busy="state.busy" :stale="state.stale" :configured="state.profile.configured" :recovery="state.profile.status === 'recovery_required'" :service-running="state.profile.service_running" :core-version="state.runtime?.core_version ?? null" :build-id="state.runtime?.build_id ?? null" :service="service" :home="home" :binding="service.state.binding" :replace="replaceToken" :uninstall="service.uninstall" :open-token-page="() => client.openTokenPage()" />
           </template>
         </template>
       </template>

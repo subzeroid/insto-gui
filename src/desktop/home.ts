@@ -13,10 +13,12 @@ export type SelectOutcome = 'selected' | 'refused' | 'uncertain'
 export const outcomeOf = (done: boolean, failure: DesktopFailure | null): SelectOutcome =>
   done ? 'selected' : isUncertain(failure) ? 'uncertain' : 'refused'
 
-// The invalidation the App performs synchronously, immediately before the
-// selection IPC leaves: everything scoped to the previous home is dropped first,
-// so a response still in flight from it has nothing left to fill.
-export interface HomeHooks { invalidate: () => void }
+// Both halves of a selection belong to the App, and both are owned here rather
+// than by a component. `invalidate` runs synchronously immediately before the
+// selection IPC leaves, so everything scoped to the previous home is dropped
+// first and a response still in flight from it has nothing left to fill.
+// `settled` reports the outcome once it is known.
+export interface HomeHooks { invalidate: () => void; settled: (outcome: SelectOutcome) => void | Promise<void> }
 
 export function createHomeState(client: DesktopClient, desktop: DesktopState, hooks: HomeHooks) {
   const state = reactive({
@@ -65,6 +67,10 @@ export function createHomeState(client: DesktopClient, desktop: DesktopState, ho
     // Whatever the outcome, the report described the home as it was before the
     // attempt; it is no longer evidence about the bound profile.
     state.checked = null
+    // The outcome is reported by the state, not by the component: a successful
+    // adoption from onboarding flips `configured` and unmounts the block that
+    // would have emitted it, and Vue drops an emit from an unmounted instance.
+    await hooks.settled(outcomeOf(done, state.error))
     return done
   }
 

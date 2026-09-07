@@ -4,7 +4,7 @@ import ServicePanel from './ServicePanel.vue'
 import type { Profile } from '../desktop/client'
 
 const profile: Profile = { configured: true, status: 'quota_exhausted', desired_service: 'running', service_running: true, quota_remaining: 0, quota_checked_at: 100, revision: 'a'.repeat(32) }
-const actions = () => ({ start: vi.fn().mockResolvedValue(true), stop: vi.fn().mockResolvedValue(true), repair: vi.fn().mockResolvedValue(true) })
+const actions = () => ({ readonly: false, start: vi.fn().mockResolvedValue(true), stop: vi.fn().mockResolvedValue(true), repair: vi.fn().mockResolvedValue(true) })
 describe('local service panel', () => {
   it('zero quota is exhausted even when the process is running', () => {
     const wrapper = mount(ServicePanel, { props: { profile, busy: false, stale: false, ...actions() } })
@@ -24,5 +24,10 @@ describe('local service panel', () => {
     expect(wrapper.get('button[data-action=stop]').attributes('disabled')).toBeDefined()
     await wrapper.get('button[data-action=repair]').trigger('click')
     expect(callbacks.repair).toHaveBeenCalledTimes(1)
+  })
+  it('a read-only registration disables start, stop and repair', () => {
+    const callbacks = actions()
+    const wrapper = mount(ServicePanel, { props: { profile, busy: false, stale: false, ...callbacks, readonly: true } })
+    for (const action of ['start', 'stop', 'repair']) expect(wrapper.get(`button[data-action="${action}"]`).attributes('disabled')).toBeDefined()
   })
 })
