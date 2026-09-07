@@ -63,11 +63,15 @@ export function safeFailure(error: unknown): DesktopFailure {
 export const texts = {
   // Every user-visible sentence of this stage is defined once, here: Task 7
   // selects one migration notice per outcome and Task 8 renders the rest.
-  // One sentence per migration outcome (R13). «Прежняя регистрация восстановлена»
-  // appears only where the core reported a completed rollback; a recovery and an
-  // unknown outcome say plainly that nothing was restored.
+  // One sentence per migration outcome (R13), and each says only what the core
+  // actually reported. `service_error` reaches migrate two ways — a completed
+  // rollback whose restored registration did not restart (RestartFailedError),
+  // and any other BackendError raised after the rollback drained — so the notice
+  // claims only what both share: the registration is as it was. It never promises
+  // a running service, and the recovery and unknown outcomes say plainly that
+  // nothing was restored.
   service_migrated: 'Служба переведена на встроенное ядро этой версии.',
-  service_migration_rolled_back: 'Перевести службу не удалось. Ядро восстановило прежнюю регистрацию, но её процесс не запустился. Откройте раздел «Служба» и нажмите «Восстановить».',
+  service_migration_rolled_back: 'Перевести службу не удалось. Прежняя регистрация цела: ядро откатило изменение или не начинало его. Сама служба при этом может оказаться остановленной — проверьте её состояние ниже.',
   service_migration_recovery: 'Перевод службы не завершён. Приложение ничего не восстанавливало: профилю нужно восстановление. Откройте раздел «Служба» и нажмите «Восстановить».',
   service_migration_uncertain: 'Результат перевода службы неизвестен: изменение могло примениться, а могло и нет. Проверьте состояние в разделе «Служба» перед повтором.',
   service_registration_none: 'Служба не зарегистрирована.',
