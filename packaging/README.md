@@ -60,7 +60,7 @@ shell, provider-network or arbitrary-URL IPC is exposed.
 G2 adds the five C3 operations on the 0.7.22 bridge: `service.inspect`,
 `service.migrate`, `service.uninstall`, `home.inspect` and `home.select`.
 `.build/runtime-c3-01` was prepared with `scripts.prepare_runtime` from insto
-`c7d20c9618774acb0952e85c4fe05e3281ca8b5c` (0.7.22); its manifest validates
+`3d2c8e7a512625c21e0e1b47c22ec14eea5da19d` (0.7.22); its manifest validates
 against the pin, and its bridge advertises the twenty-four pinned capabilities
 in the pinned order. Staged into `.build/app-resources/runtime` (build id
 `4df54faceb61d38bd33ba2498d021384c5236d82a2431dbd932db4bee5ba7d60`). The

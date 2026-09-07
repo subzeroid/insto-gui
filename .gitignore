@@ -11,4 +11,8 @@ src-tauri/gen/
 .pytest_cache/
 .superpowers/
 .context/
+# Agent-facing working notes: never published, in any repository.
 docs/superpowers/
+AGENTS.md
+CLAUDE.md
+SKILL.md
