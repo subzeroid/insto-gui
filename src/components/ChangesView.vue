@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, watch as observe } from 'vue'
+import { computed, watch as observe } from 'vue'
 import type { HistoryItem } from '../desktop/dto'
 import type { createHistoryState } from '../desktop/history'
 import { formatCount, localTime } from '../desktop/format'
@@ -8,7 +8,11 @@ const props = defineProps<{ history: ReturnType<typeof createHistoryState>; filt
 // The filter is owned by the parent so retry, remount and navigation agree on it.
 const emit = defineEmits<{ 'clear-filter': [] }>()
 const feed = computed(() => props.history.state.feed)
-onMounted(() => { void props.history.loadFeed(props.filterPk) })
+// The feed outlives this component: it belongs to whichever mount read it last.
+// `loadFeed` empties it before the request leaves, so issuing the first read here
+// rather than from `onMounted` puts that emptying before this mount's first
+// render — a remount can never paint a row the previous one left behind.
+void props.history.loadFeed(props.filterPk)
 observe(() => props.filterPk, pk => { void props.history.loadFeed(pk) })
 function title(item: HistoryItem) {
   if (item.kind === 'baseline') return 'Первый снимок'

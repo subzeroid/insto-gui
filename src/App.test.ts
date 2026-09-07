@@ -356,4 +356,31 @@ describe('application integration', () => {
       expect(invoke.mock.calls.some(call => call[0] === command), command).toBe(false)
     }
   })
+  it('names every refresh control and labels every panel', async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(stopped))
+      .mockResolvedValueOnce(ownBinding).mockResolvedValueOnce(inspection(current))
+      .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
+    wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
+    const panel = wrapper.find('[role="tabpanel"]')
+    expect(panel.attributes('id')).toBe('panel-watches')
+    expect(panel.attributes('aria-labelledby')).toBe('tab-watches')
+    const tabs = wrapper.findAll('.app-nav button')
+    const sections = ['watches', 'changes', 'service', 'settings']
+    for (const [index, name] of sections.entries()) {
+      if (name === 'changes') invoke.mockResolvedValueOnce(envelope('history_page', { items: [], next_cursor: null, scan_complete: true, scanned: 0 }))
+      await tabs[index].trigger('click'); await flushPromises()
+      const open = wrapper.get('[role="tabpanel"]')
+      expect(open.attributes('id'), name).toBe(`panel-${name}`)
+      expect(open.attributes('aria-labelledby'), name).toBe(`tab-${name}`)
+    }
+    // On the service section, a stale setup puts the global banner's control beside
+    // the section's own: two buttons whose visible word is the same «Обновить».
+    await tabs[2].trigger('click'); await flushPromises()
+    invoke.mockRejectedValueOnce('transport')
+    await wrapper.get('button[data-action="refresh-service"]').trigger('click'); await flushPromises()
+    const labels = wrapper.findAll('button').filter(button => button.text() === 'Обновить').map(button => button.attributes('aria-label'))
+    expect(labels.length).toBeGreaterThan(1)
+    expect(new Set(labels).size).toBe(labels.length)
+    expect(labels.every(label => typeof label === 'string' && label.length > 0)).toBe(true)
+  })
 })

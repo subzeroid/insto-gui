@@ -1,11 +1,42 @@
 <script setup lang="ts">
+import { nextTick } from 'vue'
 export type Section = 'watches' | 'changes' | 'service' | 'settings'
 defineProps<{ current: Section }>()
 const emit = defineEmits<{ navigate: [section: Section] }>()
-const sections: { id: Section; label: string }[] = [{ id: 'watches', label: 'Наблюдения' }, { id: 'changes', label: 'Изменения' }, { id: 'service', label: 'Служба' }, { id: 'settings', label: 'Настройки' }]
+const sections: { id: Section; label: string }[] = [
+  { id: 'watches', label: 'Наблюдения' },
+  { id: 'changes', label: 'Изменения' },
+  { id: 'service', label: 'Служба' },
+  { id: 'settings', label: 'Настройки' }
+]
+// Roving tabindex: only the selected tab is in the tab order, so keyboard
+// selection has to carry focus with it or focus would be left on a tab that
+// is no longer reachable.
+async function select(id: Section) {
+  emit('navigate', id)
+  await nextTick()
+  document.getElementById(`tab-${id}`)?.focus()
+}
+function move(index: number, step: number) {
+  void select(sections[(index + step + sections.length) % sections.length].id)
+}
 </script>
 <template>
   <nav class="app-nav" role="tablist" aria-label="Разделы">
-    <button v-for="section in sections" :key="section.id" type="button" role="tab" :aria-selected="section.id === current" @click="emit('navigate', section.id)">{{ section.label }}</button>
+    <button
+      v-for="(section, index) in sections"
+      :id="`tab-${section.id}`"
+      :key="section.id"
+      type="button"
+      role="tab"
+      :aria-selected="section.id === current"
+      :aria-controls="`panel-${section.id}`"
+      :tabindex="section.id === current ? 0 : -1"
+      @click="emit('navigate', section.id)"
+      @keydown.right.prevent="move(index, 1)"
+      @keydown.left.prevent="move(index, -1)"
+      @keydown.home.prevent="select(sections[0].id)"
+      @keydown.end.prevent="select(sections[sections.length - 1].id)"
+    >{{ section.label }}</button>
   </nav>
 </template>

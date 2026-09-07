@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { reactive } from 'vue'
 import SettingsView from './SettingsView.vue'
 import type { Binding, ServiceFacts } from '../desktop/client'
-import { current, facts, foreign, homeAdoptable } from '../desktop/fixtures'
+import { current, facts, foreign, homeAdoptable, unregistered } from '../desktop/fixtures'
 
 const own: Binding = { state: 'own', home: null }
 const adopted: Binding = { state: 'adopted', home: '/Users/x/.insto' }
@@ -94,5 +94,17 @@ describe('settings', () => {
     const { wrapper } = make()
     expect(wrapper.text()).not.toContain('появятся в следующей версии')
     expect(homeAdoptable.backend).toBe('hikerapi') // the block only ever accepts a HikerAPI home
+  })
+  it('closes an open uninstall confirmation when there is nothing left to disable', async () => {
+    const { wrapper, service } = make()
+    await wrapper.get('button[data-action="uninstall"]').trigger('click')
+    expect(wrapper.find('button[data-action="confirm-uninstall"]').exists()).toBe(true)
+    // G2 replaced G1's `alreadyStopped` (a saved intent) with the registration
+    // itself: with nothing registered there is nothing left to disable, so the
+    // control and any confirmation standing on it both go.
+    service.state.facts = unregistered
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('button[data-action="confirm-uninstall"]').exists()).toBe(false)
+    expect(wrapper.get('button[data-action="uninstall"]').attributes('disabled')).toBeDefined()
   })
 })
