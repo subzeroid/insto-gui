@@ -97,6 +97,15 @@ pub enum Operation {
         limit: Option<u8>,
         cursor: Option<String>,
     },
+    ServiceInspect,
+    ServiceMigrate,
+    ServiceUninstall,
+    HomeInspect {
+        path: String,
+    },
+    HomeSelect {
+        path: Option<String>,
+    },
 }
 impl std::fmt::Debug for Operation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -314,6 +323,26 @@ pub(crate) fn watch_cursor(value: &str) -> bool {
 pub(crate) fn history_cursor(value: &str) -> bool {
     (1..=1024).contains(&value.len()) && base64url(value)
 }
+pub const PATH_LIMIT_BYTES: usize = 1024;
+pub const RESPONSE_PATH_LIMIT_BYTES: usize = 4096;
+// The shape the core accepts before it resolves a home: an absolute path or
+// `~`/`~/…`. Canonicality, symlinks, ownership and privacy stay the core's
+// verdict; a `..` segment can never survive the core's normalization, so it is
+// refused here instead of travelling to the bridge.
+fn home_path_ok(value: &str) -> bool {
+    (value.starts_with('/') || value == "~" || value.starts_with("~/"))
+        && (1..=PATH_LIMIT_BYTES).contains(&value.len())
+        && !value.contains('\0')
+        && !value.split('/').any(|segment| segment == "..")
+}
+// The shape the core answers with: it expands `~` and normalizes before it
+// reports, so a valid response path is always absolute and may be longer than
+// the request bound. PATH_MAX is the only ceiling left.
+pub(crate) fn response_path_ok(value: &str) -> bool {
+    value.starts_with('/')
+        && (1..=RESPONSE_PATH_LIMIT_BYTES).contains(&value.len())
+        && !value.contains('\0')
+}
 fn limit_ok(value: Option<u8>) -> bool {
     value.is_none_or(|n| (1..=50).contains(&n))
 }
@@ -345,6 +374,11 @@ impl Operation {
             Self::SnapshotsList { .. } => "snapshots.list",
             Self::SnapshotsCompare { .. } => "snapshots.compare",
             Self::ChangesList { .. } => "changes.list",
+            Self::ServiceInspect => "service.inspect",
+            Self::ServiceMigrate => "service.migrate",
+            Self::ServiceUninstall => "service.uninstall",
+            Self::HomeInspect { .. } => "home.inspect",
+            Self::HomeSelect { .. } => "home.select",
         }
     }
     pub fn budget(&self) -> Budget {
@@ -357,7 +391,9 @@ impl Operation {
             | Self::SnapshotsTargets { .. }
             | Self::SnapshotsList { .. }
             | Self::SnapshotsCompare { .. }
-            | Self::ChangesList { .. } => Budget::Read,
+            | Self::ChangesList { .. }
+            | Self::ServiceInspect
+            | Self::HomeInspect { .. } => Budget::Read,
             Self::WatchesAdd { .. }
             | Self::WatchesUpdate { .. }
             | Self::WatchesPause { .. }
@@ -367,7 +403,10 @@ impl Operation {
             | Self::CredentialsReplace { .. }
             | Self::ServiceStart
             | Self::ServiceStop
-            | Self::ServiceRepair => Budget::ServiceMutation,
+            | Self::ServiceRepair
+            | Self::ServiceMigrate
+            | Self::ServiceUninstall
+            | Self::HomeSelect { .. } => Budget::ServiceMutation,
         }
     }
     pub fn is_mutation(&self) -> bool {
@@ -390,6 +429,9 @@ impl Operation {
             | Self::ServiceStart
             | Self::ServiceStop
             | Self::ServiceRepair
+            | Self::ServiceInspect
+            | Self::ServiceMigrate
+            | Self::ServiceUninstall
             | Self::Overview => true,
             Self::WatchesList { limit, cursor } => {
                 limit_ok(*limit) && cursor_ok(cursor, watch_cursor)
@@ -435,6 +477,8 @@ impl Operation {
                     && limit_ok(*limit)
                     && cursor_ok(cursor, history_cursor)
             }
+            Self::HomeInspect { path } => home_path_ok(path),
+            Self::HomeSelect { path } => path.as_deref().is_none_or(home_path_ok),
         };
         if ok {
             Ok(())
@@ -539,6 +583,14 @@ impl Operation {
                 if let Some(c) = cursor {
                     params.insert("cursor".into(), text(c));
                 }
+            }
+            Self::HomeInspect { path } => {
+                params.insert("path".into(), text(path));
+            }
+            Self::HomeSelect { path } => {
+                // The core requires exactly `{"path": …}`; `null` is the own profile
+                // and is only accepted for `home.select`.
+                params.insert("path".into(), path.as_deref().map_or(Value::Null, text));
             }
             _ => {}
         }
@@ -1045,7 +1097,10 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
             | Operation::CredentialsReplace { .. }
             | Operation::ServiceStart
             | Operation::ServiceStop
-            | Operation::ServiceRepair => Response::Profile(profile(result)?),
+            | Operation::ServiceRepair
+            | Operation::ServiceMigrate
+            | Operation::ServiceUninstall
+            | Operation::HomeSelect { .. } => Response::Profile(profile(result)?),
             Operation::Overview => Response::Overview(overview(result)?),
             Operation::WatchesList { .. } => Response::WatchPage(watch_page(result)?),
             Operation::WatchesAdd { user, .. }
@@ -1080,6 +1135,9 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
                 target_pk.as_deref(),
                 limit.unwrap_or(50),
             )?),
+            // The two C3 reads get their DTOs in the next task; until then a
+            // result is refused rather than accepted unchecked.
+            Operation::ServiceInspect | Operation::HomeInspect { .. } => return Err(bad()),
         });
     }
     #[derive(Deserialize)]
@@ -1162,6 +1220,26 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
         "schema_mismatch" => (
             "schema_mismatch",
             "The profile database schema is incompatible.",
+            false,
+        ),
+        "home_invalid" => (
+            "home_invalid",
+            "The selected home cannot be used safely.",
+            false,
+        ),
+        "home_backend_unsupported" => (
+            "home_backend_unsupported",
+            "The selected home uses an unsupported backend.",
+            false,
+        ),
+        "service_ownership_unknown" => (
+            "service_ownership_unknown",
+            "The service registration has unknown ownership; only reading is allowed.",
+            false,
+        ),
+        "service_config_mismatch" => (
+            "service_config_mismatch",
+            "The registered service uses settings that differ from the home's configuration.",
             false,
         ),
         "unsupported_platform" => (
@@ -2330,5 +2408,182 @@ mod tests {
             serde_json::to_string(&ChangeValue::Text("x".into())).unwrap(),
             "\"x\""
         );
+    }
+    #[test]
+    fn c3_requests_and_budgets() {
+        use crate::protocol::Budget;
+        let cases: Vec<(Operation, &str)> = vec![
+            (
+                Operation::ServiceInspect,
+                r#""operation":"service.inspect","params":{}"#,
+            ),
+            (
+                Operation::ServiceMigrate,
+                r#""operation":"service.migrate","params":{}"#,
+            ),
+            (
+                Operation::ServiceUninstall,
+                r#""operation":"service.uninstall","params":{}"#,
+            ),
+            (
+                Operation::HomeInspect {
+                    path: "~/.insto".into(),
+                },
+                r#""operation":"home.inspect","params":{"path":"~/.insto"}"#,
+            ),
+            (
+                Operation::HomeSelect {
+                    path: Some("/Users/x/.insto".into()),
+                },
+                r#""operation":"home.select","params":{"path":"/Users/x/.insto"}"#,
+            ),
+            (
+                Operation::HomeSelect { path: None },
+                r#""operation":"home.select","params":{"path":null}"#,
+            ),
+        ];
+        for (operation, expected) in cases {
+            let text = String::from_utf8(operation.request("test").unwrap()).unwrap();
+            assert!(text.contains(expected), "{text}");
+            assert!(text.ends_with("}\n"));
+        }
+        for operation in [
+            Operation::ServiceInspect,
+            Operation::HomeInspect { path: "~".into() },
+        ] {
+            assert_eq!(operation.budget(), Budget::Read);
+            assert!(!operation.is_mutation());
+        }
+        for operation in [
+            Operation::ServiceMigrate,
+            Operation::ServiceUninstall,
+            Operation::HomeSelect { path: None },
+        ] {
+            assert_eq!(operation.budget(), Budget::ServiceMutation);
+            assert!(operation.is_mutation());
+        }
+        assert_eq!(
+            format!(
+                "{:?}",
+                Operation::HomeInspect {
+                    path: "/secret_sentinel".into()
+                }
+            ),
+            "home.inspect"
+        );
+    }
+    #[test]
+    fn c3_home_paths_match_the_core_bounds() {
+        let longest = format!("/{}", "a".repeat(PATH_LIMIT_BYTES - 1));
+        for path in [
+            "/",
+            "/Users/x/.insto",
+            "~",
+            "~/.insto",
+            "~/a b/c",
+            "/Users/x/..hidden",
+            longest.as_str(),
+        ] {
+            assert_eq!(
+                Operation::HomeInspect { path: path.into() }.validate(),
+                Ok(()),
+                "{path}"
+            );
+            assert_eq!(
+                Operation::HomeSelect {
+                    path: Some(path.into())
+                }
+                .validate(),
+                Ok(()),
+                "{path}"
+            );
+        }
+        let too_long = format!("/{}", "a".repeat(PATH_LIMIT_BYTES));
+        let too_wide = format!("/{}", "é".repeat(PATH_LIMIT_BYTES / 2));
+        for path in [
+            "",
+            "relative/.insto",
+            "~user/.insto",
+            "~~/.insto",
+            "/Users/x/../y",
+            "/..",
+            "..",
+            "/Users/x/.insto/..",
+            "/Users/x/\u{0}/.insto",
+            too_long.as_str(),
+            too_wide.as_str(),
+        ] {
+            assert_eq!(
+                Operation::HomeInspect { path: path.into() }.validate(),
+                Err(HostError::InvalidParams),
+                "{path}"
+            );
+            assert_eq!(
+                Operation::HomeInspect { path: path.into() }.request("id"),
+                Err(HostError::InvalidParams),
+                "{path}"
+            );
+            assert_eq!(
+                Operation::HomeSelect {
+                    path: Some(path.into())
+                }
+                .validate(),
+                Err(HostError::InvalidParams),
+                "{path}"
+            );
+        }
+        assert_eq!(Operation::HomeSelect { path: None }.validate(), Ok(()));
+        assert_eq!(Operation::ServiceMigrate.validate(), Ok(()));
+    }
+    #[test]
+    fn c3_response_paths_use_the_expanded_bound() {
+        // The core expands `~` before it answers, so a path it reports back can be
+        // longer than the 1024-byte request bound. Only PATH_MAX still applies.
+        let expanded = format!("/Users/x/{}/.insto", "d".repeat(1200));
+        let longest = format!("/{}", "a".repeat(RESPONSE_PATH_LIMIT_BYTES - 1));
+        assert!(expanded.len() > PATH_LIMIT_BYTES);
+        for path in ["/", "/Users/x/.insto", expanded.as_str(), longest.as_str()] {
+            assert!(response_path_ok(path), "{path}");
+        }
+        let too_long = format!("/{}", "a".repeat(RESPONSE_PATH_LIMIT_BYTES));
+        let too_wide = format!("/{}", "é".repeat(RESPONSE_PATH_LIMIT_BYTES / 2));
+        for path in [
+            "",
+            "~",
+            "~/.insto",
+            "relative/.insto",
+            "/Users/x/\u{0}/.insto",
+            too_long.as_str(),
+            too_wide.as_str(),
+        ] {
+            assert!(!response_path_ok(path), "{path}");
+        }
+        // The request bound stays the tighter of the two.
+        assert!(!home_path_ok(&expanded));
+        assert!(home_path_ok("~/.insto") && !response_path_ok("~/.insto"));
+    }
+    #[test]
+    fn c3_error_codes_are_static() {
+        for code in [
+            "home_invalid",
+            "home_backend_unsupported",
+            "service_ownership_unknown",
+            "service_config_mismatch",
+        ] {
+            let raw = format!(
+                "{{\"protocol_version\":1,\"request_id\":\"test\",\"error\":{{\"code\":\"{code}\",\"message\":\"/Users/x/.insto TOKEN_SENTINEL\",\"retryable\":true}}}}\n"
+            );
+            let Response::Error(error) = decode(
+                raw.as_bytes(),
+                "test",
+                &Operation::HomeSelect { path: None },
+            )
+            .unwrap() else {
+                panic!("expected an error response for {code}");
+            };
+            assert_eq!(error.code, code);
+            assert!(!error.retryable, "{code} must not be retryable");
+            assert!(!error.message.contains("TOKEN_SENTINEL") && !error.message.contains("/Users"));
+        }
     }
 }
