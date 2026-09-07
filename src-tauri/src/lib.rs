@@ -102,7 +102,13 @@ pub fn run() {
             commands::search_targets,
             commands::list_snapshots,
             commands::compare_snapshots,
-            commands::list_changes
+            commands::list_changes,
+            commands::inspect_service,
+            commands::migrate_service,
+            commands::uninstall_service,
+            commands::inspect_home,
+            commands::select_home,
+            commands::inspect_binding
         ])
         .setup(move |app| {
             let bundle = app.path().resource_dir()?.join("runtime");

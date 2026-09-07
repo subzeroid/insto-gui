@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-select-home"
+description = "Enables the select_home command without any pre-configured scope."
+commands.allow = ["select_home"]
+
+[[permission]]
+identifier = "deny-select-home"
+description = "Denies the select_home command without any pre-configured scope."
+commands.deny = ["select_home"]
