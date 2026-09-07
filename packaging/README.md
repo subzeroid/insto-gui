@@ -19,6 +19,15 @@ G1 adds eleven commands on the C2 bridge: `read_overview`, `list_watches`,
 Vue polls `read_overview` every five seconds while the window is visible and
 reconciles with one read after every mutation; it never replays a mutation.
 
+G2 adds six more on the C3 bridge: `inspect_service`, `migrate_service`,
+`uninstall_service`, `inspect_home`, `select_home` and `inspect_binding`, so the
+ACL now allows twenty-five commands. Five of them reach the core; the sixth does
+not. `inspect_binding` is a host-local read of `<desktop root>/desktop-home.json`
+through `crates/desktop-host/src/binding.rs`, the only reader of that file, which
+is why a broken binding can still be released after the first core inspection has
+failed. Anything that file cannot be fully trusted to say is reported as an
+unknown binding, and an unknown binding makes every service control read-only.
+
 Use the clean C3 revision (insto 0.7.22) in `packaging/core-pin.json` as the read-only build
 input. After preparing a new runtime, stage it with:
 
@@ -60,6 +69,35 @@ retained 0.7.21 runtime `.build/runtime-c2-01` in the app-shell worktree is the
 deleted. Gated bridge tests now need `INSTO_GUI_RUNTIME=$PWD/.build/runtime-c3-01`
 — the host rejects a 0.7.21 handshake. Developer evidence only, not a release
 artifact.
+
+## G2 developer fixtures and proof modes
+
+Developer-only. None of this is a user installation step.
+
+- `.build/runtime-c3-01` — the prepared G2 runtime (insto 0.7.22). The retained
+  `.build/runtime-c2-01` in the app-shell worktree is the previous version the
+  migration proof starts from; it is kept, never deleted.
+- `python3 -B -m scripts.seed_desktop_fixture ROOT ROWS_JSON [--desired=running|stopped]`
+  — one fresh private desktop root with saved snapshots. The optional intent lets
+  a proof stage a service that is meant to be running.
+- `python3 -B -m scripts.seed_cli_home HOME` — a CLI-shaped home: 0700 directory,
+  a HikerAPI configuration with an offline token and the unreachable proxy
+  `http://127.0.0.1:9`, a database at the current schema, and no watches.
+- `--proof-window <root> --staged` — the application waits for `<root>/staged.json`
+  before publishing its runtime, and injects `globalThis.__INSTO_PROOF__` into the
+  fixed developer script. Available only in an `app-proof` build.
+- `python3 -B -m scripts.app_native_probe APP ROOT --mode migrate|adopt --previous-runtime PATH`
+  — the two staged proof modes: the application migrating its own service onto the
+  runtime it ships, and an adopted CLI home taken over through the interface's own
+  confirmation and then released.
+
+Each staged run uses exactly one temporary LaunchAgent label, derived from its own
+fresh proof home. A run counts as evidence only when it ends with
+`cleanup_confirmed: true` and its label is verified absent afterwards. `$HOME` is
+not faked, so the label lives in the real `~/Library/LaunchAgents` while the run
+lasts; what the cleanup cannot remove, and deliberately does not touch, is the one
+persistent launchd enable/disable override entry launchd keeps for every label it
+has seen.
 
 ## P1 real-window and native proof
 

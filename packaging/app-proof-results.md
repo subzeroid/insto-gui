@@ -423,3 +423,134 @@ The real bridge test `c2_bridge` against `.build/runtime-c2-01` passed (1 test,
 `git diff --check` was clean. The trailer/home-path grep over all tracked files
 (rerun without the plan carve-out after the plan's home paths were scrubbed)
 matched only the trailer rule text in `AGENTS.md`.
+
+### G2 migration and adoption proof
+
+Built on 2026-09-07 with
+`npm run tauri -- build --features app-proof --bundles app -- --locked`
+(release profile, 59.25 s; ad-hoc signature, `codesign --verify --strict --deep`
+silent). Executable SHA-256
+`ca22f401e4c88d053b4ebe9c6df4a696a0a974f1a2361cd69c0a1dd0a8fdda3b`; bundled
+runtime build id `4df54faceb61d38bd33ba2498d021384c5236d82a2431dbd932db4bee5ba7d60`
+(insto 0.7.22 at `c7d20c9618774acb0952e85c4fe05e3281ca8b5c`). Both legs used the
+retained 0.7.21 runtime `.build/runtime-c2-01` from the app-shell worktree as the
+previous version. Machine state was snapshotted before the first run and after
+the last: `~/Library/LaunchAgents` byte-identical (7 entries, none of them
+insto), `~/Library/Application Support/insto-gui` absent throughout, the user's
+own `~/.insto` untouched.
+
+**Leg (a) — automatic migration of the application's own service.**
+
+```sh
+python3 -B -m scripts.app_native_probe \
+  .build/native-app-g2-migrate-01/insto.app \
+  .build/native-app-g2-migrate-01/insto-app-proof-staged-g2-01 \
+  --mode migrate --previous-runtime <app-shell>/.build/runtime-c2-01
+```
+
+Observed markers, in order: `window_opened`, `prepare_started`, `script_started`,
+`prepare_ready`, `inspect_started`, `inspect_ready`, `migrate_started`,
+`migrate_ready`, `ui_ready`, `close_requested`, `drained`. Result
+`{"mode": "migrate", "passed": true, "cleanup_confirmed": true, "app_group_cleaned": true}`,
+`elapsed_seconds` 23.807, app exit code 0.
+
+The registration observed before the application started named
+`<app-shell>/.build/runtime-c2-01/python/bin/python3` under label
+`io.insto.watch.501.1dfff7eb09af3819`, with the service running as PID 84061.
+After the application's own startup flow migrated it, the registration named
+`…/insto-app-proof-staged-g2-01/runtimes/4df54fac…/python/bin/python3` and the
+service was running as PID 84423. Both interpreter paths are recorded as
+observed from the manifest and the plist, never as constructed by the probe, and
+the changed PID is what proves the previous runner did not survive.
+
+**Leg (b) — an adopted CLI home taken over by confirmation.**
+
+```sh
+python3 -B -m scripts.app_native_probe \
+  .build/native-app-g2-adopt-01/insto.app \
+  .build/native-app-g2-adopt-01/insto-app-proof-staged-g2-02 \
+  --mode adopt --previous-runtime <app-shell>/.build/runtime-c2-01
+```
+
+Observed markers, in order: `window_opened`, `prepare_started`, `script_started`,
+`prepare_ready`, `inspect_started`, `inspect_ready`, `migrate_started`,
+`migrate_ready`, `ui_ready`, `close_requested`, `drained`. Result
+`{"mode": "adopt", "passed": true, "cleanup_confirmed": true, "app_group_cleaned": true}`,
+`elapsed_seconds` 26.717, app exit code 0.
+
+The CLI-style home carried a registration installed by the 0.7.21 runtime under
+label `io.insto.watch.501.be6da2b20338812b`, running as PID 87363. The
+application inspected the home, adopted it, took the service over through the
+confirmation the interface requires, and then removed the registration: the
+verification asserts the manifest and the plist are both gone, that the exact
+label is no longer loaded, and that the home's own `config.toml` and `store.db`
+survive untouched. The published interpreter recorded for the
+`adopted_and_released` phase is
+`…/insto-app-proof-staged-g2-02/runtimes/4df54fac…/python/bin/python3`.
+
+Retained evidence:
+`.build/native-app-g2-migrate-01/insto-app-proof-staged-g2-01-result.json` and
+`.build/native-app-g2-adopt-01/insto-app-proof-staged-g2-02-result.json`, with
+their `-identity.json` companions.
+
+**Limits of this proof, stated so nothing here is read as more than it is.**
+
+`$HOME` cannot be faked: `account_home()` reads `getpwuid_r` and ignores the
+environment, so each leg's plist necessarily lived in the real
+`~/Library/LaunchAgents` for the duration of the run. Isolation came from the
+label being derived from a fresh proof home, and both labels were verified absent
+afterwards — `launchctl print` reports `Could not find service` for
+`io.insto.watch.501.1dfff7eb09af3819`, and no `io.insto.watch` plist remains.
+Each run leaves one persistent launchd enable/disable override entry for its own
+label in `launchctl print gui/<uid>` (`…1dfff7eb09af3819 => enabled`,
+`…be6da2b20338812b => disabled`); launchd keeps those forever, they are domain
+flags rather than jobs, plists or files, and the cleanup deliberately does not
+touch them. They are the only difference between the before and after snapshots.
+
+Leg (a) runs against the application's own profile, whose configuration must
+match `config_bytes` exactly and therefore cannot pin a proxy; its offline
+guarantee is zero watches plus an unusable offline token. Leg (b)'s adopted home
+pins `http://127.0.0.1:9` in addition. No provider request was made in either
+run.
+
+Not covered here, and not to be read as covered: the read-only guard over every
+service control, the three distinct migration-outcome texts, a `settings`
+mismatch, and every rollback and recovery path. Producing those natively would
+mean corrupting a live registration mid-transition. They are proven at the Vitest
+level (167 cases across 21 files) and, for the core's half, by the sibling insto
+checkout's recovery suite. A real interpreter switch at the core level is proven
+independently by that checkout's `tests/e2e/test_desktop_migration.py`; the wire
+shapes of all five operations and the adopted-home quota pairing are proven by
+`c3_bridge` against the released 0.7.22 bridge.
+
+### G2 gates
+
+Run in order on 2026-09-07 with the documents above staged. Vitest passed 167
+tests across 21 files and the TypeScript production build succeeded. `cargo fmt
+--check` passed for both crates: the root workspace covers only
+`crates/desktop-host`, because `src-tauri/Cargo.toml` declares its own
+`[workspace]`, so the `src-tauri` manifest is checked separately — verified by
+planting badly formatted code there and watching a root `cargo fmt --check` exit
+0. Strict all-target Clippy passed for the host crate and for `insto-gui` in both
+its default and its `app-proof` configuration. The Tauri crate ran 13 tests
+without the feature and 25 with it. The real-bridge test `c3_bridge` against
+`.build/runtime-c3-01` passed (1 test, 2.80 s). 120 Python unittest cases passed.
+`git diff --check` was clean and the trailer grep matched nothing outside
+`AGENTS.md` and `docs/`, which quote the rule text itself.
+
+The host crate ran 66 of 67 tests green, with
+`owner::tests::local_mutation_uses_its_own_deadline_and_the_mutation_slot`
+failing in the full parallel suite on three attempts and
+`shutdown_preserves_original_mutation_deadline_and_never_replays` failing on one
+of them. Both are the load-sensitive fixture timing G1 already recorded, not a G2
+regression: the test waits for a spawned interpreter to write a marker file
+against a 400 ms local-mutation budget, and under load the operation's own
+deadline expires first, so the call returns `OutcomeUnknown` before the marker
+appears. Confirmed the same way as in G1 — run alone, the eight `owner::` tests
+failed once and passed on the immediately following isolated rerun (8 passed).
+The machine carried a load average near 8.5 from unrelated work at the time
+(Godot, a Genymotion emulator, OrbStack and another project's pytest run), and no
+process belonging to this proof was left running. The full host suite was not
+observed green in a single run under that load. Making that fixture wait
+robustly is G1 code and a separate change; it is listed as a follow-up rather
+than fixed here.
