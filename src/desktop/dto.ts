@@ -265,7 +265,19 @@ export function decodeHomeReport(value: unknown): HomeReport {
   // created. The converse does not hold: another desktop root's own profile is
   // refused with `home_invalid` while looking otherwise adoptable.
   if (report.adoptable !== (report.reason === null)) fail()
-  if (report.adoptable && (!report.private || report.config !== 'ok' || report.backend !== 'hikerapi' || (report.database !== 'ok' && report.database !== 'missing'))) fail()
+  // `_reason` is total, so every reason it returns implies the state that produced
+  // it, and the absence of one implies an adoptable shape. `home_invalid` is the
+  // exception: it also covers a private, otherwise perfect home that is another
+  // desktop root's own profile, so it constrains nothing. Same table as the host's
+  // `inspected()`, so neither boundary accepts a report the other refuses.
+  const hikerapi = report.backend === 'hikerapi'
+  const verdict = report.reason === null
+    ? report.config === 'ok' && hikerapi && (report.database === 'ok' || report.database === 'missing')
+    : report.reason === 'home_backend_unsupported' ? report.config === 'ok' && !hikerapi
+    : report.reason === 'schema_mismatch' ? report.config === 'ok' && hikerapi && report.database === 'schema_mismatch'
+    : report.reason === 'storage_error' ? report.config === 'ok' && hikerapi && report.database === 'unreadable'
+    : true
+  if (!verdict) fail()
   return report
 }
 
