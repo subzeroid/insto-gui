@@ -1,9 +1,9 @@
 # Third-party notices
 
-This application is distributed as a bundle: it ships a Python runtime and
-compiled Rust dependencies alongside its own code. Their licences require
-their text and copyright notices to travel with the binary. This file lists
-every dependency the lockfiles pin, with the licence each one declares.
+This application is distributed as a bundle: it ships a Python runtime and compiled Rust
+dependencies alongside its own code. Their licences require their text and
+copyright notices to travel with the binary. This file lists every dependency
+the lockfiles pin, with the licence each one declares.
 
 Regenerate with `python3 -B -m scripts.third_party_notices`.
 

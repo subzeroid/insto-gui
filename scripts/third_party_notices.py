@@ -76,26 +76,21 @@ def section(title: str, rows: list[tuple[str, str, str]]) -> None:
 
 
 def main() -> None:
+    manifest = ROOT / "packaging" / "python-distributions.json"
+    # An application that bundles no interpreter says so instead of describing one;
+    # the same script then serves a pure Rust/JavaScript bundle unchanged.
+    distributions = json.loads(manifest.read_text()) if manifest.is_file() else None
+    carried = "a Python runtime and compiled" if distributions else "compiled"
     print("# Third-party notices")
     print()
-    print("This application is distributed as a bundle: it ships a Python runtime and")
-    print("compiled Rust dependencies alongside its own code. Their licences require")
-    print("their text and copyright notices to travel with the binary. This file lists")
-    print("every dependency the lockfiles pin, with the licence each one declares.")
+    print(f"This application is distributed as a bundle: it ships {carried} Rust")
+    print("dependencies alongside its own code. Their licences require their text and")
+    print("copyright notices to travel with the binary. This file lists every dependency")
+    print("the lockfiles pin, with the licence each one declares.")
     print()
     print("Regenerate with `python3 -B -m scripts.third_party_notices`.")
     print()
-    manifest = ROOT / "packaging" / "python-distributions.json"
-    distributions = json.loads(manifest.read_text()) if manifest.is_file() else None
-    if distributions is None:
-        # An application that bundles no interpreter has nothing to say here; the
-        # same script then serves a pure Rust/JavaScript bundle unchanged.
-        print("This application bundles no interpreter: everything below is compiled in.")
-        print()
-        return_early = True
-    else:
-        return_early = False
-    if not return_early:
+    if distributions is not None:
         print("## Bundled Python runtime")
         print()
         print(f"CPython {distributions['python_version']}, redistributed as a standalone build from")
