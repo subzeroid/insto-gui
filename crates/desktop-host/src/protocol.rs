@@ -123,6 +123,8 @@ pub enum Response {
     Removed(Removed),
     HistoryPage(HistoryPage),
     Comparison(Comparison),
+    ServiceInspection(ServiceInspection),
+    HomeInspection(HomeInspection),
     Error(SafeError),
 }
 #[derive(Debug, Deserialize, Serialize)]
@@ -207,6 +209,89 @@ pub struct Overview {
 #[serde(deny_unknown_fields)]
 pub struct Removed {
     pub removed_user: String,
+}
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Registration {
+    None,
+    Owned,
+    Unknown,
+}
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Interpreter {
+    Current,
+    Other,
+}
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Settings {
+    Matching,
+    Different,
+}
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigState {
+    Ok,
+    Missing,
+    Invalid,
+}
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Backend {
+    Hikerapi,
+    Aiograpi,
+    Fake,
+}
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DatabaseState {
+    Ok,
+    Missing,
+    SchemaMismatch,
+    Unreadable,
+}
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessState {
+    Running,
+    Stopped,
+    Unknown,
+}
+// The four verdicts `insto/desktop/home.py:_reason` can return. A fifth word is
+// a protocol violation, not a verdict the GUI may render.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Reason {
+    HomeInvalid,
+    HomeBackendUnsupported,
+    SchemaMismatch,
+    StorageError,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceInspection {
+    pub registration: Registration,
+    pub interpreter: Option<Interpreter>,
+    pub interpreter_exists: Option<bool>,
+    pub loaded: Option<bool>,
+    pub settings: Option<Settings>,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HomeInspection {
+    pub path: String,
+    pub exists: bool,
+    pub private: bool,
+    pub config: ConfigState,
+    pub backend: Option<Backend>,
+    pub database: DatabaseState,
+    pub registration: Registration,
+    pub interpreter: Option<Interpreter>,
+    pub loaded: Option<bool>,
+    pub process: ProcessState,
+    pub adoptable: bool,
+    pub reason: Option<Reason>,
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -704,13 +789,17 @@ fn profile(result: &Value) -> Result<Profile, HostError> {
     if profile.revision.as_deref().is_some_and(|r| !hex(r, 32)) {
         return Err(HostError::Protocol);
     }
-    let fields = [
+    // `desired_service` and `revision` exist exactly when the profile is
+    // configured. The two quota fields are written together (`profile.py:new_state`)
+    // and an adopted home is configured with both still null until its next
+    // credential check, so the rule for them is both-or-neither.
+    let tied = [
         profile.desired_service.is_some(),
-        profile.quota_remaining.is_some(),
-        profile.quota_checked_at.is_some(),
         profile.revision.is_some(),
     ];
-    if !fields.iter().all(|present| *present == profile.configured) {
+    let quota = profile.quota_remaining.is_some() == profile.quota_checked_at.is_some()
+        && (profile.configured || profile.quota_remaining.is_none());
+    if !tied.iter().all(|present| *present == profile.configured) || !quota {
         return Err(HostError::Protocol);
     }
     let valid_status = match profile.status {
@@ -810,9 +899,14 @@ fn overview(result: &Value) -> Result<Overview, HostError> {
     let overview: Overview =
         serde_json::from_value(result.clone()).map_err(|_| HostError::Protocol)?;
     let configured = overview.configured;
+    // The same quota rule as `profile`: `watches.py:overview` reads the two
+    // fields out of the same saved state, so an adopted home reports both null
+    // while configured. Relaxing this here is what keeps monitoring polling
+    // after an adoption.
+    let quota = overview.quota_remaining.is_some() == overview.quota_checked_at.is_some()
+        && (configured || overview.quota_remaining.is_none());
     let ok = overview.desired_service.is_some() == configured
-        && overview.quota_remaining.is_some() == configured
-        && overview.quota_checked_at.is_some() == configured
+        && quota
         && overview.quota_checked_at.is_none_or(|t| t <= MAX_TIME)
         && (configured
             || (overview.watches.is_empty()
@@ -823,6 +917,115 @@ fn overview(result: &Value) -> Result<Overview, HostError> {
     }
     check_watch_list(&overview.watches, overview.next_cursor.as_deref())?;
     Ok(overview)
+}
+const SERVICE_INSPECTION_KEYS: [&str; 5] = [
+    "registration",
+    "interpreter",
+    "interpreter_exists",
+    "loaded",
+    "settings",
+];
+fn service_inspection(result: &Value) -> Result<ServiceInspection, HostError> {
+    exact_keys(result, &SERVICE_INSPECTION_KEYS)?;
+    let facts: ServiceInspection =
+        serde_json::from_value(result.clone()).map_err(|_| HostError::Protocol)?;
+    // `service_facts.registration_facts`: only an owned registration names an
+    // interpreter, and only an owned one is compared against the home's
+    // configuration; a loaded job forces `unknown`, so `none` is never loaded.
+    // `loaded` may be null for any registration (launchd unreachable).
+    let owned = facts.registration == Registration::Owned;
+    let ok = facts.interpreter.is_some() == owned
+        && facts.interpreter_exists.is_some() == owned
+        && (owned || facts.settings.is_none())
+        && (facts.registration != Registration::None || facts.loaded != Some(true));
+    if !ok {
+        return Err(HostError::Protocol);
+    }
+    Ok(facts)
+}
+const HOME_INSPECTION_KEYS: [&str; 12] = [
+    "path",
+    "exists",
+    "private",
+    "config",
+    "backend",
+    "database",
+    "registration",
+    "interpreter",
+    "loaded",
+    "process",
+    "adoptable",
+    "reason",
+];
+// A private home is described from what the core actually read: registration
+// facts from `registration_facts`, the verdict from `home.py:_reason`.
+fn inspected(report: &HomeInspection) -> bool {
+    let owned = report.registration == Registration::Owned;
+    let facts = report.interpreter.is_some() == owned
+        && (report.registration != Registration::None || report.loaded != Some(true))
+        && match report.loaded {
+            Some(false) => report.process == ProcessState::Stopped,
+            None => report.process == ProcessState::Unknown,
+            Some(true) => true,
+        };
+    let hikerapi = report.backend == Some(Backend::Hikerapi);
+    let verdict = match report.reason {
+        None => {
+            report.config == ConfigState::Ok
+                && hikerapi
+                && matches!(report.database, DatabaseState::Ok | DatabaseState::Missing)
+        }
+        Some(Reason::HomeBackendUnsupported) => report.config == ConfigState::Ok && !hikerapi,
+        Some(Reason::SchemaMismatch) => {
+            report.config == ConfigState::Ok
+                && hikerapi
+                && report.database == DatabaseState::SchemaMismatch
+        }
+        Some(Reason::StorageError) => {
+            report.config == ConfigState::Ok
+                && hikerapi
+                && report.database == DatabaseState::Unreadable
+        }
+        // `home_invalid` also covers a private home that is another desktop
+        // root's own profile — a perfect shape the core still refuses — so this
+        // reason implies nothing about the rest of the report.
+        Some(Reason::HomeInvalid) => true,
+    };
+    // `config == "missing"` is the only config state that fixes the backend.
+    let config = report.config != ConfigState::Missing || report.backend.is_none();
+    facts && config && verdict && report.adoptable == report.reason.is_none()
+}
+fn home_inspection(result: &Value) -> Result<HomeInspection, HostError> {
+    exact_keys(result, &HOME_INSPECTION_KEYS)?;
+    let report: HomeInspection =
+        serde_json::from_value(result.clone()).map_err(|_| HostError::Protocol)?;
+    // `home.py:_inspect` returns one of three shapes. A missing path and a
+    // non-private path are fixed reports: nothing inside them is read, so every
+    // field they carry is a constant.
+    let unread = report.backend.is_none()
+        && report.interpreter.is_none()
+        && report.loaded.is_none()
+        && report.process == ProcessState::Unknown
+        && !report.adoptable
+        && report.reason == Some(Reason::HomeInvalid);
+    let shape = if !report.exists {
+        !report.private
+            && report.config == ConfigState::Missing
+            && report.database == DatabaseState::Missing
+            && report.registration == Registration::None
+            && unread
+    } else if !report.private {
+        report.config == ConfigState::Invalid
+            && report.database == DatabaseState::Unreadable
+            && report.registration == Registration::Unknown
+            && unread
+    } else {
+        inspected(&report)
+    };
+    if !response_path_ok(&report.path) || !shape {
+        return Err(HostError::Protocol);
+    }
+    Ok(report)
 }
 fn single_watch(result: &Value, user: &str) -> Result<Watch, HostError> {
     let item = watch(&exact_keys(result, &["watch"])?["watch"])?;
@@ -1135,9 +1338,8 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
                 target_pk.as_deref(),
                 limit.unwrap_or(50),
             )?),
-            // The two C3 reads get their DTOs in the next task; until then a
-            // result is refused rather than accepted unchecked.
-            Operation::ServiceInspect | Operation::HomeInspect { .. } => return Err(bad()),
+            Operation::ServiceInspect => Response::ServiceInspection(service_inspection(result)?),
+            Operation::HomeInspect { .. } => Response::HomeInspection(home_inspection(result)?),
         });
     }
     #[derive(Deserialize)]
@@ -2584,6 +2786,226 @@ mod tests {
             assert_eq!(error.code, code);
             assert!(!error.retryable, "{code} must not be retryable");
             assert!(!error.message.contains("TOKEN_SENTINEL") && !error.message.contains("/Users"));
+        }
+    }
+    #[test]
+    fn adopted_profiles_report_null_quota_while_configured() {
+        let adopted = r#"{"configured":true,"status":"stopped","desired_service":"stopped","service_running":false,"quota_remaining":null,"quota_checked_at":null,"revision":"0123456789abcdef0123456789abcdef"}"#;
+        for operation in [
+            Operation::SetupInspect,
+            Operation::ServiceMigrate,
+            Operation::ServiceUninstall,
+            Operation::HomeSelect {
+                path: Some("~/.insto".into()),
+            },
+        ] {
+            assert!(
+                decode(&envelope(adopted), "test", &operation).is_ok(),
+                "{operation:?}"
+            );
+        }
+        let running = adopted
+            .replace("\"status\":\"stopped\"", "\"status\":\"running\"")
+            .replace("\"service_running\":false", "\"service_running\":true")
+            .replace(
+                "\"desired_service\":\"stopped\"",
+                "\"desired_service\":\"running\"",
+            );
+        assert!(decode(&envelope(&running), "test", &Operation::SetupInspect).is_ok());
+        for bad in [
+            // `quota_exhausted` still demands a saved zero, never an unknown quota.
+            adopted.replace("\"status\":\"stopped\"", "\"status\":\"quota_exhausted\""),
+            // The two quota fields are written together: never one of each.
+            adopted.replace("\"quota_remaining\":null", "\"quota_remaining\":5"),
+            adopted.replace("\"quota_checked_at\":null", "\"quota_checked_at\":5"),
+            // `desired_service` and `revision` stay tied to `configured`.
+            adopted.replace(
+                "\"desired_service\":\"stopped\"",
+                "\"desired_service\":null",
+            ),
+            adopted.replace(
+                "\"revision\":\"0123456789abcdef0123456789abcdef\"",
+                "\"revision\":null",
+            ),
+            // An unconfigured profile still carries no quota at all.
+            adopted
+                .replace("\"configured\":true", "\"configured\":false")
+                .replace("\"status\":\"stopped\"", "\"status\":\"unconfigured\"")
+                .replace(
+                    "\"desired_service\":\"stopped\"",
+                    "\"desired_service\":null",
+                )
+                .replace(
+                    "\"revision\":\"0123456789abcdef0123456789abcdef\"",
+                    "\"revision\":null",
+                )
+                .replace("\"quota_remaining\":null", "\"quota_remaining\":5")
+                .replace("\"quota_checked_at\":null", "\"quota_checked_at\":5"),
+        ] {
+            assert!(
+                decode(&envelope(&bad), "test", &Operation::SetupInspect).is_err(),
+                "{bad}"
+            );
+        }
+        let zero = adopted
+            .replace("\"quota_remaining\":null", "\"quota_remaining\":0")
+            .replace("\"quota_checked_at\":null", "\"quota_checked_at\":1")
+            .replace("\"status\":\"stopped\"", "\"status\":\"quota_exhausted\"");
+        assert!(decode(&envelope(&zero), "test", &Operation::SetupInspect).is_ok());
+    }
+    #[test]
+    fn adopted_overviews_report_null_quota_while_configured() {
+        let adopted = overview_json(WATCH)
+            .replace("\"quota_remaining\":8", "\"quota_remaining\":null")
+            .replace("\"quota_checked_at\":100", "\"quota_checked_at\":null");
+        assert!(decode(&envelope(&adopted), "test", &Operation::Overview).is_ok());
+        for bad in [
+            // One half of the pair without the other is not a core shape.
+            adopted.replace("\"quota_checked_at\":null", "\"quota_checked_at\":100"),
+            adopted.replace("\"quota_remaining\":null", "\"quota_remaining\":8"),
+            // An unconfigured overview still reports no quota at all.
+            r#"{"configured":false,"desired_service":null,"service_state":"unknown","quota_remaining":0,"quota_checked_at":null,"watches":[],"next_cursor":null}"#.to_owned(),
+        ] {
+            assert_eq!(
+                decode(&envelope(&bad), "test", &Operation::Overview).unwrap_err(),
+                HostError::Protocol,
+                "{bad}"
+            );
+        }
+    }
+    // The shared fixture table. Task 6 (`src/desktop/dto.test.ts`) and Task 9
+    // (`c3_bridge.rs`) reuse these numbers.
+    const F1: &str = r#"{"registration":"none","interpreter":null,"interpreter_exists":null,"loaded":null,"settings":null}"#;
+    const F3: &str = r#"{"registration":"owned","interpreter":"other","interpreter_exists":true,"loaded":true,"settings":"matching"}"#;
+    const F4: &str = r#"{"registration":"owned","interpreter":"current","interpreter_exists":true,"loaded":false,"settings":null}"#;
+    const F5: &str = r#"{"registration":"unknown","interpreter":null,"interpreter_exists":null,"loaded":true,"settings":null}"#;
+    const F7: &str = r#"{"path":"/Users/x/.insto","exists":true,"private":true,"config":"ok","backend":"hikerapi","database":"ok","registration":"none","interpreter":null,"loaded":false,"process":"stopped","adoptable":true,"reason":null}"#;
+    const F8: &str = r#"{"path":"/Users/x/none","exists":false,"private":false,"config":"missing","backend":null,"database":"missing","registration":"none","interpreter":null,"loaded":null,"process":"unknown","adoptable":false,"reason":"home_invalid"}"#;
+    const F9: &str = r#"{"path":"/Users/x/open","exists":true,"private":false,"config":"invalid","backend":null,"database":"unreadable","registration":"unknown","interpreter":null,"loaded":null,"process":"unknown","adoptable":false,"reason":"home_invalid"}"#;
+    const F10: &str = r#"{"path":"/Users/x/.insto","exists":true,"private":true,"config":"invalid","backend":"hikerapi","database":"ok","registration":"none","interpreter":null,"loaded":false,"process":"stopped","adoptable":false,"reason":"home_invalid"}"#;
+    const F11: &str = r#"{"path":"/Users/x/.insto","exists":true,"private":true,"config":"ok","backend":"hikerapi","database":"schema_mismatch","registration":"none","interpreter":null,"loaded":false,"process":"stopped","adoptable":false,"reason":"schema_mismatch"}"#;
+    const F12: &str = r#"{"path":"/Users/x/.insto","exists":true,"private":true,"config":"ok","backend":"hikerapi","database":"ok","registration":"owned","interpreter":"other","loaded":true,"process":"running","adoptable":true,"reason":null}"#;
+
+    #[test]
+    fn c3_service_inspection_accepts_exactly_the_core_shapes() {
+        let facts = |body: &str| decode(&envelope(body), "test", &Operation::ServiceInspect);
+        let Ok(Response::ServiceInspection(owned)) = facts(F3) else {
+            panic!("F3 must decode");
+        };
+        assert_eq!(owned.registration, Registration::Owned);
+        assert_eq!(owned.interpreter, Some(Interpreter::Other));
+        assert_eq!(owned.interpreter_exists, Some(true));
+        assert_eq!(owned.loaded, Some(true));
+        assert_eq!(owned.settings, Some(Settings::Matching));
+        for accepted in [
+            F1.to_owned(),
+            F1.replace("\"loaded\":null", "\"loaded\":false"), // F2
+            F3.into(),
+            F4.into(),
+            F5.into(),
+        ] {
+            assert!(facts(&accepted).is_ok(), "{accepted}");
+        }
+        for rejected in [
+            // F6: a loaded job forces `unknown`, so `none` is never loaded.
+            F1.replace("\"loaded\":null", "\"loaded\":true"),
+            // F6: an owned registration always names its interpreter.
+            F3.replace("\"interpreter\":\"other\"", "\"interpreter\":null"),
+            // F6: settings are compared only for an owned registration.
+            F5.replace("\"settings\":null", "\"settings\":\"matching\""),
+            // Interpreter facts come as a pair, and only when owned.
+            F3.replace("\"interpreter_exists\":true", "\"interpreter_exists\":null"),
+            F5.replace("\"interpreter\":null", "\"interpreter\":\"current\""),
+            // Exactly the five keys, exactly the core's words for them.
+            F3.replace(",\"settings\":\"matching\"", ""),
+            F3.replace("\"loaded\":true", "\"loaded\":true,\"process\":\"running\""),
+            F3.replace("\"settings\":\"matching\"", "\"settings\":\"unexpected\""),
+            F3.replace(
+                "\"registration\":\"owned\"",
+                "\"registration\":\"installed\"",
+            ),
+        ] {
+            assert_eq!(
+                facts(&rejected).unwrap_err(),
+                HostError::Protocol,
+                "{rejected}"
+            );
+        }
+    }
+    #[test]
+    fn c3_home_inspection_accepts_exactly_the_core_shapes() {
+        let home = || Operation::HomeInspect {
+            path: "~/.insto".into(),
+        };
+        let report = |body: &str| decode(&envelope(body), "test", &home());
+        let Ok(Response::HomeInspection(adoptable)) = report(F7) else {
+            panic!("F7 must decode");
+        };
+        assert!(adoptable.adoptable && adoptable.reason.is_none());
+        assert_eq!(adoptable.path, "/Users/x/.insto");
+        assert_eq!(adoptable.config, ConfigState::Ok);
+        assert_eq!(adoptable.backend, Some(Backend::Hikerapi));
+        assert_eq!(adoptable.database, DatabaseState::Ok);
+        assert_eq!(adoptable.registration, Registration::None);
+        assert_eq!(adoptable.process, ProcessState::Stopped);
+        let Ok(Response::HomeInspection(refused)) = report(F11) else {
+            panic!("F11 must decode");
+        };
+        assert_eq!(refused.reason, Some(Reason::SchemaMismatch));
+        for accepted in [
+            F7.to_owned(),
+            F8.into(),
+            F9.into(),
+            F10.into(),
+            F11.into(),
+            F12.into(),
+            // An aiograpi home: described in full, refused for adoption.
+            F7.replace("\"backend\":\"hikerapi\"", "\"backend\":\"aiograpi\"")
+                .replace("\"adoptable\":true", "\"adoptable\":false")
+                .replace("\"reason\":null", "\"reason\":\"home_backend_unsupported\""),
+            // A `~` the core expanded past the 1024-byte request bound.
+            F7.replace(
+                "/Users/x/.insto",
+                &format!("/Users/x/{}/.insto", "d".repeat(1200)),
+            ),
+            // A staged home whose database is not there yet is still adoptable.
+            F7.replace("\"database\":\"ok\"", "\"database\":\"missing\""),
+        ] {
+            assert!(report(&accepted).is_ok(), "{accepted}");
+        }
+        for rejected in [
+            // F13: the verdict and its reason are one decision in the core.
+            F11.replace("\"adoptable\":false", "\"adoptable\":true"),
+            // F13: an unloaded job is `stopped`, never `running`.
+            F7.replace("\"process\":\"stopped\"", "\"process\":\"running\""),
+            // F13: nothing inside a missing home is read, so it is never private.
+            F8.replace("\"private\":false", "\"private\":true"),
+            // A refused reason implies the state that produced it.
+            F11.replace("\"database\":\"schema_mismatch\"", "\"database\":\"ok\""),
+            F11.replace(
+                "\"reason\":\"schema_mismatch\"",
+                "\"reason\":\"internal_error\"",
+            ),
+            // Adoptable means private, hikerapi and a usable database.
+            F7.replace("\"database\":\"ok\"", "\"database\":\"unreadable\""),
+            F7.replace("\"backend\":\"hikerapi\"", "\"backend\":\"fake\""),
+            // Registration facts stay tied to the registration.
+            F7.replace("\"registration\":\"none\"", "\"registration\":\"owned\""),
+            F12.replace("\"registration\":\"owned\"", "\"registration\":\"unknown\""),
+            F7.replace("\"loaded\":false", "\"loaded\":true"),
+            // The response path is absolute, NUL-free and within PATH_MAX.
+            F7.replace("\"/Users/x/.insto\"", "\"~/.insto\""),
+            F7.replace("\"/Users/x/.insto\"", "\"/Users/x/\\u0000/.insto\""),
+            // Exactly the twelve keys, exactly the core's words for them.
+            F7.replace(",\"reason\":null", ""),
+            F7.replace("\"exists\":true", "\"exists\":true,\"owner_uid\":501"),
+            F7.replace("\"process\":\"stopped\"", "\"process\":\"launching\""),
+        ] {
+            assert_eq!(
+                report(&rejected).unwrap_err(),
+                HostError::Protocol,
+                "{rejected}"
+            );
         }
     }
 }
