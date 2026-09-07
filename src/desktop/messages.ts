@@ -90,6 +90,11 @@ export const texts = {
   binding_own: 'Приложение работает со своим каталогом данных.',
   binding_adopted: 'Приложение работает с существующей установкой insto.',
   binding_unknown: 'Не удалось определить, с каким каталогом работает приложение. Доступен только просмотр.',
+  // The one accessible name two components share: the setup-stale banner exists
+  // once on the onboarding screen and once on the configured one, and they are
+  // mutually exclusive, so both controls carry the same name. Shared copy lives
+  // here even when it is a control name rather than a sentence.
+  refresh_setup_label: 'Обновить состояние настройки',
   binding_release_explain: 'Приложение связано с внешним каталогом insto. Если этот каталог недоступен, можно вернуться к собственному профилю приложения — файлы каталога при этом не меняются.',
   home_title: 'Существующая установка insto',
   home_path_label: 'Путь к каталогу insto',

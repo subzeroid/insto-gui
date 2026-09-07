@@ -131,7 +131,7 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
         <template v-else>
           <!-- Setup/service state is global: its errors and recovery needs show on every section. -->
           <div v-if="state.error" class="notice danger" role="alert">{{ state.error.message }}</div>
-          <div v-if="state.stale" class="notice warning" role="status">Состояние настройки устарело. Изменения службы заблокированы до обновления. <button type="button" class="text-button" data-action="refresh-setup" aria-label="Обновить состояние настройки" :disabled="state.busy" @click="ui.refresh">Обновить</button></div>
+          <div v-if="state.stale" class="notice warning" role="status">Состояние настройки устарело. Изменения службы заблокированы до обновления. <button type="button" class="text-button" data-action="refresh-setup" :aria-label="texts.refresh_setup_label" :disabled="state.busy" @click="ui.refresh">Обновить</button></div>
           <p v-else-if="state.outcomeUnknown" class="notice" role="status">Текущее состояние перечитано и показано ниже. Операция не повторялась автоматически.</p>
           <p v-if="migrationNotice" class="notice" :class="{ warning: service.state.notice !== 'migrated' }" role="status">{{ migrationNotice }}</p>
           <p v-if="attention && section !== 'service'" class="notice warning" role="status">Служба требует внимания. <button type="button" class="text-button" data-action="open-service" @click="section = 'service'">Открыть раздел «Служба»</button></p>
