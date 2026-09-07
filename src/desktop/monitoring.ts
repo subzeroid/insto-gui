@@ -23,6 +23,9 @@ export function createMonitoringState(client: DesktopClient, options: Monitoring
   let timer: ReturnType<typeof setInterval> | null = null
   let inFlight: Promise<boolean> | null = null
   let disposed = false
+  // R11: a home selection changes which profile every read describes. The
+  // generation drops a response that was issued against the previous home.
+  let generation = 0
   const selected = computed(() => state.overview?.watches.find(item => item.user === state.selectedUser) ?? null)
   async function fetchOverview(): Promise<Overview> {
     const overview = await client.overview()
@@ -38,18 +41,19 @@ export function createMonitoringState(client: DesktopClient, options: Monitoring
   function read(): Promise<boolean> {
     if (disposed) return Promise.resolve(false)
     if (inFlight) return inFlight
+    const expected = generation
     state.loading = true
     inFlight = (async () => {
       try {
         const overview = await fetchOverview()
-        if (disposed) return false
+        if (disposed || generation !== expected) return false
         state.overview = overview; state.stale = false; state.readError = null; state.lastReadAt = now()
         if (state.selectedUser !== null && !overview.watches.some(item => item.user === state.selectedUser)) state.selectedUser = null
         return true
       } catch (error) {
-        if (!disposed) { state.stale = state.overview !== null; state.readError = safeFailure(error) }
+        if (!disposed && generation === expected) { state.stale = state.overview !== null; state.readError = safeFailure(error) }
         return false
-      } finally { state.loading = false; inFlight = null }
+      } finally { if (generation === expected) { state.loading = false; inFlight = null } }
     })()
     return inFlight
   }
@@ -71,6 +75,18 @@ export function createMonitoringState(client: DesktopClient, options: Monitoring
     if (!state.polling) return
     state.polling = false; clearTimer(); target?.removeEventListener('visibilitychange', onVisibility)
   }
+  // R11: everything here is scoped to the bound home. The generation invalidates a
+  // response already in flight, `stop()` ends the poll timer, and the state returns
+  // to the shape a freshly opened window has. `overview: null` also refuses every
+  // watch mutation until a new read lands.
+  function reset() {
+    generation++
+    stop()
+    inFlight = null
+    state.overview = null; state.loading = false; state.busy = false; state.stale = false
+    state.lastReadAt = null; state.readError = null; state.error = null
+    state.outcomeUnknown = false; state.selectedUser = null
+  }
   async function mutate(action: () => Promise<unknown>): Promise<boolean> {
     if (disposed || state.busy || state.stale || state.overview === null) return false
     state.busy = true; state.error = null; state.outcomeUnknown = false
@@ -86,7 +102,7 @@ export function createMonitoringState(client: DesktopClient, options: Monitoring
     } finally { state.busy = false }
   }
   return {
-    state, selected, refresh, reconcile, start, stop,
+    state, selected, refresh, reconcile, start, stop, reset,
     select(user: string | null) { state.selectedUser = user },
     add: (user: string, interval: number) => mutate(() => client.addWatch(user, interval)),
     update: (watch: Watch, interval: number) => mutate(() => client.updateWatch(watch, interval)),

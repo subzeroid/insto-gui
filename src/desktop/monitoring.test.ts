@@ -111,4 +111,45 @@ describe('monitoring state', () => {
     expect(ui.state.selectedUser).toBeNull(); expect(ui.state.overview?.watches).toHaveLength(0)
     expect(invoke.mock.calls[1]).toEqual(['remove_watch', { watch: { user: 'alice', revision: 'a'.repeat(64) } }])
   })
+  it('reset stops polling, empties the state and drops a read already in flight', async () => {
+    let release!: (value: unknown) => void
+    const invoke = vi.fn().mockResolvedValueOnce(envelope('overview', overview))
+      .mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+      .mockResolvedValue(envelope('overview', overview))
+    const ui = make(invoke)
+    ui.start(); await vi.advanceTimersByTimeAsync(0)
+    ui.select('alice')
+    expect(ui.state.overview?.watches).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(5000) // the second read is in flight
+    ui.reset()
+    expect(ui.state.polling).toBe(false)
+    expect(ui.state.overview).toBeNull()
+    expect(ui.state.selectedUser).toBeNull()
+    expect(ui.state.lastReadAt).toBeNull()
+    expect(ui.state.stale).toBe(false)
+    release(envelope('overview', overview)); await vi.advanceTimersByTimeAsync(0)
+    // The response describes the previous home: it must not repopulate anything.
+    expect(ui.state.overview).toBeNull()
+    expect(ui.state.loading).toBe(false)
+    await vi.advanceTimersByTimeAsync(20000)
+    expect(invoke).toHaveBeenCalledTimes(2) // the poll timer went with the reset
+  })
+  it('a failed read that lands after a reset leaves no error behind', async () => {
+    let reject!: (reason: unknown) => void
+    const invoke = vi.fn().mockImplementationOnce(() => new Promise((_, fail) => { reject = fail }))
+    const ui = make(invoke)
+    ui.start(); await vi.advanceTimersByTimeAsync(0)
+    ui.reset()
+    reject('transport'); await vi.advanceTimersByTimeAsync(0)
+    expect(ui.state.readError).toBeNull()
+    expect(ui.state.stale).toBe(false)
+  })
+  it('a watch mutation is refused after a reset until a new read lands', async () => {
+    const invoke = vi.fn().mockResolvedValue(envelope('overview', overview))
+    const ui = make(invoke)
+    ui.start(); await vi.advanceTimersByTimeAsync(0)
+    ui.reset()
+    expect(await ui.pause(watch)).toBe(false)
+    expect(invoke.mock.calls.some(call => call[0] === 'pause_watch')).toBe(false)
+  })
 })
