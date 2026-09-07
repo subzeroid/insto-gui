@@ -47,6 +47,8 @@ export const homeRejected = [                                                   
   { ...homeAdoptable, reason: 'storage_error' },   // adoptable never carries a reason
   { ...homeAdoptable, process: 'running' },        // loaded:false means process:"stopped"
   { ...homeMissing, private: true },               // nothing inside a missing path is read
+  { ...homeSchemaMismatch, database: 'ok' },       // a refused reason implies the state that produced it
+  { ...homeAdoptable, adoptable: false, reason: 'home_backend_unsupported' },  // …and this one is HikerAPI
 ]
 // Roles the state and component tests read by name.
 
