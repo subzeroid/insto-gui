@@ -37,6 +37,15 @@ export function createHistoryState(client: DesktopClient) {
     state.username = null; state.targets = emptyTargets(); state.targetPk = null; state.snapshots = emptySnapshots()
     state.pair = { olderId: null, newerId: null }; state.comparison = { value: null, loading: false, error: null }
   }
+  // `reset()` is the username scope — WatchesView calls it whenever the watch
+  // selection is cleared, and the changes feed must survive that. A home selection
+  // is wider: the feed describes the previous home too, and a page already in
+  // flight for it is dropped by the feed generation.
+  function resetHome() {
+    reset()
+    feedGeneration++
+    state.feed = emptyFeed()
+  }
   // Identity is concluded automatically only from complete, diagnostic-free
   // evidence (product spec section 7); anything else needs an explicit choice.
   async function settleSelection(expected: number) {
@@ -110,5 +119,5 @@ export function createHistoryState(client: DesktopClient) {
     if (cursor === null || state.feed.loading) return
     await guard(state.feed, feedSelection, feedGeneration, () => client.listChanges(filterPk === null ? { cursor } : { target_pk: filterPk, cursor }), absorbFeed)
   }
-  return { state, load, reload, continueSearch, chooseTarget, moreSnapshots, choosePair, loadFeed, moreFeed, reset }
+  return { state, load, reload, continueSearch, chooseTarget, moreSnapshots, choosePair, loadFeed, moreFeed, reset, resetHome }
 }

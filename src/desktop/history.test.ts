@@ -162,4 +162,32 @@ describe('history state', () => {
     expect(invoke.mock.calls.map(call => call[0])).toEqual(['search_targets', 'list_snapshots', 'compare_snapshots', 'list_snapshots', 'compare_snapshots', 'list_snapshots'])
     expect(invoke.mock.calls[3][1]).toEqual({ query: { target_pk: '7', cursor: 'older' } })
   })
+  it('reset keeps the changes feed, resetHome clears it and drops a page in flight', async () => {
+    let release!: (value: unknown) => void
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(envelope('history_page', page([target('7', '2', 2)])))
+      .mockResolvedValueOnce(envelope('history_page', page([snapshot('2', '7', 2), snapshot('1', '7', 1)])))
+      .mockResolvedValueOnce(envelope('comparison', bare))
+      .mockResolvedValueOnce(envelope('history_page', page([{ kind: 'baseline' as const, snapshot: snap('1', '7', 1) }])))
+      .mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    const history = createHistoryState(new DesktopClient(invoke))
+    await history.load('alice')
+    await history.loadFeed(null)
+    expect(history.state.feed.items).toHaveLength(1)
+    // The username scope only: WatchesView clears the selection constantly and the
+    // feed must survive it.
+    history.reset()
+    expect(history.state.username).toBeNull()
+    expect(history.state.feed.items).toHaveLength(1)
+    const pending = history.loadFeed('7')
+    history.resetHome()
+    expect(history.state.feed.items).toEqual([])
+    expect(history.state.feed.filterPk).toBeNull()
+    expect(history.state.targets.pks).toEqual([])
+    release(envelope('history_page', page([{ kind: 'baseline' as const, snapshot: snap('9', '9', 9) }])))
+    await pending
+    // The page belongs to the previous home.
+    expect(history.state.feed.items).toEqual([])
+    expect(history.state.feed.loading).toBe(false)
+  })
 })
