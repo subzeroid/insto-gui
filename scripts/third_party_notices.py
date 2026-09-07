@@ -85,18 +85,28 @@ def main() -> None:
     print()
     print("Regenerate with `python3 -B -m scripts.third_party_notices`.")
     print()
-    print("## Bundled Python runtime")
-    print()
-    distributions = json.loads((ROOT / "packaging" / "python-distributions.json").read_text())
-    print(f"CPython {distributions['python_version']}, redistributed as a standalone build from")
-    print("astral-sh/python-build-standalone. CPython itself is under the Python Software")
-    print("Foundation License; the build scripts are under the Mozilla Public License 2.0;")
-    print("and the build embeds further components under their own terms, notably OpenSSL,")
-    print("SQLite (public domain), libffi, zlib, bzip2, XZ Utils and ncurses. The upstream")
-    print("release carries the full texts:")
-    print()
-    for architecture, target in sorted(distributions["targets"].items()):
-        print(f"- {architecture}: {target['url']}")
+    manifest = ROOT / "packaging" / "python-distributions.json"
+    distributions = json.loads(manifest.read_text()) if manifest.is_file() else None
+    if distributions is None:
+        # An application that bundles no interpreter has nothing to say here; the
+        # same script then serves a pure Rust/JavaScript bundle unchanged.
+        print("This application bundles no interpreter: everything below is compiled in.")
+        print()
+        return_early = True
+    else:
+        return_early = False
+    if not return_early:
+        print("## Bundled Python runtime")
+        print()
+        print(f"CPython {distributions['python_version']}, redistributed as a standalone build from")
+        print("astral-sh/python-build-standalone. CPython itself is under the Python Software")
+        print("Foundation License; the build scripts are under the Mozilla Public License 2.0;")
+        print("and the build embeds further components under their own terms, notably OpenSSL,")
+        print("SQLite (public domain), libffi, zlib, bzip2, XZ Utils and ncurses. The upstream")
+        print("release carries the full texts:")
+        print()
+        for architecture, target in sorted(distributions["targets"].items()):
+            print(f"- {architecture}: {target['url']}")
 
     print()
     print("## What these obligations amount to")
