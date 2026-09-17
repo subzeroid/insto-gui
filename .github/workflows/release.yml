@@ -1,0 +1,217 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: Create the draft release and upload the DMGs (a dry run leaves them as workflow artifacts only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      upload: ${{ steps.read.outputs.upload }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - id: read
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          UPLOAD_INPUT: ${{ inputs.upload }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = "tag" ]; then
+            version="$(python3 -B -m scripts.release_version --tag "$REF_NAME")"
+            upload=true
+          else
+            version="$(python3 -B -m scripts.release_version)"
+            upload="${UPLOAD_INPUT:-false}"
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "upload=$upload" >>"$GITHUB_OUTPUT"
+
+  release:
+    needs: [checks, version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            dmg_arch: aarch64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            dmg_arch: x64
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      DMG_ARCH: ${{ matrix.dmg_arch }}
+      EVIDENCE: ${{ github.workspace }}/.build/evidence-${{ matrix.target }}.jsonl
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Preflight gates (runner properties, before any build)
+        run: |
+          set -euo pipefail
+          mkdir -m 700 .build
+          packaging/release-gates.sh --stage preflight --target "$TARGET" --evidence "$EVIDENCE" --workspace "$PWD"
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+      - run: npm ci --ignore-scripts
+      - name: Read the core pin
+        id: pin
+        run: echo "commit=$(jq -r .core_commit packaging/core-pin.json)" >>"$GITHUB_OUTPUT"
+      - name: Prepare and stage the pinned runtime
+        uses: ./.github/actions/stage-runtime
+        with:
+          core-ref: ${{ steps.pin.outputs.commit }}
+          output: runtime-r1
+          stage: "true"
+
+      - name: Release build (app and DMG)
+        run: npm run tauri -- build --bundles app,dmg --target "$TARGET" -- --locked
+      - name: Locate the artefacts
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="$PWD/src-tauri/target/$TARGET/release/bundle/dmg/insto_${VERSION}_${DMG_ARCH}.dmg"
+          app="$PWD/src-tauri/target/$TARGET/release/bundle/macos/insto.app"
+          test -f "$dmg"
+          test -d "$app"
+          echo "dmg=$dmg" >>"$GITHUB_OUTPUT"
+          echo "app=$app" >>"$GITHUB_OUTPUT"
+      - name: Artifact gates (signature, runtime manifest, DMG, hashes)
+        env:
+          DMG: ${{ steps.locate.outputs.dmg }}
+          APP: ${{ steps.locate.outputs.app }}
+        run: packaging/release-gates.sh --stage artifacts --dmg "$DMG" --app "$APP" --target "$TARGET" --evidence "$EVIDENCE"
+      - name: Keep the DMG away from the proof build
+        env:
+          DMG: ${{ steps.locate.outputs.dmg }}
+        run: |
+          set -euo pipefail
+          mkdir -m 700 .build/release
+          cp "$DMG" .build/release/
+
+      - name: Prepare the previous runtime (insto 0.7.21) for the migration proof
+        uses: ./.github/actions/stage-runtime
+        with:
+          core-ref: 7a1872568bd90a642a3df838fd9854286f251d03
+          output: runtime-previous
+          stage: "false"
+      - name: Proof build (app-proof feature, never shipped)
+        run: npm run tauri -- build --features app-proof --bundles app --target "$TARGET" -- --locked
+      - name: Native migration and adoption proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          proof="$PWD/src-tauri/target/$TARGET/release/bundle/macos/insto.app"
+          jq -cn --arg sha "$(shasum -a 256 "$proof/Contents/MacOS/insto-gui" | cut -d' ' -f1)" --arg target "$TARGET" \
+            '{gate:"proof_build",result:"pass",target:$target,proof_executable_sha256:$sha}' >>"$EVIDENCE"
+          for mode in migrate adopt; do
+            dir="$PWD/.build/native-r1-$mode"
+            mkdir -m 700 "$dir"
+            cp -cRp "$proof" "$dir/insto.app"
+            python3 -B -m scripts.app_native_probe "$dir/insto.app" "$dir/insto-app-proof-r1-$mode" \
+              --mode "$mode" --previous-runtime "$PWD/.build/runtime-previous" | tee "$PWD/.build/native-$mode.json"
+            jq -e '.passed == true and .cleanup_confirmed == true and .app_group_cleaned == true' "$PWD/.build/native-$mode.json"
+            jq -c --arg mode "$mode" --arg target "$TARGET" '{gate:("native_" + $mode),result:"pass",target:$target} + .' "$PWD/.build/native-$mode.json" >>"$EVIDENCE"
+          done
+          # shellcheck disable=SC2010 # matching "insto" against filenames, not their content
+          if ls "$HOME/Library/LaunchAgents" 2>/dev/null | grep -q insto; then echo "insto LaunchAgent left behind" >&2; exit 1; fi
+
+      - name: Install gates (/Applications, Gatekeeper, launch publishes the runtime)
+        env:
+          CI: "true"
+          DMG_NAME: insto_${{ needs.version.outputs.version }}_${{ matrix.dmg_arch }}.dmg
+        run: packaging/release-gates.sh --stage install --dmg "$PWD/.build/release/$DMG_NAME" --target "$TARGET" --evidence "$EVIDENCE"
+
+      - name: Evidence complete and hashes agree
+        shell: bash
+        run: |
+          set -euo pipefail
+          for g in launchd_gui_domain applications_layout workspace_ancestors gatekeeper_assessments_enabled signature_intact designated_requirement runtime_matches_manifest dmg_verifies dmg_carries_one_app hashes proof_build native_migrate native_adopt install_to_applications quarantine_applied gatekeeper_refuses_unnotarized quarantine_removed launch_publishes_runtime cleanup; do
+            jq -e --arg g "$g" 'select(.gate == $g and .result == "pass")' "$EVIDENCE" >/dev/null || { echo "missing gate $g" >&2; exit 1; }
+          done
+          if jq -e 'select(.result == "fail")' "$EVIDENCE" >/dev/null; then echo "a gate recorded fail" >&2; exit 1; fi
+          # shellcheck disable=SC2012 # exactly one DMG is placed here by this job; a plain glob would also work
+          dmg="$(ls .build/release/*.dmg)"
+          shasum -a 256 "$dmg" | sed "s| .*| $(basename "$dmg")|" >"$dmg.sha256"
+          [ "$(cut -d' ' -f1 "$dmg.sha256")" = "$(jq -r 'select(.gate=="hashes") | .dmg_sha256' "$EVIDENCE")" ]
+      - name: Collect evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p .build/evidence-out
+          cp "$EVIDENCE" .build/evidence-out/ 2>/dev/null || true
+          for mode in migrate adopt; do
+            d=".build/native-r1-$mode/insto-app-proof-r1-$mode"
+            for f in native-result.txt native-context.json evidence.json; do [ -f "$d/$f" ] && cp "$d/$f" ".build/evidence-out/$mode-$f"; done
+          done
+          cp .build/native-*.json .build/evidence-out/ 2>/dev/null || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: evidence-${{ matrix.target }}
+          path: .build/evidence-out/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dmg-${{ matrix.target }}
+          path: |
+            .build/release/*.dmg
+            .build/release/*.sha256
+
+  publish:
+    needs: [version, release]
+    if: needs.version.outputs.upload == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: v${{ needs.version.outputs.version }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/release-notes.md
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: dmg-*
+          merge-multiple: true
+          path: dmgs
+      - shell: bash
+        run: |
+          set -euo pipefail
+          ls -la dmgs
+          # shellcheck disable=SC2012 # counting DMGs, not reading ls output as data
+          [ "$(ls dmgs/*.dmg | wc -l)" -eq 2 ] || { echo "expected exactly two DMGs" >&2; exit 1; }
+          (cd dmgs && cat ./*.sha256 >SHA256SUMS && cat SHA256SUMS)
+          gh release create "$TAG" --repo "$REPO" --draft --title "insto $TAG" --notes-file .github/release-notes.md
+          gh release upload "$TAG" --repo "$REPO" dmgs/*.dmg dmgs/*.sha256 dmgs/SHA256SUMS
