@@ -308,19 +308,22 @@ tag v* ─┬─► checks (ci.yml via workflow_call)
 
 The order is load-bearing. Preflight runs before any build so an unsuitable runner
 (no launchd GUI domain, `/Applications` not `root:admin 0775`, a group-writable
-workspace ancestor) fails in seconds. The artefact gates hash the DMG before the
-proof build overwrites `bundle/macos/insto.app`. The native proof runs before the
-install gates so it never sees this user's `Application Support`. The matrix jobs
-hold a read-only token; only `publish`, which builds nothing, can write.
+workspace ancestor, Gatekeeper assessments disabled) fails in seconds. The
+artefact gates hash the DMG before the proof build overwrites
+`bundle/macos/insto.app`. The native proof runs before the install gates so it
+never sees this user's `Application Support`. The matrix jobs hold a read-only
+token; only `publish`, which builds nothing, can write.
 
 Gates, all blocking, each one a JSON line in the evidence artifact: preflight
-(`launchd_gui_domain`, `applications_layout`, `workspace_ancestors`); artifacts
-(`signature_intact`, `designated_requirement`, `runtime_matches_manifest` via
+(`launchd_gui_domain`, `applications_layout`, `workspace_ancestors`,
+`gatekeeper_assessments_enabled`); artifacts (`signature_intact`,
+`designated_requirement`, `runtime_matches_manifest` via
 `scripts.verify_app_runtime`, which is the rule that signing must not touch the
 runtime, `dmg_verifies`, `dmg_carries_one_app`, `hashes`); the proof build and the
 native `migrate` and `adopt` legs against a previous runtime prepared from insto
 0.7.21; install (`install_to_applications`, `quarantine_applied` as Safari would,
-`gatekeeper_refuses_unnotarized`, which is expected without notarization,
+`gatekeeper_refuses_unnotarized`, which is expected without notarization and only
+meaningful because preflight proved assessments are enabled,
 `quarantine_removed`, `launch_publishes_runtime` into
 `~/Library/Application Support/insto-gui`, `cleanup`); finally the evidence file is
 complete and the DMG hash agrees with the `.sha256` that is published.
