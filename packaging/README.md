@@ -326,7 +326,13 @@ native `migrate` and `adopt` legs against a previous runtime prepared from insto
 meaningful because preflight proved assessments are enabled,
 `quarantine_removed`, `launch_publishes_runtime` into
 `~/Library/Application Support/insto-gui`, `cleanup`); finally the evidence file is
-complete and the DMG hash agrees with the `.sha256` that is published.
+complete, the runtime's own architecture matches the target that was built, and
+the DMG hash agrees with the `.sha256` that is published.
+
+`applications_layout` is recorded twice on purpose: the install stage repeats the
+check immediately before it copies anything into `/Applications`, so a layout that
+changed between preflight and install is caught rather than assumed. Two passing
+lines for that gate are the expected evidence, not a duplicate.
 
 `packaging/release-gates.sh` runs the same stages locally. `preflight` and
 `artifacts` are safe anywhere; `install` replaces `/Applications/insto.app` and

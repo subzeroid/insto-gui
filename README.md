@@ -9,16 +9,6 @@ inside the app, not by deleting it.
 
 Requires macOS 14 (Sonoma) or newer.
 
-**Homebrew**
-
-```sh
-brew install --cask subzeroid/tap/insto
-```
-
-Then follow *First launch* below once. (`brew install --cask --no-quarantine`
-skips that prompt by not marking the download; use it only if you have checked
-the DMG hash against `SHA256SUMS` on the release page.)
-
 **Download**
 
 Take the file for your Mac from [GitHub Releases](https://github.com/subzeroid/insto-gui/releases)
@@ -29,6 +19,17 @@ chip you have.
 |---|---|
 | Apple Silicon (M1 and later) | `insto_x.y.z_aarch64.dmg` |
 | Intel | `insto_x.y.z_x64.dmg` |
+
+**Homebrew**
+
+```sh
+brew install --cask subzeroid/tap/insto
+```
+
+The cask is published shortly after each release; if `brew` cannot find it yet,
+use the download. Then follow *First launch* below once. (`brew install --cask
+--no-quarantine` skips that prompt by not marking the download; use it only if
+you have checked the DMG hash against `SHA256SUMS` on the release page.)
 
 **First launch**
 

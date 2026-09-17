@@ -3,3 +3,4 @@
 /packaging/          @subzeroid
 /crates/desktop-host/src/runtime/  @subzeroid
 /scripts/            @subzeroid
+/src-tauri/tauri.conf.json  @subzeroid
