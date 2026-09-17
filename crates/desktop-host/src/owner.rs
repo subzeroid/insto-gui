@@ -308,8 +308,9 @@ mod tests {
         tokio::time::sleep(MUTATION / 2).await;
         owner.shutdown().await;
         // Draining honours the original deadline instead of restarting the
-        // clock, which a replay or a fresh budget would push past 2 * MUTATION.
-        assert!(accepted.elapsed() < MUTATION * 2);
+        // clock at shutdown, which would end this at 1.5 * MUTATION; the
+        // quarter budget here is slack for scheduling, not for a second clock.
+        assert!(accepted.elapsed() < MUTATION + MUTATION / 4);
         assert_eq!(call.await.unwrap().unwrap_err(), HostError::OutcomeUnknown);
         assert_eq!(
             std::fs::read_to_string(f._dir.path().join("started")).unwrap(),
