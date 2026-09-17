@@ -10,7 +10,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # A static key, not github.workflow: called through workflow_call that
+  # expression is the caller's name, so the release run and the checks it
+  # calls would contend for one group.
+  group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
