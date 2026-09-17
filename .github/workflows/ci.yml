@@ -85,6 +85,8 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci --ignore-scripts
+      - name: Build the frontend (tauri::generate_context! needs ../dist)
+        run: npm run build
       - name: Read the core pin
         id: pin
         run: echo "commit=$(jq -r .core_commit packaging/core-pin.json)" >>"$GITHUB_OUTPUT"
