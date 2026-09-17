@@ -39,7 +39,7 @@ if [ -z "$STAGE" ] || [ -z "$TARGET" ] || [ -z "$EVIDENCE" ]; then
 fi
 case "$STAGE" in
   preflight) ;;
-  artifacts) [ -n "$DMG" ] && [ -n "$APP" ] || { echo "missing arguments: --dmg and --app are required for the artifacts stage" >&2; exit 2; } ;;
+  artifacts) if [ -z "$DMG" ] || [ -z "$APP" ]; then echo "missing arguments: --dmg and --app are required for the artifacts stage" >&2; exit 2; fi ;;
   install) [ -n "$DMG" ] || { echo "missing arguments: --dmg is required for the install stage" >&2; exit 2; } ;;
   *) echo "unknown stage: $STAGE" >&2; exit 2 ;;
 esac
@@ -59,8 +59,8 @@ mkdir -p "$WORKSPACE/.build"
 MOUNT=""; INSTALLED=0; APP_PID=""
 cleanup() {
   local status=$?
-  [ -n "$APP_PID" ] && { kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; }
-  [ -n "$MOUNT" ] && hdiutil detach "$MOUNT" -quiet 2>/dev/null || true
+  if [ -n "$APP_PID" ]; then kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; fi
+  if [ -n "$MOUNT" ]; then hdiutil detach "$MOUNT" -quiet 2>/dev/null || true; fi
   if [ "$INSTALLED" = "1" ]; then rm -rf /Applications/insto.app "$HOME/Library/Application Support/insto-gui"; fi
   exit "$status"
 }
