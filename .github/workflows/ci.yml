@@ -66,8 +66,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 -B -m unittest discover -s tests -v
-      - name: Third-party notices are current
-        run: python3 -B -m scripts.third_party_notices | diff - THIRD-PARTY-NOTICES.md
 
   bundle-debug:
     needs: [workflows, frontend, rust, python]
@@ -104,6 +102,10 @@ jobs:
       - name: Tests (application workspace)
         working-directory: src-tauri
         run: cargo test --locked
+      - name: Fetch the host workspace's crates for the notices check
+        run: cargo fetch --locked
+      - name: Third-party notices are current
+        run: python3 -B -m scripts.third_party_notices | diff - THIRD-PARTY-NOTICES.md
       - name: Debug bundle
         run: npm run tauri -- build --debug --bundles app -- --locked
       - name: Signature and runtime gates on the debug bundle
