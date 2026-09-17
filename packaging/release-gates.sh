@@ -43,6 +43,10 @@ case "$STAGE" in
   install) [ -n "$DMG" ] || { echo "missing arguments: --dmg is required for the install stage" >&2; exit 2; } ;;
   *) echo "unknown stage: $STAGE" >&2; exit 2 ;;
 esac
+# Every stage records evidence through jq; say so here rather than failing
+# halfway through a gate. Exit 2, like the other environment errors above,
+# while the cleanup trap is still unarmed and nothing has been touched.
+command -v jq >/dev/null || { echo "jq is required" >&2; exit 2; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # .build is created 0700 by other packaging tooling; mkdir -p on an existing
 # directory is a no-op and never changes its mode.

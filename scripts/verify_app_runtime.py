@@ -8,6 +8,7 @@ that runs on every debug and release bundle.
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from scripts.app_manifest import read_manifest
@@ -39,7 +40,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("app", type=Path)
     args = parser.parse_args()
-    manifest = verify_app(args.app)
+    # A mismatch is this check's ordinary outcome, not a crash: the release
+    # gates read the exit code and show the message, so print it and stop.
+    try:
+        manifest = verify_app(args.app)
+    except (ValueError, OSError) as error:
+        print(error, file=sys.stderr)
+        sys.exit(1)
     print(
         json.dumps(
             {

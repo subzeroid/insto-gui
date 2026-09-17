@@ -95,9 +95,10 @@ class VerifyAppRuntimeTests(unittest.TestCase):
             [sys.executable, "-B", "-m", "scripts.verify_app_runtime", str(self.app)],
             cwd=REPO, capture_output=True, text=True,
         )
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "")
         self.assertIn("Runtime inventory mismatch", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
 
 if __name__ == "__main__":
