@@ -53,6 +53,21 @@ class ReleaseGatesTests(unittest.TestCase):
         lines = [json.loads(line) for line in self.evidence.read_text().splitlines()]
         self.assertEqual(lines, [{"gate": "signature_intact", "result": "fail", "target": "t"}])
 
+    def test_exit_trap_does_not_swallow_the_failing_gate_s_status(self):
+        """The cleanup EXIT trap must re-raise the gate's exit code, not its own."""
+        app = Path(self.temp.name) / "insto.app"
+        (app / "Contents/MacOS").mkdir(parents=True)
+        (app / "Contents/MacOS/insto-gui").write_bytes(b"not a mach-o")
+        result = run(
+            "--stage", "artifacts",
+            "--dmg", str(Path(self.temp.name) / "missing.dmg"),
+            "--app", str(app), "--target", "t", "--evidence", str(self.evidence),
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("GATE FAILED: signature_intact", result.stderr)
+        lines = [json.loads(line) for line in self.evidence.read_text().splitlines()]
+        self.assertEqual(lines, [{"gate": "signature_intact", "result": "fail", "target": "t"}])
+
 
 if __name__ == "__main__":
     unittest.main()
