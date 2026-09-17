@@ -1,6 +1,8 @@
 """package.json, src-tauri/Cargo.toml and tauri.conf.json must carry one version."""
 
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -73,6 +75,22 @@ class ReleaseVersionTests(unittest.TestCase):
 
     def test_real_repository_agrees(self):
         self.assertEqual(release_version.read_version(REPO), "0.1.0")
+
+    def test_cli_prints_the_version(self):
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "scripts.release_version", "--tag", "v0.1.0"],
+            cwd=REPO, capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(result.stdout, "0.1.0\n")
+
+    def test_cli_tag_mismatch_exits_1(self):
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "scripts.release_version", "--tag", "v9.9.9"],
+            cwd=REPO, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("Tag v9.9.9 does not match", result.stderr)
 
 
 if __name__ == "__main__":

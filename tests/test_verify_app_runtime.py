@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -77,6 +79,25 @@ class VerifyAppRuntimeTests(unittest.TestCase):
     def test_non_app_path_is_refused(self):
         with self.assertRaisesRegex(ValueError, "canonical .app"):
             verifier.verify_app(self.app.parent)
+
+    def test_cli_prints_one_json_line(self):
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "scripts.verify_app_runtime", str(self.app)],
+            cwd=REPO, capture_output=True, text=True, check=True,
+        )
+        lines = result.stdout.splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0]), {"build_id": self.manifest["build_id"], "architecture": "arm64"})
+
+    def test_cli_fails_on_mismatch(self):
+        (self.runtime / "python/LICENSE").write_text("fixture licensE\n")
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "scripts.verify_app_runtime", str(self.app)],
+            cwd=REPO, capture_output=True, text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("Runtime inventory mismatch", result.stderr)
 
 
 if __name__ == "__main__":
