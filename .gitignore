@@ -12,6 +12,8 @@ src-tauri/gen/
 .pytest_cache/
 .superpowers/
 .context/
+# Local security reports from /cso: never committed.
+.gstack/
 # Agent-facing working notes: never published, in any repository.
 docs/superpowers/
 AGENTS.md

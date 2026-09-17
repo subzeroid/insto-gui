@@ -1,0 +1,5 @@
+# Release pipeline, gates and trust policy: owner review required.
+/.github/            @subzeroid
+/packaging/          @subzeroid
+/crates/desktop-host/src/runtime/  @subzeroid
+/scripts/            @subzeroid
