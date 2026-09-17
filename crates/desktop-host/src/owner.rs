@@ -287,11 +287,11 @@ mod tests {
     async fn shutdown_preserves_original_mutation_deadline_and_never_replays() {
         let _lock = crate::process::tests::FIXTURE_LOCK.lock().await;
         let f = Fixture::shell("printf 1 >> started\nsleep 30");
-        const MUTATION: Duration = Duration::from_millis(1500);
+        const MUTATION: Duration = Duration::from_secs(3);
         let owner = Owner::with_policy(
             f.launcher.clone(),
             Policy {
-                read: Duration::from_millis(1000),
+                read: Duration::from_secs(2),
                 local_mutation: MUTATION,
                 mutation: MUTATION,
             },
@@ -350,17 +350,43 @@ mod tests {
         owner.shutdown().await;
     }
     #[tokio::test]
-    async fn local_mutation_uses_its_own_deadline_and_the_mutation_slot() {
+    async fn local_mutation_uses_its_own_deadline_not_the_read_or_service_budget() {
         let _lock = crate::process::tests::FIXTURE_LOCK.lock().await;
-        let f = Fixture::shell(": > started\nsleep 30");
+        // Nothing here waits for the child: the deadline under test is shorter
+        // than a loaded machine's process startup, so observing a started child
+        // first would race the very deadline the test is about to assert on.
+        let f = Fixture::shell("sleep 120");
         let owner = Owner::with_policy(
             f.launcher.clone(),
             Policy {
-                read: Duration::from_secs(10),
+                read: Duration::from_secs(120),
                 local_mutation: Duration::from_millis(400),
-                mutation: Duration::from_secs(10),
+                mutation: Duration::from_secs(120),
             },
         );
+        let start = Instant::now();
+        assert_eq!(
+            owner
+                .execute(Operation::WatchesAdd {
+                    user: "alice".into(),
+                    interval_seconds: None,
+                })
+                .await
+                .unwrap_err(),
+            HostError::OutcomeUnknown
+        );
+        // Only the local-mutation budget can have ended this: the child sleeps
+        // for two minutes and the other two budgets are just as long.
+        assert!(start.elapsed() < Duration::from_secs(20));
+        owner.shutdown().await;
+    }
+    #[tokio::test]
+    async fn a_local_mutation_holds_the_single_mutation_slot() {
+        let _lock = crate::process::tests::FIXTURE_LOCK.lock().await;
+        let f = Fixture::shell(": > started\nwhile [ ! -e release ]; do sleep .02; done");
+        // Ten-second budgets: the slot, not a deadline, is what is under test,
+        // so the child stays alive however long a loaded machine takes to start it.
+        let owner = owner(&f);
         let mut call = tokio::spawn({
             let o = owner.clone();
             async move {
@@ -376,9 +402,14 @@ mod tests {
             owner.execute(Operation::ServiceStop).await.unwrap_err(),
             HostError::Busy
         );
-        let start = Instant::now();
-        assert_eq!(call.await.unwrap().unwrap_err(), HostError::OutcomeUnknown);
-        assert!(start.elapsed() < Duration::from_secs(2));
+        std::fs::write(f._dir.path().join("release"), "").unwrap();
+        // The fixture answers nothing, so the call itself fails; what this test
+        // watches is the slot, which the finished local mutation must release.
+        assert!(call.await.unwrap().is_err());
+        assert_ne!(
+            owner.execute(Operation::ServiceStop).await.unwrap_err(),
+            HostError::Busy
+        );
         owner.shutdown().await;
     }
 }
