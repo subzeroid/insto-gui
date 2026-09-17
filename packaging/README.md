@@ -44,11 +44,14 @@ historical evidence. Rust is the production runtime-copy path; Python staging
 is a developer packaging helper only. Bundled app commands and measured results
 are recorded in [app-proof-results.md](app-proof-results.md).
 
-P1 source locations must have safe, non-group-writable ancestors. Standard
-`/Applications` (`root:admin 0775` on this Mac) is currently rejected. Run local
-proofs only from a private user location; normal `/Applications` installation
-requires a reviewed source-trust policy before R1. Destination ownership is
-always current UID, never weakened to accommodate source installation paths.
+Source locations must have safe ancestors: every directory from `/` down to the
+bundle is owned by root or the current user and is not group- or world-writable,
+with exactly one exemption. `/Applications` is `root:admin 0775` on macOS, and a
+directory with precisely that owner, group (gid 80) and mode is accepted as a
+path component, because a member of `admin` can replace the whole bundle anyway.
+The exemption never applies to files, to the bundle's contents, or to the private
+destination. Destination ownership is always the current UID, never weakened to
+accommodate source installation paths.
 
 The frontend is a bounded numeric client: unusual Python quota/timestamp
 integers outside Rust `u64`, or outside JavaScript safe integers, are rejected
