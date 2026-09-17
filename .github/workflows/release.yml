@@ -138,7 +138,7 @@ jobs:
           jq -cn --arg sha "$(shasum -a 256 "$proof/Contents/MacOS/insto-gui" | cut -d' ' -f1)" --arg target "$TARGET" \
             '{gate:"proof_build",result:"pass",target:$target,proof_executable_sha256:$sha}' >>"$EVIDENCE"
           for mode in migrate adopt; do
-            dir="$PWD/.build/native-r1-$mode"
+            dir="$PWD/.build/native-app-r1-$mode"
             mkdir -m 700 "$dir"
             cp -cRp "$proof" "$dir/insto.app"
             python3 -B -m scripts.app_native_probe "$dir/insto.app" "$dir/insto-app-proof-r1-$mode" \
@@ -175,7 +175,7 @@ jobs:
           mkdir -p .build/evidence-out
           cp "$EVIDENCE" .build/evidence-out/ 2>/dev/null || true
           for mode in migrate adopt; do
-            d=".build/native-r1-$mode"
+            d=".build/native-app-r1-$mode"
             for f in "insto-app-proof-r1-$mode-identity.json" "insto-app-proof-r1-$mode-result.json"; do
               [ -f "$d/$f" ] && cp "$d/$f" ".build/evidence-out/$f"
             done
