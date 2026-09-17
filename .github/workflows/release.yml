@@ -84,7 +84,11 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Read the core pin
         id: pin
-        run: echo "commit=$(jq -r .core_commit packaging/core-pin.json)" >>"$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          commit="$(jq -r .core_commit packaging/core-pin.json)"
+          [ ${#commit} -eq 40 ] || { echo "core_commit missing in packaging/core-pin.json" >&2; exit 1; }
+          echo "commit=$commit" >>"$GITHUB_OUTPUT"
       - name: Prepare and stage the pinned runtime
         uses: ./.github/actions/stage-runtime
         with:
@@ -142,8 +146,8 @@ jobs:
             jq -e '.passed == true and .cleanup_confirmed == true and .app_group_cleaned == true' "$PWD/.build/native-$mode.json"
             jq -c --arg mode "$mode" --arg target "$TARGET" '{gate:("native_" + $mode),result:"pass",target:$target} + .' "$PWD/.build/native-$mode.json" >>"$EVIDENCE"
           done
-          # shellcheck disable=SC2010 # matching "insto" against filenames, not their content
-          if ls "$HOME/Library/LaunchAgents" 2>/dev/null | grep -q insto; then echo "insto LaunchAgent left behind" >&2; exit 1; fi
+          shopt -s nullglob; matches=("$HOME/Library/LaunchAgents"/*insto*); shopt -u nullglob
+          [ ${#matches[@]} -eq 0 ] || { echo "insto LaunchAgent left behind" >&2; exit 1; }
 
       - name: Install gates (/Applications, Gatekeeper, launch publishes the runtime)
         env:
@@ -159,9 +163,10 @@ jobs:
             jq -e --arg g "$g" 'select(.gate == $g and .result == "pass")' "$EVIDENCE" >/dev/null || { echo "missing gate $g" >&2; exit 1; }
           done
           if jq -e 'select(.result == "fail")' "$EVIDENCE" >/dev/null; then echo "a gate recorded fail" >&2; exit 1; fi
-          # shellcheck disable=SC2012 # exactly one DMG is placed here by this job; a plain glob would also work
-          dmg="$(ls .build/release/*.dmg)"
-          shasum -a 256 "$dmg" | sed "s| .*| $(basename "$dmg")|" >"$dmg.sha256"
+          shopt -s nullglob; dmgs=(.build/release/*.dmg); shopt -u nullglob
+          [ ${#dmgs[@]} -eq 1 ] || { echo "expected exactly one DMG in .build/release" >&2; exit 1; }
+          dmg="${dmgs[0]}"
+          (cd "$(dirname "$dmg")" && shasum -a 256 "$(basename "$dmg")") >"$dmg.sha256"
           [ "$(cut -d' ' -f1 "$dmg.sha256")" = "$(jq -r 'select(.gate=="hashes") | .dmg_sha256' "$EVIDENCE")" ]
       - name: Collect evidence
         if: always()
@@ -170,8 +175,10 @@ jobs:
           mkdir -p .build/evidence-out
           cp "$EVIDENCE" .build/evidence-out/ 2>/dev/null || true
           for mode in migrate adopt; do
-            d=".build/native-r1-$mode/insto-app-proof-r1-$mode"
-            for f in native-result.txt native-context.json evidence.json; do [ -f "$d/$f" ] && cp "$d/$f" ".build/evidence-out/$mode-$f"; done
+            d=".build/native-r1-$mode"
+            for f in "insto-app-proof-r1-$mode-identity.json" "insto-app-proof-r1-$mode-result.json"; do
+              [ -f "$d/$f" ] && cp "$d/$f" ".build/evidence-out/$f"
+            done
           done
           cp .build/native-*.json .build/evidence-out/ 2>/dev/null || true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -210,8 +217,8 @@ jobs:
         run: |
           set -euo pipefail
           ls -la dmgs
-          # shellcheck disable=SC2012 # counting DMGs, not reading ls output as data
-          [ "$(ls dmgs/*.dmg | wc -l)" -eq 2 ] || { echo "expected exactly two DMGs" >&2; exit 1; }
+          shopt -s nullglob; dmg_files=(dmgs/*.dmg); shopt -u nullglob
+          [ ${#dmg_files[@]} -eq 2 ] || { echo "expected exactly two DMGs" >&2; exit 1; }
           (cd dmgs && cat ./*.sha256 >SHA256SUMS && cat SHA256SUMS)
           gh release create "$TAG" --repo "$REPO" --draft --title "insto $TAG" --notes-file .github/release-notes.md
           gh release upload "$TAG" --repo "$REPO" dmgs/*.dmg dmgs/*.sha256 dmgs/SHA256SUMS
