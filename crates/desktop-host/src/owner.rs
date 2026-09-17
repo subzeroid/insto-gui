@@ -286,24 +286,30 @@ mod tests {
     #[tokio::test]
     async fn shutdown_preserves_original_mutation_deadline_and_never_replays() {
         let _lock = crate::process::tests::FIXTURE_LOCK.lock().await;
-        let f = Fixture::new("open('started','a').write('1')\ntime.sleep(30)");
+        let f = Fixture::shell("printf 1 >> started\nsleep 30");
+        const MUTATION: Duration = Duration::from_millis(1500);
         let owner = Owner::with_policy(
             f.launcher.clone(),
             Policy {
-                read: Duration::from_millis(400),
-                local_mutation: Duration::from_millis(600),
-                mutation: Duration::from_millis(600),
+                read: Duration::from_millis(1000),
+                local_mutation: MUTATION,
+                mutation: MUTATION,
             },
         );
+        // The accepted mutation's deadline starts on its first poll, at or after
+        // this instant; anchoring the drain assertion here keeps it independent
+        // of how long the child took to start.
+        let accepted = Instant::now();
         let mut call = tokio::spawn({
             let o = owner.clone();
             async move { o.execute(Operation::ServiceRepair).await }
         });
         ready(&f, "started", &mut call).await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let start = Instant::now();
+        tokio::time::sleep(MUTATION / 2).await;
         owner.shutdown().await;
-        assert!(start.elapsed() < Duration::from_millis(500));
+        // Draining honours the original deadline instead of restarting the
+        // clock, which a replay or a fresh budget would push past 2 * MUTATION.
+        assert!(accepted.elapsed() < MUTATION * 2);
         assert_eq!(call.await.unwrap().unwrap_err(), HostError::OutcomeUnknown);
         assert_eq!(
             std::fs::read_to_string(f._dir.path().join("started")).unwrap(),
@@ -346,7 +352,7 @@ mod tests {
     #[tokio::test]
     async fn local_mutation_uses_its_own_deadline_and_the_mutation_slot() {
         let _lock = crate::process::tests::FIXTURE_LOCK.lock().await;
-        let f = Fixture::new("open('started','w').close()\ntime.sleep(30)");
+        let f = Fixture::shell(": > started\nsleep 30");
         let owner = Owner::with_policy(
             f.launcher.clone(),
             Policy {

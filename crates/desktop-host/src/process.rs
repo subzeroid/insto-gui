@@ -236,9 +236,6 @@ pub(crate) mod tests {
     }
     impl Fixture {
         pub fn new(body: &str) -> Self {
-            let dir = tempfile::tempdir().unwrap();
-            let root = dir.path().canonicalize().unwrap();
-            let python = root.join("python");
             static PYTHON: std::sync::OnceLock<String> = std::sync::OnceLock::new();
             let interpreter = PYTHON.get_or_init(|| {
                 let output = std::process::Command::new("/usr/bin/python3")
@@ -250,7 +247,22 @@ pub(crate) mod tests {
                 assert!(output.status.success());
                 String::from_utf8(output.stdout).unwrap().trim().into()
             });
-            let script = format!("#!{interpreter}\nimport os,sys,json,time,subprocess\n{body}\n");
+            Self::script(&format!(
+                "#!{interpreter}\nimport os,sys,json,time,subprocess\n{body}\n"
+            ))
+        }
+        /// A `/bin/sh` child reaches its ready marker about a millisecond after
+        /// spawn where CPython needs a hundred or more, and that startup cost is
+        /// what grows under load. Tests that must observe a started child before
+        /// a deliberately sub-second deadline expires use this fixture, so the
+        /// deadline they assert on never races interpreter startup.
+        pub fn shell(body: &str) -> Self {
+            Self::script(&format!("#!/bin/sh\n{body}\n"))
+        }
+        fn script(script: &str) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let python = root.join("python");
             std::fs::write(&python, script).unwrap();
             std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o700)).unwrap();
             let launcher = TrustedLauncher::new(&root, &python, &root).unwrap();
