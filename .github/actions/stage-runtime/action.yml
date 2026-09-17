@@ -1,0 +1,52 @@
+name: Prepare the bundled runtime
+description: Clone the insto core at a ref, prepare a runtime with the pinned interpreter, optionally stage it for the app bundle.
+inputs:
+  core-ref:
+    description: Commit or tag of subzeroid/insto to build the core wheel from
+    required: true
+  output:
+    description: Name of the runtime directory under .build/
+    required: true
+  stage:
+    description: Also stage into .build/app-resources/runtime
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.12"
+    - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+    - name: Clone the core at the requested ref
+      shell: bash
+      env:
+        CORE_REF: ${{ inputs.core-ref }}
+        OUTPUT: ${{ inputs.output }}
+      run: |
+        set -euo pipefail
+        dir="$PWD/.build-core-$OUTPUT"
+        rm -rf "$dir"
+        git clone --quiet https://github.com/subzeroid/insto.git "$dir"
+        # insto's history was rewritten once; a vanished pin must not read like a network error.
+        git -C "$dir" cat-file -e "$CORE_REF^{commit}" 2>/dev/null \
+          || { echo "core ref $CORE_REF does not exist in subzeroid/insto (history rewritten?)" >&2; exit 1; }
+        git -C "$dir" checkout --quiet "$CORE_REF"
+        test -z "$(git -C "$dir" status --porcelain --untracked-files=all)"
+    - name: Prepare the runtime
+      shell: bash
+      env:
+        OUTPUT: ${{ inputs.output }}
+      run: |
+        set -euo pipefail
+        [ -d .build ] || mkdir -m 700 .build
+        chmod 700 .build
+        python3 -B -m scripts.prepare_runtime --core-root "$PWD/.build-core-$OUTPUT" --output "$PWD/.build/$OUTPUT"
+    - name: Stage for the bundle
+      if: inputs.stage == 'true'
+      shell: bash
+      env:
+        OUTPUT: ${{ inputs.output }}
+      run: |
+        set -euo pipefail
+        python3 -B -m scripts.stage_app_runtime "$PWD/.build/$OUTPUT"

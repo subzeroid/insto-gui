@@ -1,5 +1,5 @@
 .build/
-.build-core/
+.build-core*/
 .venv/
 __pycache__/
 *.pyc
