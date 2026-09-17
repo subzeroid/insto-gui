@@ -9,8 +9,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   workflows:
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -26,6 +31,7 @@ jobs:
       - run: shellcheck packaging/release-gates.sh
 
   frontend:
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -40,6 +46,7 @@ jobs:
       - run: npm run build
 
   rust:
+    timeout-minutes: 30
     runs-on: macos-14
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -57,6 +64,7 @@ jobs:
         run: cargo test -p insto-desktop-host --locked
 
   python:
+    timeout-minutes: 30
     runs-on: macos-14
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -66,9 +74,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 -B -m unittest discover -s tests -v
+      - run: python3 -B -m scripts.release_version
 
   bundle-debug:
     needs: [workflows, frontend, rust, python]
+    timeout-minutes: 60
     runs-on: macos-14
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -105,6 +115,9 @@ jobs:
         working-directory: src-tauri
         run: cargo test --locked
       - name: Fetch the host workspace's crates for the notices check
+        run: cargo fetch --locked
+      - name: Fetch every target's application crates for the notices check
+        working-directory: src-tauri
         run: cargo fetch --locked
       - name: Third-party notices are current
         run: python3 -B -m scripts.third_party_notices | diff - THIRD-PARTY-NOTICES.md
