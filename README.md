@@ -14,7 +14,7 @@ Paste your HikerAPI token once, add a few accounts, and a background service kee
 
 ![insto-gui watching six accounts, with the saved snapshots of one of them compared side by side](docs/screenshot.png)
 
-> The interface is in Russian.
+> The interface is in English, or Russian when macOS runs in Russian.
 
 ## Features
 
@@ -91,7 +91,7 @@ The frontend runs in a plain browser against a mocked Tauri IPC with demo data â
 ```sh
 npx playwright install chromium
 npx vite --host 127.0.0.1 &
-npm run screenshot -- "http://127.0.0.1:1420/?mock=1" docs/screenshot.png
+npm run screenshot -- "http://127.0.0.1:1420/?mock=1&lang=en" docs/screenshot.png
 ```
 
 ## Related projects
