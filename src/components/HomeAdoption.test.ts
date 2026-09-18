@@ -41,22 +41,22 @@ describe('home adoption block', () => {
     const card = view.get('.home-report').text()
     expect(card).toContain('HikerAPI')
     expect(card).toContain('/Users/x/.insto')
-    expect(card).toContain('можно подключить')
+    expect(card).toContain('can be connected')
   })
 
   it('explains an unsupported backend and an unusable directory and offers no connect button', () => {
     const unsupportedView = mountBlock(stub(unsupported))
-    expect(unsupportedView.text()).toContain('настроена не на HikerAPI')
+    expect(unsupportedView.text()).toContain('is set to something other than HikerAPI')
     expect(unsupportedView.find('button[data-action="adopt-home"]').exists()).toBe(false)
     const missingView = mountBlock(stub(missing))
-    expect(missingView.text()).toContain('Каталог нельзя использовать безопасно')
+    expect(missingView.text()).toContain('The folder cannot be used safely')
     expect(missingView.find('button[data-action="adopt-home"]').exists()).toBe(false)
   })
 
   it('names a CLI service inside the home without pretending the app will manage it', () => {
     const view = mountBlock(stub(cliOwned))
-    expect(view.text()).toContain('служба insto установлена')
-    expect(view.text()).toContain('её ядро — другое')
+    expect(view.text()).toContain('an insto service is installed')
+    expect(view.text()).toContain('its core is another one')
   })
 
   it('disables the input, the check and the adoption while an inspection is in flight', () => {
@@ -70,7 +70,7 @@ describe('home adoption block', () => {
     const home = stub(homeAdoptable)
     const view = mountBlock(home)
     await view.get('button[data-action="adopt-home"]').trigger('click')
-    expect(view.text()).toContain('Приложение начнёт работать с каталогом')
+    expect(view.text()).toContain('The app will start working with the folder')
     expect(home.adopt).not.toHaveBeenCalled()
     await view.get('button[data-action="cancel-adopt"]').trigger('click')
     expect(view.find('button[data-action="confirm-adopt"]').exists()).toBe(false)
@@ -111,7 +111,7 @@ describe('home adoption block', () => {
     const view = mountBlock(home, adopted)
     expect(view.text()).toContain('/Users/x/.insto')
     await view.get('button[data-action="release-home"]').trigger('click')
-    expect(view.text()).toContain('Приложение вернётся к собственному каталогу')
+    expect(view.text()).toContain('The app will return to its own folder')
     await view.get('button[data-action="confirm-release"]').trigger('click')
     expect(home.release).toHaveBeenCalledTimes(1)
   })

@@ -35,7 +35,7 @@ function make(overrides: Record<string, unknown> = {}) {
 describe('settings', () => {
   it('replaces the token through the existing form and removes the service only after confirmation', async () => {
     const { wrapper, uninstall } = make()
-    expect(wrapper.text()).toContain('0.7.22'); expect(wrapper.text()).toContain('Корзин')
+    expect(wrapper.text()).toContain('0.7.22'); expect(wrapper.text()).toContain('Trash')
     await wrapper.get('button[data-action="uninstall"]').trigger('click')
     expect(uninstall).not.toHaveBeenCalled()
     await wrapper.get('button[data-action="confirm-uninstall"]').trigger('click')
@@ -63,7 +63,7 @@ describe('settings', () => {
     for (const service of [serviceStub(foreign, own), serviceStub(facts, nobody), serviceStub(null, own)]) {
       const { wrapper, uninstall } = make({ service, binding: service.state.binding })
       expect(wrapper.get('button[data-action="uninstall"]').attributes('disabled')).toBeDefined()
-      expect(wrapper.text()).toContain('доступен только просмотр')
+      expect(wrapper.text()).toContain('view only')
       expect(uninstall).not.toHaveBeenCalled()
     }
     const { wrapper, service } = make()
@@ -77,7 +77,7 @@ describe('settings', () => {
     const service = serviceStub(facts, adopted)
     const { wrapper } = make({ service, binding: adopted })
     expect(wrapper.get('button[data-action="uninstall"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('Эта служба принадлежит подключённой установке insto')
+    expect(wrapper.text()).toContain('This service belongs to the connected insto installation')
   })
   it('an adopted home that was already taken over may be removed', () => {
     const service = serviceStub(current, adopted)
@@ -92,7 +92,7 @@ describe('settings', () => {
   })
   it('no longer promises adoption in a future version', () => {
     const { wrapper } = make()
-    expect(wrapper.text()).not.toContain('появятся в следующей версии')
+    expect(wrapper.text()).not.toContain('will appear in the next version')
     expect(homeAdoptable.backend).toBe('hikerapi') // the block only ever accepts a HikerAPI home
   })
   it('closes an open uninstall confirmation when there is nothing left to disable', async () => {

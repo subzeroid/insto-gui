@@ -19,12 +19,12 @@ describe('changes feed', () => {
     const history = createHistoryState(new DesktopClient(invoke))
     const wrapper = mount(ChangesView, { props: { history, filterPk: null } })
     await flushPromises()
-    expect(wrapper.text()).toContain('Первый снимок'); expect(wrapper.text()).toContain('Подписчики'); expect(wrapper.text()).toContain('Неполное сравнение'); expect(wrapper.text()).toContain('не удалось прочитать')
+    expect(wrapper.text()).toContain('First snapshot'); expect(wrapper.text()).toContain('Followers'); expect(wrapper.text()).toContain('Incomplete comparison'); expect(wrapper.text()).toContain('could not be read')
     expect(wrapper.html()).toContain('a &lt;b&gt;x&lt;/b&gt;'); expect(wrapper.find('a').exists()).toBe(false)
-    expect(wrapper.text()).toContain('между двумя временами')
-    expect(wrapper.text()).toContain(`Просмотрено кандидатов: ${formatCount(1500)}.`) // locale-formatted like every other count
+    expect(wrapper.text()).toContain('between two times')
+    expect(wrapper.text()).toContain(`Candidates scanned: ${formatCount(1500)}.`) // locale-formatted like every other count
     await wrapper.get('button[data-action="more"]').trigger('click'); await flushPromises()
-    expect(wrapper.text()).toContain('Лента просмотрена до конца')
+    expect(wrapper.text()).toContain('The feed has been scanned to the end')
     expect(invoke.mock.calls[1]).toEqual(['list_changes', { query: { cursor: 'next' } }])
   })
   it('shows loading, empty and error states', async () => {
@@ -34,7 +34,7 @@ describe('changes feed', () => {
     await flushPromises()
     expect(wrapper.find('[role="alert"]').exists()).toBe(true)
     await wrapper.get('button[data-action="retry"]').trigger('click'); await flushPromises()
-    expect(wrapper.text()).toContain('Изменений пока нет')
+    expect(wrapper.text()).toContain('No changes yet')
     expect(wrapper.text()).toContain('PK 7')
     await wrapper.get('button[data-action="clear-filter"]').trigger('click')
     expect(wrapper.emitted('clear-filter')).toHaveLength(1)
