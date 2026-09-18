@@ -73,15 +73,21 @@ class ReleaseVersionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Tag v0.2.0"):
             release_version.check_tag(self.root, "v0.2.0")
 
+    # The real repository's version changes with every release; the expectation is
+    # package.json, so these tests keep checking that the three files agree and
+    # that the CLI prints what they say, without pinning the number itself.
     def test_real_repository_agrees(self):
-        self.assertEqual(release_version.read_version(REPO), "0.1.0")
+        expected = json.loads((REPO / "package.json").read_text())["version"]
+        self.assertRegex(expected, r"^\d+\.\d+\.\d+$")
+        self.assertEqual(release_version.read_version(REPO), expected)
 
     def test_cli_prints_the_version(self):
+        expected = json.loads((REPO / "package.json").read_text())["version"]
         result = subprocess.run(
-            [sys.executable, "-B", "-m", "scripts.release_version", "--tag", "v0.1.0"],
+            [sys.executable, "-B", "-m", "scripts.release_version", "--tag", f"v{expected}"],
             cwd=REPO, capture_output=True, text=True, check=True,
         )
-        self.assertEqual(result.stdout, "0.1.0\n")
+        self.assertEqual(result.stdout, f"{expected}\n")
 
     def test_cli_tag_mismatch_exits_1(self):
         result = subprocess.run(
