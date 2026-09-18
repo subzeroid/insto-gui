@@ -49,6 +49,16 @@ impl Ownership {
         Ok(m)
     }
 }
+/// The one ancestor layout macOS itself installs applications into: `/Applications`
+/// is `root:admin 0775`. A member of `admin` can replace the whole bundle, host
+/// binary included, so accepting exactly this layout as a path component weakens
+/// nothing the walk ever defended. World-writable and special-bit directories,
+/// other groups and non-root owners stay refused, and the exemption never applies
+/// to files, to `Dir::child`, or to `Ownership::Destination`.
+pub(super) const ADMIN_GID: u32 = 80;
+pub(super) fn system_ancestor(directory: bool, uid: u32, gid: u32, mode: u32) -> bool {
+    directory && uid == 0 && gid == ADMIN_GID && mode & 0o7777 == 0o775
+}
 pub(super) fn same(before: &std::fs::Metadata, after: &std::fs::Metadata) -> Result<()> {
     if before.dev() != after.dev()
         || before.ino() != after.ino()
@@ -108,10 +118,10 @@ impl Dir {
                     )?;
                     if let Err(error) = metadata(&dir.0, true) {
                         let m = dir.0.metadata().map_err(|_| RuntimeError::Storage)?;
-                        if !(cfg!(test)
-                            && m.is_dir()
-                            && m.uid() == 0
-                            && m.mode() & 0o7777 == 0o1777)
+                        let test_temp =
+                            cfg!(test) && m.is_dir() && m.uid() == 0 && m.mode() & 0o7777 == 0o1777;
+                        if !(test_temp
+                            || system_ancestor(m.is_dir(), m.uid(), m.gid(), m.mode() & 0o7777))
                         {
                             return Err(error);
                         }
@@ -274,5 +284,52 @@ mod tests {
             assert_eq!(libc::mkfifo(fifo.as_ptr(), 0o600), 0);
         }
         assert!(parent.file("fifo").is_err());
+    }
+
+    #[test]
+    fn system_ancestor_accepts_only_root_admin_0775_directories() {
+        assert!(system_ancestor(true, 0, ADMIN_GID, 0o775));
+        assert!(system_ancestor(true, 0, ADMIN_GID, 0o040775 & 0o7777));
+        // World write, wrong group, wrong owner, a file, special bits: all refused.
+        assert!(!system_ancestor(true, 0, ADMIN_GID, 0o777));
+        assert!(!system_ancestor(true, 0, 20, 0o775));
+        assert!(!system_ancestor(true, 501, ADMIN_GID, 0o775));
+        assert!(!system_ancestor(false, 0, ADMIN_GID, 0o775));
+        assert!(!system_ancestor(true, 0, ADMIN_GID, 0o1775));
+        assert!(!system_ancestor(true, 0, ADMIN_GID, 0o2775));
+        assert!(!system_ancestor(true, 0, ADMIN_GID, 0o755 | 0o020 | 0o002));
+    }
+
+    #[test]
+    fn absolute_walk_accepts_the_real_applications_directory() {
+        // macOS installs /Applications as root:admin 0775. When this machine matches
+        // that layout the walk must accept it; when it does not, the test cannot
+        // say anything about the exemption and only checks the predicate agrees.
+        let m = std::fs::metadata("/Applications").unwrap();
+        let expected = system_ancestor(m.is_dir(), m.uid(), m.gid(), m.mode() & 0o7777);
+        assert_eq!(
+            Dir::absolute(Path::new("/Applications")).is_ok(),
+            expected
+                || Ownership::Source
+                    .metadata(&File::open("/Applications").unwrap(), true)
+                    .is_ok()
+        );
+        if m.uid() == 0 && m.gid() == ADMIN_GID && m.mode() & 0o7777 == 0o775 {
+            assert!(Dir::absolute(Path::new("/Applications")).is_ok());
+        }
+    }
+
+    #[test]
+    fn absolute_walk_still_refuses_user_owned_group_writable_ancestors() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().canonicalize().unwrap();
+        std::fs::create_dir(path.join("shared")).unwrap();
+        std::fs::create_dir(path.join("shared/bundle")).unwrap();
+        std::fs::set_permissions(path.join("shared"), std::fs::Permissions::from_mode(0o775))
+            .unwrap();
+        assert!(matches!(
+            Dir::absolute(&path.join("shared/bundle")),
+            Err(RuntimeError::Ownership)
+        ));
     }
 }

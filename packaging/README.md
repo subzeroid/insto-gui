@@ -2,7 +2,8 @@
 
 P0 proves that a bundled Python core can run after relocation. These commands
 are for developers, **not end-user installation steps**. P1 adds a local GUI
-and a Rust runtime publisher, but no public installer. The target user flow remains:
+and a Rust runtime publisher, but R1 adds the public installer described below.
+The target user flow remains:
 install the app, enter a HikerAPI token, add accounts, start monitoring.
 
 ## P1/G1 local app
@@ -37,18 +38,29 @@ npm ci --ignore-scripts
 npm test
 npm run build
 cargo test -p insto-desktop-host --locked
+CI=true npm run tauri -- build --bundles app,dmg -- --locked
 ```
+
+`--bundles dmg` alone deletes the `.app`, so both are requested together; `CI=true`
+skips the Finder AppleScript step of `bundle_dmg.sh`.
 
 Staging refuses an existing `.build/app-resources/runtime`; it never overwrites
 historical evidence. Rust is the production runtime-copy path; Python staging
 is a developer packaging helper only. Bundled app commands and measured results
 are recorded in [app-proof-results.md](app-proof-results.md).
 
-P1 source locations must have safe, non-group-writable ancestors. Standard
-`/Applications` (`root:admin 0775` on this Mac) is currently rejected. Run local
-proofs only from a private user location; normal `/Applications` installation
-requires a reviewed source-trust policy before R1. Destination ownership is
-always current UID, never weakened to accommodate source installation paths.
+Source locations must have safe ancestors: every directory from `/` down to the
+bundle is owned by root or the current user and is not group- or world-writable,
+with exactly one exemption. `/Applications` is `root:admin 0775` on macOS, and a
+directory with precisely that owner, group (gid 80) and mode is accepted as a
+path component, because a member of `admin` can replace the whole bundle anyway.
+The exemption applies to every directory component the walk visits, the bundle's
+own directories included (the walk does not know where the bundle starts, and
+only an admin could have made such a directory); it never applies to files or to
+the private destination. The Python proof helper keeps its stricter rule on
+purpose: it demands a private parent directory and is never aimed at `/Applications`.
+Destination ownership is always the current UID, never weakened to
+accommodate source installation paths.
 
 The frontend is a bounded numeric client: unusual Python quota/timestamp
 integers outside Rust `u64`, or outside JavaScript safe integers, are rejected
@@ -268,3 +280,66 @@ notarize. P0's pre-signing manifest must not be reused as the post-signing
 production manifest. Test both Mac architectures and quarantine/Gatekeeper
 before claiming a distributable installer. GUI onboarding must not invoke
 pip, uv, ensurepip or these build/probe scripts on the user's machine.
+
+## R1 release
+
+A tag `v<version>` (equal to the version in `package.json`, `src-tauri/Cargo.toml`
+and `src-tauri/tauri.conf.json`, checked by `scripts.release_version`) runs
+`.github/workflows/release.yml`. Supported macOS is exactly what the runners test:
+14 (Sonoma) and newer, `macos-14` for aarch64 and `macos-15-intel` for x86_64.
+`workflow_dispatch` runs the same pipeline without publishing; that is how a change
+to the pipeline is tried.
+
+```
+tag v* ─┬─► checks (ci.yml via workflow_call)
+        ├─► version (release_version.py --tag)            ┐
+        │                                                 ▼
+        └─► release [macos-14 / aarch64] ──┐   needs: checks, version
+            release [macos-15-intel / x64] ─┤
+              preflight gates ─► stage runtime ─► build app,dmg ─► artifacts gates
+              ─► previous runtime (0.7.21) ─► proof build (app-proof) ─► native migrate + adopt
+              ─► install gates (/Applications, Gatekeeper, launch) ─► evidence complete
+              ─► upload artifacts dmg-<target>, evidence-<target>       (contents: read)
+                                            │
+                                            ▼
+            publish (needs both legs; only when uploading)               (contents: write)
+              download dmg-* ─► exactly two DMGs ─► SHA256SUMS ─► gh release create --draft ─► upload
+```
+
+The order is load-bearing. Preflight runs before any build so an unsuitable runner
+(no launchd GUI domain, `/Applications` not `root:admin 0775`, a group-writable
+workspace ancestor, Gatekeeper assessments disabled) fails in seconds. The
+artefact gates hash the DMG before the proof build overwrites
+`bundle/macos/insto.app`. The native proof runs before the install gates so it
+never sees this user's `Application Support`. The matrix jobs hold a read-only
+token; only `publish`, which builds nothing, can write.
+
+Gates, all blocking, each one a JSON line in the evidence artifact: preflight
+(`launchd_gui_domain`, `applications_layout`, `workspace_ancestors`,
+`gatekeeper_assessments_enabled`); artifacts (`signature_intact`,
+`designated_requirement`, `runtime_matches_manifest` via
+`scripts.verify_app_runtime`, which is the rule that signing must not touch the
+runtime, `dmg_verifies`, `dmg_carries_one_app`, `hashes`); the proof build and the
+native `migrate` and `adopt` legs against a previous runtime prepared from insto
+0.7.21; install (`install_to_applications`, `quarantine_applied` as Safari would,
+`gatekeeper_refuses_unnotarized`, which is expected without notarization and only
+meaningful because preflight proved assessments are enabled,
+`quarantine_removed`, `launch_publishes_runtime` into
+`~/Library/Application Support/insto-gui`, `cleanup`); finally the evidence file is
+complete, the runtime's own architecture matches the target that was built, and
+the DMG hash agrees with the `.sha256` that is published.
+
+`applications_layout` is recorded twice on purpose: the install stage repeats the
+check immediately before it copies anything into `/Applications`, so a layout that
+changed between preflight and install is caught rather than assumed. Two passing
+lines for that gate are the expected evidence, not a duplicate.
+
+`packaging/release-gates.sh` runs the same stages locally. `preflight` and
+`artifacts` are safe anywhere; `install` replaces `/Applications/insto.app` and
+this user's `Application Support/insto-gui`, so it refuses to run unless `CI=true`
+or `--throwaway-machine` is given.
+
+Signing order remains the rule for any future Developer ID work: sign nested
+binaries, generate the manifest and build id, sign the outer application, notarize.
+With ad-hoc signing Tauri leaves the runtime untouched, and the manifest gate
+enforces that on every build.
