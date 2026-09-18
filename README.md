@@ -23,7 +23,7 @@ Paste your HikerAPI token once, add a few accounts, and a background service kee
 - **Snapshot history** — every successful check is stored; pick any two saved snapshots of one account and compare exactly those two
 - **Change feed** — all accounts, newest first, filterable down to one; a first snapshot is labelled a baseline rather than dressed up as a change, and a comparison whose older snapshot lacked a field is labelled incomplete rather than guessed at
 - **Tracked fields** — username, full name, biography, profile link, verified / business / private flags, follower, following and media counts, and avatar and banner hashes
-- **Background service** — a macOS LaunchAgent that keeps checking with the app closed; start, stop and repair it from the app, and disable it from **Настройки** (Settings) before you move the app to the Trash
+- **Background service** — a macOS LaunchAgent that keeps checking with the app closed; start, stop and repair it from the app, and disable it from **Settings** before you move the app to the Trash
 - **Bundled core** — a compatible Python insto core ships inside the app; no Python, uv or CLI install, and no downloads on first run
 - **Adopts an existing `~/.insto`** — inspect the folder first, connect it only after an explicit confirmation, and go back to the app's own profile later without the folder's files being touched
 - **Takes over a CLI service** — a service registered by the insto CLI can be moved onto the runtime this app ships, automatically for the app's own profile and only on your command for an adopted one
@@ -63,11 +63,11 @@ The app is ad-hoc signed and not notarized, so macOS refuses it once:
 2. Copy the token from your [HikerAPI dashboard](https://hikerapi.com/p/uk064a1b).
 3. Paste it into the app on first launch.
 
-Every check of a watched account spends HikerAPI requests, so the check interval — not the number of times you open the window — decides how fast the balance goes down. The remaining balance is shown in the **Служба** (Service) section together with the moment it was last read; it is a reading, not a live counter. You can replace the token later in **Настройки** (Settings) without losing history.
+Every check of a watched account spends HikerAPI requests, so the check interval — not the number of times you open the window — decides how fast the balance goes down. The remaining balance is shown in the **Service** section together with the moment it was last read; it is a reading, not a live counter. You can replace the token later in **Settings** without losing history.
 
 ## How monitoring works
 
-The app bundles its own Python insto core, so nothing is installed alongside it. When you connect a token, it registers a macOS LaunchAgent that performs the checks; that agent keeps running after the window is closed, and moving the app to the Trash does not remove it — disable it from **Настройки** (Settings) first, which leaves the settings, the snapshot history and the token in place.
+The app bundles its own Python insto core, so nothing is installed alongside it. When you connect a token, it registers a macOS LaunchAgent that performs the checks; that agent keeps running after the window is closed, and moving the app to the Trash does not remove it — disable it from **Settings** first, which leaves the settings, the snapshot history and the token in place.
 
 If you already run the insto CLI, the app can work with that existing `~/.insto` folder instead of its own: it inspects the folder, reports what it found, and connects it only after you confirm. The folder's own files are never rewritten, and you can return the app to its own profile at any time. A service the CLI registered stays the CLI's until you explicitly hand it over.
 
