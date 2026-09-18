@@ -137,7 +137,7 @@ jobs:
       - name: Prepare the previous runtime (insto 0.7.21) for the migration proof
         uses: ./.github/actions/stage-runtime
         with:
-          core-ref: 7a1872568bd90a642a3df838fd9854286f251d03
+          core-ref: 1e4f2d30f216ceaeb44844f6d3066a58732c48cd
           output: runtime-previous
           stage: "false"
       - name: Proof build (app-proof feature, never shipped)
