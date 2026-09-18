@@ -553,3 +553,40 @@ the time, and no process belonging to this proof was left running. The full host
 observed green in a single run under that load. Making that fixture wait
 robustly is G1 code and a separate change; it is listed as a follow-up rather
 than fixed here.
+
+## R1 release evidence
+
+Tag `v0.1.0` at `23f8d19`, workflow run
+<https://github.com/subzeroid/insto-gui/actions/runs/35348595367>, 2026-09-18. Both
+matrix legs green on clean GitHub runners (`macos-14` for aarch64, `macos-15-intel`
+for x86_64); `publish` created the draft release with `insto_0.1.0_aarch64.dmg`,
+`insto_0.1.0_x64.dmg`, their `.sha256` files and `SHA256SUMS`. The release was
+published from that draft.
+
+| target | DMG sha256 | executable sha256 | proof executable sha256 | runtime build id | launch → runtime published |
+|---|---|---|---|---|---|
+| aarch64-apple-darwin | `d53cf5d170228b2fdf72bea38219410e8324bc0c5aa3f4516699feb5e82ed4ab` | `7909b42ae547a159c016dd75d0b823f53387be46b1c9f4e6030e97d0ebd17c9f` | `3d8b6f311c44259fbed488374276de3bec178f3ba256670a2913cab334b3b5c4` | `b92e1bec60f8d331745c215375da13b2fb5bbcd92e1078e8559978d268854d43` | 9 s |
+| x86_64-apple-darwin | `3c31bc7e8d20ef8185ac48aeb2ceaa585649767136cac8116fa3f326a5624efd` | `f5e99223543540546f56cfb42cbb2da4ed16c964bb7e3036fc6f76673f83afa2` | `c3f9d2c11dd04aa02f126e86197d27346a1d4fe39aa8a386d07ae9e610996c28` | `485e54865d9bdfd0e9d76bf4c25a95c83ddff69d9f4d2b890c634afae67428e3` | 12 s |
+
+Gates, both targets, every line `pass` in the `evidence-<target>` artifacts: preflight
+(`launchd_gui_domain`, `applications_layout` = `0:80 0775` on the runners,
+`workspace_ancestors`, `gatekeeper_assessments_enabled`); artifacts (`signature_intact`,
+`designated_requirement`, `runtime_matches_manifest`, `dmg_verifies`,
+`dmg_carries_one_app`, `hashes`); `proof_build`; native `migrate` and `adopt` proofs
+against a previous runtime prepared from insto 0.7.21 (`1e4f2d30`), each with
+`passed`, `cleanup_confirmed` and `app_group_cleaned` true and no insto LaunchAgent
+left behind; install (`install_to_applications`, `quarantine_applied` recursively as
+Safari would, `gatekeeper_refuses_unnotarized` with assessments enabled,
+`quarantine_removed`, `launch_publishes_runtime`, `cleanup`); the evidence file is
+complete and the DMG hash equals the published `.sha256` line.
+
+The dispatch dry run that preceded the tag
+(<https://github.com/subzeroid/insto-gui/actions/runs/35344457367>) was green on both
+legs as well. Two earlier dry runs stopped at the previous-runtime step and the native
+proof: the 0.7.21 pin had been taken from a local checkout with pre-purge tags (the
+composite action's existence check caught it), and the probe needs an interpreter with
+`os.waitid`, which the setup-python and python-build-standalone builds lack on macOS
+(the runners' Homebrew python3 is used since). Both fixes are on `main`.
+
+Not yet recorded: the user's own first-launch check of the published DMG on a Mac
+running macOS 15 (Privacy & Security → Open Anyway, then the service migrating).
