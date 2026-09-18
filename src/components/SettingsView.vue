@@ -3,6 +3,7 @@ import { computed, ref, watch as observe } from 'vue'
 import type { Binding } from '../desktop/client'
 import type { createHomeState } from '../desktop/home'
 import type { createServiceState } from '../desktop/service'
+import { t } from '../i18n'
 import ConfirmBlock from './ConfirmBlock.vue'
 import HomeAdoption from './HomeAdoption.vue'
 import SetupPanel from './SetupPanel.vue'
@@ -26,18 +27,18 @@ async function disable() { confirming.value = false; await props.uninstall() }
 </script>
 <template>
   <section class="settings-view">
-    <h1>Настройки</h1>
-    <div class="settings-row"><span>Доступ к HikerAPI</span><button type="button" class="text-button" data-action="replace" :disabled="busy || stale || !configured || recovery" :aria-expanded="replacing" @click="replacing = !replacing">{{ replacing ? 'Закрыть' : 'Заменить токен' }}</button></div>
+    <h1>{{ t('settings.title') }}</h1>
+    <div class="settings-row"><span>{{ t('settings.access') }}</span><button type="button" class="text-button" data-action="replace" :disabled="busy || stale || !configured || recovery" :aria-expanded="replacing" @click="replacing = !replacing">{{ replacing ? t('settings.close') : t('settings.replace') }}</button></div>
     <SetupPanel v-if="replacing" replace :busy="busy || stale" :connect="replace" :open-token-page="openTokenPage" />
-    <div class="settings-row"><span>Фоновая служба перед удалением приложения</span><button type="button" class="text-button" data-action="uninstall" :disabled="busy || stale || !configured || confirming || recovery || !canUninstall" @click="confirming = true">Отключить фоновую службу</button></div>
+    <div class="settings-row"><span>{{ t('settings.uninstall_row') }}</span><button type="button" class="text-button" data-action="uninstall" :disabled="busy || stale || !configured || confirming || recovery || !canUninstall" @click="confirming = true">{{ t('settings.uninstall') }}</button></div>
     <!-- The Trash explanation is offered up front, not only inside the confirmation. -->
-    <p class="fine-print">Перенос приложения в Корзину сам по себе не отключает установленную службу{{ serviceRunning ? ' — её процесс сейчас запущен' : '' }}. Отключите её здесь перед удалением приложения.</p>
-    <p v-if="adoptedService" class="notice warning" role="status">Эта служба принадлежит подключённой установке insto и работает на её ядре. Приложение её не удаляет: сначала возьмите её под управление в разделе «Служба» или отключите тем же способом, каким устанавливали.</p>
-    <p v-else-if="readonly" class="notice warning" role="status">Состояние регистрации службы приложению неизвестно, поэтому доступен только просмотр. Откройте раздел «Служба» и проверьте регистрацию ещё раз.</p>
-    <ConfirmBlock v-if="confirming" label="Отключение фоновой службы" message="Регистрация службы будет удалена, и служба не запустится при следующем открытии приложения. Настройки, история снимков и токен сохранятся. Перенос приложения в Корзину сам по себе не отключает установленную службу." confirm-label="Отключить" action="uninstall" :busy="busy" @confirm="disable" @cancel="confirming = false" />
+    <p class="fine-print">{{ t('settings.trash_note', { running: serviceRunning ? t('settings.trash_note_running') : '' }) }}</p>
+    <p v-if="adoptedService" class="notice warning" role="status">{{ t('settings.adopted_service') }}</p>
+    <p v-else-if="readonly" class="notice warning" role="status">{{ t('settings.readonly') }}</p>
+    <ConfirmBlock v-if="confirming" :label="t('settings.uninstall_confirm_label')" :message="t('settings.uninstall_confirm')" :confirm-label="t('settings.uninstall_confirm_action')" action="uninstall" :busy="busy" @confirm="disable" @cancel="confirming = false" />
     <dl class="service-facts">
-      <div><dt>Встроенное ядро</dt><dd>{{ coreVersion ?? 'не подготовлено' }}</dd></div>
-      <div><dt>Идентификатор сборки</dt><dd class="mono">{{ buildId ? buildId.slice(0, 16) : 'нет данных' }}</dd></div>
+      <div><dt>{{ t('settings.core') }}</dt><dd>{{ coreVersion ?? t('settings.core_none') }}</dd></div>
+      <div><dt>{{ t('settings.build') }}</dt><dd class="mono">{{ buildId ? buildId.slice(0, 16) : t('settings.build_none') }}</dd></div>
     </dl>
     <HomeAdoption :home="home" :binding="binding" :busy="busy || stale" :disabled="recovery" />
   </section>

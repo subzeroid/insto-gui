@@ -7,7 +7,7 @@ import { createMonitoringState } from './desktop/monitoring'
 import { createHistoryState } from './desktop/history'
 import { createServiceState, type ServiceNotice } from './desktop/service'
 import { createHomeState, type SelectOutcome } from './desktop/home'
-import { texts } from './desktop/messages'
+import { t, type Key } from './i18n'
 import AppNav, { type Section } from './components/AppNav.vue'
 import OnboardingView from './components/OnboardingView.vue'
 import WatchesView from './components/WatchesView.vue'
@@ -30,13 +30,13 @@ const feedFilter = ref<string | null>(null)
 const booted = ref(false)
 const selecting = ref(false)
 const selectionUncertain = ref(false)
-const NOTICE_TEXT: Record<ServiceNotice, string> = {
-  migrated: texts.service_migrated,
-  migration_rolled_back: texts.service_migration_rolled_back,
-  migration_recovery: texts.service_migration_recovery,
-  migration_uncertain: texts.service_migration_uncertain,
+const NOTICE_TEXT: Record<ServiceNotice, Key> = {
+  migrated: 'text.service_migrated',
+  migration_rolled_back: 'text.service_migration_rolled_back',
+  migration_recovery: 'text.service_migration_recovery',
+  migration_uncertain: 'text.service_migration_uncertain',
 }
-const migrationNotice = computed(() => service.state.notice === null ? null : NOTICE_TEXT[service.state.notice])
+const migrationNotice = computed(() => service.state.notice === null ? null : t(NOTICE_TEXT[service.state.notice]))
 // R10: a binding the app cannot use is the one thing that must stay reachable when
 // initialization failed. `own` never offers it — there is nothing to release.
 const canRelease = computed(() => state.phase === 'failed' && service.state.binding.state !== 'own')
@@ -109,32 +109,32 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
 </script>
 <template>
   <div class="app-shell">
-    <header class="app-header"><div class="brand"><span class="brand-mark" aria-hidden="true">i</span>insto</div><span class="build-label">Локальная сборка · G2</span></header>
+    <header class="app-header"><div class="brand"><span class="brand-mark" aria-hidden="true">i</span>insto</div><span class="build-label">{{ t('header.build') }}</span></header>
     <AppNav v-if="state.phase === 'ready' && state.profile?.configured" :current="section" @navigate="section = $event" />
     <main>
-      <section v-if="state.phase === 'preparing'" class="loading-panel" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"/><div class="eyebrow">ВСЁ НУЖНОЕ УЖЕ ВНУТРИ</div><h1>Готовим ядро</h1><p class="intro">Проверяем встроенные файлы и создаём защищённую копию. Это не требует загрузок из интернета.</p></section>
+      <section v-if="state.phase === 'preparing'" class="loading-panel" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"/><div class="eyebrow">{{ t('boot.eyebrow') }}</div><h1>{{ t('boot.title') }}</h1><p class="intro">{{ t('boot.intro') }}</p></section>
       <section v-else-if="state.phase === 'failed'" class="loading-panel">
-        <div class="eyebrow">ПОДГОТОВКА НЕ ЗАВЕРШЕНА</div>
-        <h1>Нужно повторить проверку</h1>
+        <div class="eyebrow">{{ t('boot.failed_eyebrow') }}</div>
+        <h1>{{ t('boot.failed_title') }}</h1>
         <p class="notice danger" role="alert">{{ state.error?.message }}</p>
-        <button class="primary" :disabled="state.busy" @click="boot">Повторить</button>
+        <button class="primary" :disabled="state.busy" @click="boot">{{ t('boot.retry') }}</button>
         <template v-if="canRelease">
-          <p class="fine-print">{{ texts.binding_release_explain }}</p>
-          <button type="button" data-action="release-binding" :disabled="state.busy" @click="releaseFromFailure">Вернуться к собственному профилю</button>
+          <p class="fine-print">{{ t('text.binding_release_explain') }}</p>
+          <button type="button" data-action="release-binding" :disabled="state.busy" @click="releaseFromFailure">{{ t('text.home_release_action') }}</button>
         </template>
       </section>
       <template v-else-if="state.phase === 'ready' && state.profile">
         <!-- A selection whose outcome nobody can name concerns both screens, so the
              notice sits above the configured / unconfigured split. -->
-        <p v-if="selectionUncertain" class="notice warning" role="status" data-note="selection-uncertain">Результат подключения каталога неизвестен: изменение могло примениться, а могло и нет. Проверьте в разделе «Настройки», с каким каталогом сейчас работает приложение.</p>
+        <p v-if="selectionUncertain" class="notice warning" role="status" data-note="selection-uncertain">{{ t('app.selection_uncertain') }}</p>
         <OnboardingView v-if="!state.profile.configured" :busy="state.busy" :stale="state.stale" :error="state.error" :home="home" :binding="service.state.binding" :connect="connect" :open-token-page="() => client.openTokenPage()" :refresh="ui.refresh" />
         <template v-else>
           <!-- Setup/service state is global: its errors and recovery needs show on every section. -->
           <div v-if="state.error" class="notice danger" role="alert">{{ state.error.message }}</div>
-          <div v-if="state.stale" class="notice warning" role="status">Состояние настройки устарело. Изменения службы заблокированы до обновления. <button type="button" class="text-button" data-action="refresh-setup" :aria-label="texts.refresh_setup_label" :disabled="state.busy" @click="ui.refresh">Обновить</button></div>
-          <p v-else-if="state.outcomeUnknown" class="notice" role="status">Текущее состояние перечитано и показано ниже. Операция не повторялась автоматически.</p>
+          <div v-if="state.stale" class="notice warning" role="status">{{ t('app.setup_stale') }} <button type="button" class="text-button" data-action="refresh-setup" :aria-label="t('text.refresh_setup_label')" :disabled="state.busy" @click="ui.refresh">{{ t('app.refresh') }}</button></div>
+          <p v-else-if="state.outcomeUnknown" class="notice" role="status">{{ t('app.outcome_unknown') }}</p>
           <p v-if="migrationNotice" class="notice" :class="{ warning: service.state.notice !== 'migrated' }" role="status">{{ migrationNotice }}</p>
-          <p v-if="attention && section !== 'service'" class="notice warning" role="status">Служба требует внимания. <button type="button" class="text-button" data-action="open-service" @click="section = 'service'">Открыть раздел «Служба»</button></p>
+          <p v-if="attention && section !== 'service'" class="notice warning" role="status">{{ t('app.attention') }} <button type="button" class="text-button" data-action="open-service" @click="section = 'service'">{{ t('app.open_service') }}</button></p>
           <div v-if="section === 'watches'" id="panel-watches" role="tabpanel" aria-labelledby="tab-watches">
             <WatchesView :monitoring="monitoring" :history="history" @show-changes="showChanges" />
           </div>
@@ -143,7 +143,7 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
           </div>
           <div v-else-if="section === 'service'" id="panel-service" role="tabpanel" aria-labelledby="tab-service">
             <ServiceView :profile="state.profile" :overview="monitoring.state.overview" :last-read-at="monitoring.state.lastReadAt" :stale="state.stale" :monitoring-stale="monitoring.state.stale" :read-error="monitoring.state.readError" :busy="state.busy" :service="service" :refresh-overview="monitoring.refresh" :refresh-facts="service.refreshFacts" :start="() => serviceAction(ui.start)" :stop="() => serviceAction(ui.stop)" :repair="() => serviceAction(ui.repair)" />
-            <div class="refresh-row"><span>Состояние читается локально, без запросов HikerAPI.</span><button class="text-button" data-action="refresh-service" aria-label="Обновить состояние службы" :disabled="state.busy" @click="ui.refresh">Обновить</button></div>
+            <div class="refresh-row"><span>{{ t('app.service_local_read') }}</span><button class="text-button" data-action="refresh-service" :aria-label="t('app.refresh_service_label')" :disabled="state.busy" @click="ui.refresh">{{ t('app.refresh') }}</button></div>
           </div>
           <div v-else id="panel-settings" role="tabpanel" aria-labelledby="tab-settings">
             <SettingsView :busy="state.busy" :stale="state.stale" :configured="state.profile.configured" :recovery="state.profile.status === 'recovery_required'" :service-running="state.profile.service_running" :core-version="state.runtime?.core_version ?? null" :build-id="state.runtime?.build_id ?? null" :service="service" :home="home" :binding="service.state.binding" :replace="replaceToken" :uninstall="service.uninstall" :open-token-page="() => client.openTokenPage()" />
@@ -151,6 +151,6 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
         </template>
       </template>
     </main>
-    <footer><span class="status-dot" aria-hidden="true"/>{{ state.runtime ? `Встроенное ядро ${state.runtime.core_version}` : 'Самостоятельное приложение для macOS' }}<span class="footer-note">Локальные данные · без запросов HikerAPI из окна</span></footer>
+    <footer><span class="status-dot" aria-hidden="true"/>{{ state.runtime ? t('header.core', { version: state.runtime.core_version }) : t('header.standalone') }}<span class="footer-note">{{ t('header.note') }}</span></footer>
   </div>
 </template>
