@@ -137,7 +137,7 @@ jobs:
       - name: Prepare the previous runtime (insto 0.7.21) for the migration proof
         uses: ./.github/actions/stage-runtime
         with:
-          core-ref: 7a1872568bd90a642a3df838fd9854286f251d03
+          core-ref: 1e4f2d30f216ceaeb44844f6d3066a58732c48cd
           output: runtime-previous
           stage: "false"
       - name: Proof build (app-proof feature, never shipped)
@@ -147,13 +147,18 @@ jobs:
         run: |
           set -euo pipefail
           proof="$PWD/src-tauri/target/$TARGET/release/bundle/macos/insto.app"
+          # The probe needs os.waitid, which the setup-python and python-build-standalone
+          # interpreters lack on macOS; the runner's Homebrew python3 has it.
+          probe_python="$(brew --prefix)/bin/python3"
+          "$probe_python" -c 'import os, sys; sys.exit(0 if callable(getattr(os, "waitid", None)) else 1)' \
+            || { echo "Homebrew python3 at $probe_python lacks os.waitid" >&2; exit 1; }
           jq -cn --arg sha "$(shasum -a 256 "$proof/Contents/MacOS/insto-gui" | cut -d' ' -f1)" --arg target "$TARGET" \
             '{gate:"proof_build",result:"pass",target:$target,proof_executable_sha256:$sha}' >>"$EVIDENCE"
           for mode in migrate adopt; do
             dir="$PWD/.build/native-app-r1-$mode"
             mkdir -m 700 "$dir"
             cp -cRp "$proof" "$dir/insto.app"
-            python3 -B -m scripts.app_native_probe "$dir/insto.app" "$dir/insto-app-proof-r1-$mode" \
+            "$probe_python" -B -m scripts.app_native_probe "$dir/insto.app" "$dir/insto-app-proof-r1-$mode" \
               --mode "$mode" --previous-runtime "$PWD/.build/runtime-previous" | tee "$PWD/.build/native-$mode.json"
             jq -e '.passed == true and .cleanup_confirmed == true and .app_group_cleaned == true' "$PWD/.build/native-$mode.json"
             jq -c --arg mode "$mode" --arg target "$TARGET" '{gate:("native_" + $mode),result:"pass",target:$target} + .' "$PWD/.build/native-$mode.json" >>"$EVIDENCE"
