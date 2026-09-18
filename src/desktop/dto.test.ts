@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { HOME_REASONS, RESPONSE_PATH_LIMIT, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeOverview, decodeServiceFacts, decodeWatch, decodeWatchPage, CHANGE_KINDS, SNAPSHOT_KINDS, TARGET_KINDS } from './dto'
-import { messages } from './messages'
+import { ERROR_CODES } from './messages'
 import { adoptedBinding, current, expandedPath, facts, foreign, homeAdoptable, homeCliOwned, homeInvalidConfig, homeMissing, homeNotPrivate, homeRejected, homeSchemaMismatch, homeUnsupportedBackend, ownBinding, serviceForeign, serviceNone, serviceNoneStopped, serviceOwnedCurrent, serviceOwnedOther, serviceRejected, unknownBinding, unregistered, wire } from './fixtures'
 
 export const watch = { user: 'alice', status: 'active', interval_seconds: 300, last_ok: null, waiting_first_check: true, has_error: false, consecutive_errors: 0, revision: 'a'.repeat(64) }
@@ -99,7 +99,7 @@ describe('bridge decoders', () => {
     // R9: the core expands `~`, so a response path may exceed the 1024-byte
     // request bound. It must still be absolute, and the bound is bytes.
     expect(decodeHomeReport({ ...homeAdoptable, path: expandedPath }).path).toBe(expandedPath)
-    expect(HOME_REASONS.every(reason => Object.hasOwn(messages, reason))).toBe(true)
+    expect(HOME_REASONS.every(reason => (ERROR_CODES as readonly string[]).includes(reason))).toBe(true)
     for (const bad of [
       ...homeRejected,
       { ...homeAdoptable, config: 'unreadable' }, { ...homeAdoptable, database: 'locked' },

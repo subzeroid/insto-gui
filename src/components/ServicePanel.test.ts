@@ -8,10 +8,10 @@ const actions = () => ({ readonly: false, start: vi.fn().mockResolvedValue(true)
 describe('local service panel', () => {
   it('zero quota is exhausted even when the process is running', () => {
     const wrapper = mount(ServicePanel, { props: { profile, busy: false, stale: false, ...actions() } })
-    expect(wrapper.get('h1').text()).toBe('Лимит исчерпан')
-    expect(wrapper.text()).toContain('Служба запущена')
-    expect(wrapper.text()).toContain('последней проверки токена')
-    expect(wrapper.text()).not.toContain('Мониторинг работает')
+    expect(wrapper.get('h1').text()).toBe('The quota is used up')
+    expect(wrapper.text()).toContain('The service is running')
+    expect(wrapper.text()).toContain('the last check of the token')
+    expect(wrapper.text()).not.toContain('Monitoring is working')
   })
   it('stale state disables lifecycle commands', () => {
     const wrapper = mount(ServicePanel, { props: { profile, busy: false, stale: true, ...actions() } })

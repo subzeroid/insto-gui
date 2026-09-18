@@ -3,6 +3,7 @@ import { computed, watch as observe } from 'vue'
 import type { createHistoryState } from '../desktop/history'
 import type { createMonitoringState } from '../desktop/monitoring'
 import { localTime } from '../desktop/format'
+import { t } from '../i18n'
 import AddWatchForm from './AddWatchForm.vue'
 import WatchDetails from './WatchDetails.vue'
 import WatchList from './WatchList.vue'
@@ -27,19 +28,19 @@ function select(user: string) {
 <template>
   <section class="watches-view">
     <div v-if="state.error" class="notice danger" role="alert">{{ state.error.message }}</div>
-    <div v-if="state.stale" class="notice warning" role="status">Данные устарели. Последнее успешное чтение: {{ state.lastReadAt === null ? 'не выполнено' : localTime(Math.floor(state.lastReadAt / 1000)) }}. Изменения заблокированы до обновления. <button type="button" class="text-button" data-action="refresh-watches" aria-label="Обновить список наблюдений" :disabled="state.loading" @click="monitoring.refresh()">Обновить</button></div>
-    <p v-else-if="state.outcomeUnknown" class="notice" role="status">Результат действия неизвестен; состояние перечитано и показано ниже. Действие не повторялось.</p>
-    <p v-if="state.readError && !state.overview" role="alert" class="notice danger">{{ state.readError.message }} <button type="button" class="text-button" @click="monitoring.refresh()">Повторить</button></p>
-    <p v-else-if="!state.overview" role="status" class="loading">Читаем наблюдения…</p>
+    <div v-if="state.stale" class="notice warning" role="status">{{ t('watches.stale', { time: state.lastReadAt === null ? t('format.never') : localTime(Math.floor(state.lastReadAt / 1000)) }) }} <button type="button" class="text-button" data-action="refresh-watches" :aria-label="t('watches.refresh_label')" :disabled="state.loading" @click="monitoring.refresh()">{{ t('app.refresh') }}</button></div>
+    <p v-else-if="state.outcomeUnknown" class="notice" role="status">{{ t('watches.outcome_unknown') }}</p>
+    <p v-if="state.readError && !state.overview" role="alert" class="notice danger">{{ state.readError.message }} <button type="button" class="text-button" @click="monitoring.refresh()">{{ t('watches.retry') }}</button></p>
+    <p v-else-if="!state.overview" role="status" class="loading">{{ t('watches.loading') }}</p>
     <div v-else class="split">
       <div class="pane list-pane">
-        <p v-if="state.overview.next_cursor !== null" class="fine-print">Показаны не все наблюдения: список длиннее поддерживаемого объёма страниц.</p>
+        <p v-if="state.overview.next_cursor !== null" class="fine-print">{{ t('watches.truncated') }}</p>
         <WatchList :items="items" :selected-user="state.selectedUser" :stale="state.stale" @select="select" />
         <AddWatchForm :busy="busy || state.stale" :add="monitoring.add" />
       </div>
       <div class="pane details-pane">
         <WatchDetails v-if="monitoring.selected.value" :watch="monitoring.selected.value" :busy="busy" :stale="state.stale" :history="history" :pause="monitoring.pause" :resume="monitoring.resume" :update="monitoring.update" :remove="monitoring.remove" @show-changes="pk => emit('show-changes', pk)" />
-        <p v-else class="empty">Выберите наблюдение слева, чтобы увидеть сохранённые снимки и сравнение.</p>
+        <p v-else class="empty">{{ t('watches.no_selection') }}</p>
       </div>
     </div>
   </section>

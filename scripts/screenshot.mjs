@@ -5,7 +5,7 @@ import { chromium } from "playwright";
 import { rename, rm } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
-const url = process.argv[2] ?? "http://127.0.0.1:1420/?mock=1";
+const url = process.argv[2] ?? "http://127.0.0.1:1420/?mock=1&lang=en";
 const out = process.argv[3] ?? "docs/screenshot.png";
 const width = Number(process.argv[4] ?? 1200);
 const height = Number(process.argv[5] ?? 800);

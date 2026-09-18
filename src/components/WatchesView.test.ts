@@ -22,10 +22,10 @@ describe('watches view', () => {
     expect(invoke.mock.calls.map(call => call[0])).toEqual(['read_overview', 'search_targets'])
     await wrapper.get('button[data-action="remove"]').trigger('click')
     expect(invoke).toHaveBeenCalledTimes(2)
-    expect(wrapper.text()).toContain('История снимков сохранится')
+    expect(wrapper.text()).toContain('The snapshot history stays')
     await wrapper.get('button[data-action="confirm-remove"]').trigger('click'); await flushPromises()
     expect(invoke.mock.calls.map(call => call[0])).toEqual(['read_overview', 'search_targets', 'remove_watch', 'read_overview'])
-    expect(wrapper.text()).toContain('Пока нет наблюдений')
+    expect(wrapper.text()).toContain('No watches yet')
     expect(window.localStorage.length).toBe(0)
   })
   it('reloads the selected history when a new check lands or the same row is clicked again', async () => {
@@ -56,7 +56,7 @@ describe('watches view', () => {
     await wrapper.get('[role="option"]').trigger('click'); await flushPromises()
     await monitoring.refresh(); await flushPromises()
     expect(invoke.mock.calls.map(call => call[0])).toEqual(['read_overview', 'search_targets', 'read_overview'])
-    expect(wrapper.text()).toContain('Истории ещё нет')
+    expect(wrapper.text()).toContain('No history yet')
   })
   it('shows the stale banner and disables every mutation of the selected watch while stale', async () => {
     const invoke = vi.fn()
@@ -69,12 +69,12 @@ describe('watches view', () => {
     await monitoring.refresh(); await flushPromises()
     await wrapper.get('[role="option"]').trigger('click'); await flushPromises()
     await monitoring.refresh(); await flushPromises()
-    expect(wrapper.text()).toContain('Данные устарели')
+    expect(wrapper.text()).toContain('The data is out of date')
     // The banner's own control is a named read, like the history reload: only the
     // mutations are blocked.
     const banner = wrapper.get('button[data-action="refresh-watches"]')
-    expect(banner.text()).toBe('Обновить')
-    expect(banner.attributes('aria-label')).toBe('Обновить список наблюдений')
+    expect(banner.text()).toBe('Refresh')
+    expect(banner.attributes('aria-label')).toBe('Refresh the watch list')
     const reads = ['reload-history', 'refresh-watches']
     const mutations = wrapper.findAll('button[data-action]').filter(button => !reads.includes(button.attributes('data-action')!))
     expect(mutations.map(button => button.attributes('data-action'))).toEqual(['pause', 'remove', 'interval'])

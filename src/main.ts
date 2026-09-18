@@ -1,7 +1,13 @@
 import { createApp } from 'vue'
 import App from './App.vue'
 import type { Invoke } from './desktop/client'
+import { currentLocale, detectLocale, setLocale } from './i18n'
 import './style.css'
+
+// The locale is chosen once, before anything renders: `t` reads it directly, so a
+// change after mount would leave already-rendered copy behind.
+setLocale(detectLocale(navigator.language, window.location.search, import.meta.env.DEV))
+document.documentElement.lang = currentLocale()
 
 const mount = (invokeCommand?: Invoke) => createApp(App, invokeCommand === undefined ? {} : { invokeCommand }).mount('#app')
 

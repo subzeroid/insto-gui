@@ -3,6 +3,7 @@ import { computed, ref, watch as observe } from 'vue'
 import type { Watch } from '../desktop/dto'
 import type { createHistoryState } from '../desktop/history'
 import { MIN_INTERVAL, validInterval } from '../desktop/client'
+import { t } from '../i18n'
 import ConfirmBlock from './ConfirmBlock.vue'
 import SnapshotHistory from './SnapshotHistory.vue'
 const props = defineProps<{ watch: Watch; busy: boolean; stale: boolean; history: ReturnType<typeof createHistoryState>; pause: (w: Watch) => Promise<boolean>; resume: (w: Watch) => Promise<boolean>; update: (w: Watch, interval: number) => Promise<boolean>; remove: (w: Watch) => Promise<boolean> }>()
@@ -19,21 +20,21 @@ async function confirmRemove() { confirming.value = false; await props.remove(pr
 <template>
   <section class="watch-details">
     <h2>@{{ watch.user }}</h2>
-    <p class="intro">{{ watch.status === 'paused' ? 'Наблюдение приостановлено; история сохраняется.' : watch.waiting_first_check ? 'Ожидает первой проверки службой.' : 'Наблюдение активно.' }}</p>
+    <p class="intro">{{ watch.status === 'paused' ? t('watches.detail_paused') : watch.waiting_first_check ? t('watches.detail_waiting') : t('watches.detail_active') }}</p>
     <div class="actions">
-      <button v-if="watch.status === 'active'" data-action="pause" :disabled="disabled" @click="pause(watch)">Приостановить</button>
-      <button v-else data-action="resume" :disabled="disabled" @click="resume(watch)">Возобновить</button>
-      <button data-action="remove" :disabled="disabled" @click="confirming = true">Удалить</button>
+      <button v-if="watch.status === 'active'" data-action="pause" :disabled="disabled" @click="pause(watch)">{{ t('watches.pause') }}</button>
+      <button v-else data-action="resume" :disabled="disabled" @click="resume(watch)">{{ t('watches.resume') }}</button>
+      <button data-action="remove" :disabled="disabled" @click="confirming = true">{{ t('watches.remove') }}</button>
       <!-- Opening the changes feed is a read: only a running mutation holds it back, not stale state. -->
-      <button v-if="history.state.targetPk" type="button" class="text-button" data-action="changes" :disabled="busy" @click="emit('show-changes', history.state.targetPk)">Изменения этого аккаунта</button>
+      <button v-if="history.state.targetPk" type="button" class="text-button" data-action="changes" :disabled="busy" @click="emit('show-changes', history.state.targetPk)">{{ t('watches.changes_link') }}</button>
     </div>
-    <ConfirmBlock v-if="confirming" label="Подтверждение удаления" :message="`Удалить наблюдение @${watch.user}? История снимков сохранится в базе.`" confirm-label="Удалить наблюдение" action="remove" :busy="disabled" @confirm="confirmRemove" @cancel="confirming = false" />
+    <ConfirmBlock v-if="confirming" :label="t('watches.remove_confirm_label')" :message="t('watches.remove_confirm', { user: watch.user })" :confirm-label="t('watches.remove_confirm_action')" action="remove" :busy="disabled" @confirm="confirmRemove" @cancel="confirming = false" />
     <form class="interval-form" @submit.prevent="saveInterval">
-      <label for="detail-interval">Интервал проверки, секунд</label>
+      <label for="detail-interval">{{ t('watches.interval_label') }}</label>
       <input id="detail-interval" v-model="interval" name="interval" type="number" :min="MIN_INTERVAL" step="1" :disabled="disabled" />
-      <button type="submit" data-action="interval" :disabled="disabled || !intervalValid || Number(interval) === watch.interval_seconds">Сохранить интервал</button>
+      <button type="submit" data-action="interval" :disabled="disabled || !intervalValid || Number(interval) === watch.interval_seconds">{{ t('watches.save_interval') }}</button>
     </form>
-    <p class="fine-print">Служба применит изменение при следующей сверке. Уже начатая проверка может завершиться и сохранить снимок.</p>
+    <p class="fine-print">{{ t('watches.interval_note') }}</p>
     <SnapshotHistory :history="history" />
   </section>
 </template>
