@@ -36,10 +36,16 @@
     const form = input.closest('form');
     const toggle = form.querySelector('.visibility');
     const submit = form.querySelector('[type="submit"]');
-    check(input.type === 'password' && input.labels.length === 1 && input.labels[0].textContent === 'Токен HikerAPI', 'form');
+    // The window follows the system language, so this runs on an English runner and
+    // on a Russian Mac. The copy is the one `src/i18n/en.ts` and `src/i18n/ru.ts`
+    // hold for these two controls; the checks themselves are the same either way.
+    const russian = document.documentElement.lang === 'ru';
+    const tokenLabel = russian ? 'Токен HikerAPI' : 'HikerAPI token';
+    const hideLabel = russian ? 'Скрыть токен' : 'Hide the token';
+    check(input.type === 'password' && input.labels.length === 1 && input.labels[0].textContent === tokenLabel, 'form');
     check(input.autocomplete === 'off' && submit.disabled, 'form');
     toggle.click(); await tick();
-    check(input.type === 'text' && toggle.getAttribute('aria-pressed') === 'true' && toggle.getAttribute('aria-label') === 'Скрыть токен', 'visibility');
+    check(input.type === 'text' && toggle.getAttribute('aria-pressed') === 'true' && toggle.getAttribute('aria-label') === hideLabel, 'visibility');
     toggle.click(); await tick();
     check(input.type === 'password' && toggle.getAttribute('aria-pressed') === 'false', 'visibility');
     for (const value of ['', 'abc', 'bad token', 'токен']) {
