@@ -181,7 +181,7 @@ export const en = {
   'watches.pause': 'Pause',
   'watches.resume': 'Resume',
   'watches.remove': 'Delete',
-  'watches.changes_link': 'Changes of this account',
+  'watches.changes_link': 'Changes for this account',
   'watches.remove_confirm_label': 'Confirmation of deletion',
   'watches.remove_confirm': 'Delete the watch @{user}? The snapshot history stays in the database.',
   'watches.remove_confirm_action': 'Delete the watch',
