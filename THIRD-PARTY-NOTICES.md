@@ -188,11 +188,11 @@ memchr 2.8.3
 
 ## JavaScript dependencies
 
-173 packages, 8 distinct licence expressions.
+175 packages, 8 distinct licence expressions.
 
 ### Apache-2.0
 
-detect-libc 2.1.2, expect-type 1.4.0, typescript 5.9.3
+detect-libc 2.1.2, expect-type 1.4.0, playwright 1.63.0, playwright-core 1.63.0, typescript 5.9.3
 
 ### Apache-2.0 OR MIT
 
