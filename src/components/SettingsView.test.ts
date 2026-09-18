@@ -63,7 +63,7 @@ describe('settings', () => {
     for (const service of [serviceStub(foreign, own), serviceStub(facts, nobody), serviceStub(null, own)]) {
       const { wrapper, uninstall } = make({ service, binding: service.state.binding })
       expect(wrapper.get('button[data-action="uninstall"]').attributes('disabled')).toBeDefined()
-      expect(wrapper.text()).toContain('view only')
+      expect(wrapper.text()).toContain('can only be viewed')
       expect(uninstall).not.toHaveBeenCalled()
     }
     const { wrapper, service } = make()

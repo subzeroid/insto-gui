@@ -44,7 +44,7 @@ describe('service view', () => {
     const card = view.get('.registration-facts').text()
     expect(card).toContain('installed by insto')
     expect(card).toContain('bundled with this app')
-    expect(card).toContain('the own folder of the app')
+    expect(card).toContain("the app's own folder")
     const gone = mount(ServiceView, { props: { ...base, ...actions(serviceStub({ ...facts, interpreterExists: false }, own)) } as never })
     expect(gone.get('.registration-facts').text()).toContain('the core file is missing')
   })

@@ -21,7 +21,7 @@ describe('watch list', () => {
     expect(mount(WatchList, { props: { items: [], selectedUser: null, stale: false } }).text()).toContain('No watches yet')
     expect(mount(WatchList, { props: { items: [watch], selectedUser: 'alice', stale: true } }).find('[aria-selected="true"]').exists()).toBe(true)
   })
-  it('never renders an epoch check time, counts in ru-RU and keeps the empty state outside the listbox', () => {
+  it('never renders an epoch check time, counts in the active locale and keeps the empty state outside the listbox', () => {
     const errored = { ...watch, user: 'carol', last_ok: null, waiting_first_check: false, has_error: true, consecutive_errors: 0, interval_seconds: 3600 }
     const wrapper = mount(WatchList, { props: { items: [errored], selectedUser: null, stale: false } })
     expect(wrapper.text()).toContain('Waiting for the first check'); expect(wrapper.text()).not.toContain('Checked')
