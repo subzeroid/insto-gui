@@ -623,3 +623,22 @@ row above. `brew install --cask --no-quarantine` is rejected by this Homebrew as
 invalid option, so the documentation now gives the `xattr` command. Still not recorded:
 the *Open Anyway* path through System Settings, and a launch with a token and a migrating
 service.
+
+## v0.1.2 release evidence
+
+Tag `v0.1.2` at `9c8d03f`, workflow run
+<https://github.com/subzeroid/insto-gui/actions/runs/35544500078>, 2026-09-21. Same pipeline
+and gates as v0.1.0 (both matrix legs green on clean GitHub runners, draft release from
+`publish`, then published). English by default with Russian as a Settings choice, and the reworked first screen; the native adoption proof opens the existing-installation line first. The proof
+checks the token form against the locale the window renders, so it ran in English on
+the en-US runners.
+
+| target | DMG sha256 | executable sha256 | proof executable sha256 | runtime build id | launch → runtime published |
+|---|---|---|---|---|---|
+| aarch64-apple-darwin | `962e8638a80668ab67bc8e11d4f01e3cc0180dd7456e2838f87f20ac5845de4d` | `0a97e7b82d6ac7d5e81be2530d2ed501c62c6a329366eed2473254f6ea9027c0` | `14049f79599ff19d4e6e13eddbd4dfc888d6b116748b6e5c39af0aa4b86b89c6` | `44397b20598aa4e5e9eeaf08fb4e70c2eb100d098fb1f1d9294e2d76b14e58ac` | 9 s |
+| x86_64-apple-darwin | `55e3d372811e004092fdfe6e5c073fa67f13c007e0b80e6581afd05e90787543` | `3dda1aa827696b2e57a973899fd27f6abbd18ccbdfd212d2797f4c2a8e64d71d` | `91adcecd5cc0835fd48d7c091952d96c70097bf0545f51cec9ef8c2d8125eceb` | `c72001971119d3b6da0d6e08d03435ba9582cc762f0a706ea057431791930af6` | 18 s |
+
+Every gate line in both `evidence-<target>` artifacts is `pass`; the native `migrate` and
+`adopt` proofs report `passed`, `cleanup_confirmed` and `app_group_cleaned` true; the DMG
+hashes equal the published `SHA256SUMS`.
+
