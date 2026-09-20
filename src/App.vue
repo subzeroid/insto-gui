@@ -15,6 +15,7 @@ import ChangesView from './components/ChangesView.vue'
 import ServiceView from './components/ServiceView.vue'
 import SettingsView from './components/SettingsView.vue'
 const props = defineProps<{ invokeCommand?: Invoke }>()
+const appVersion = __APP_VERSION__
 const client = new DesktopClient(props.invokeCommand ?? invoke)
 const ui = createDesktopState(client)
 const monitoring = createMonitoringState(client)
@@ -109,7 +110,7 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
 </script>
 <template>
   <div class="app-shell">
-    <header class="app-header"><div class="brand"><span class="brand-mark" aria-hidden="true">i</span>insto</div><span class="build-label">{{ t('header.build') }}</span></header>
+    <header class="app-header"><div class="brand"><span class="brand-mark" aria-hidden="true">i</span>insto</div><span class="build-label">{{ t('header.version', { version: appVersion }) }}</span></header>
     <AppNav v-if="state.phase === 'ready' && state.profile?.configured" :current="section" @navigate="section = $event" />
     <main>
       <section v-if="state.phase === 'preparing'" class="loading-panel" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"/><div class="eyebrow">{{ t('boot.eyebrow') }}</div><h1>{{ t('boot.title') }}</h1><p class="intro">{{ t('boot.intro') }}</p></section>
@@ -151,6 +152,6 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
         </template>
       </template>
     </main>
-    <footer><span class="status-dot" aria-hidden="true"/>{{ state.runtime ? t('header.core', { version: state.runtime.core_version }) : t('header.standalone') }}<span class="footer-note">{{ t('header.note') }}</span></footer>
+    <footer><span class="status-dot" aria-hidden="true"/>{{ t('header.local') }}<span class="footer-note">{{ t('header.note') }}</span></footer>
   </div>
 </template>

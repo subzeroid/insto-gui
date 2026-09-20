@@ -75,3 +75,7 @@ footer { display: flex; gap: 8px; align-items: center; padding: 17px 28px; color
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .service-view, .changes-view, .settings-view { max-width: 616px; margin: 0 auto; }
 @media (max-width: 700px) { .split { grid-template-columns: 1fr; } .app-nav { padding: 0 16px; flex-wrap: wrap; } }
+.features { list-style: none; padding: 0; margin: -8px 0 28px; max-width: 490px; color: #c3ccd7; font-size: 13px; line-height: 1.9; }
+.features li::before { content: '✓'; color: #86b3c2; margin-right: 10px; }
+.cli-toggle { max-width: 616px; margin: 26px auto 0; }
+.onboarding-view .home-adoption { max-width: 616px; margin-left: auto; margin-right: auto; }

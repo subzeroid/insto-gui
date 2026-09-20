@@ -220,7 +220,9 @@ const ADOPTABLE: HomeReport = {
   registration: 'none', interpreter: null, loaded: false, process: 'stopped', adoptable: true, reason: null,
 }
 
-export function createMockInvoke(): Invoke {
+// `setup: true` starts before a token was connected, to look at the first screen;
+// connecting any valid token then moves on to the demo data.
+export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
   let revisions = 0
   const nextRevision = (user: string) => hex(`${user}:${++revisions}`, 64)
   const watches = new Map<string, Watch>(ACCOUNTS.map(account => {
@@ -232,10 +234,12 @@ export function createMockInvoke(): Invoke {
       consecutive_errors: account.errors, revision: nextRevision(account.user),
     }]
   }))
-  let profile: Profile = {
-    configured: true, status: 'running', desired_service: 'running', service_running: true,
-    quota_remaining: 4_128, quota_checked_at: NOW - 240, revision: hex('profile', 32),
-  }
+  let profile: Profile = options.setup
+    ? { configured: false, status: 'unconfigured', desired_service: null, service_running: false, quota_remaining: null, quota_checked_at: null, revision: null }
+    : {
+      configured: true, status: 'running', desired_service: 'running', service_running: true,
+      quota_remaining: 4_128, quota_checked_at: NOW - 240, revision: hex('profile', 32),
+    }
   // The registration this app wrote, on the runtime this app ships: nothing to
   // migrate, nothing read-only.
   let facts = { registration: 'owned', interpreter: 'current' as string | null, interpreter_exists: true as boolean | null, loaded: true as boolean | null, settings: 'matching' as string | null }

@@ -14,7 +14,7 @@ Paste your HikerAPI token once, add a few accounts, and a background service kee
 
 ![insto-gui watching six accounts, with the saved snapshots of one of them compared side by side](docs/screenshot.png)
 
-> The interface is in English, or Russian when macOS runs in Russian.
+> The interface is in English; Russian can be chosen in **Settings**.
 
 ## Features
 

@@ -28,6 +28,11 @@ onBeforeUnmount(() => { token.value = ''; visible.value = false })
     <h1 v-if="!replace">{{ t('setup.title') }}<br><span class="muted">{{ t('setup.title_muted') }}</span></h1>
     <h2 v-else>{{ t('setup.replace_title') }}</h2>
     <p class="intro">{{ replace ? t('setup.replace_intro') : t('setup.intro') }}</p>
+    <ul v-if="!replace" class="features">
+      <li>{{ t('setup.feature_background') }}</li>
+      <li>{{ t('setup.feature_history') }}</li>
+      <li>{{ t('setup.feature_no_login') }}</li>
+    </ul>
     <form @submit.prevent="submit">
       <label for="hiker-token">{{ t('setup.token_label') }}</label>
       <div class="token-field">

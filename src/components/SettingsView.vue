@@ -3,11 +3,11 @@ import { computed, ref, watch as observe } from 'vue'
 import type { Binding } from '../desktop/client'
 import type { createHomeState } from '../desktop/home'
 import type { createServiceState } from '../desktop/service'
-import { t } from '../i18n'
+import { LOCALES, currentLocale, saveLocale, t, type Locale } from '../i18n'
 import ConfirmBlock from './ConfirmBlock.vue'
 import HomeAdoption from './HomeAdoption.vue'
 import SetupPanel from './SetupPanel.vue'
-const props = defineProps<{ busy: boolean; stale: boolean; configured: boolean; recovery: boolean; serviceRunning: boolean; coreVersion: string | null; buildId: string | null; service: ReturnType<typeof createServiceState>; home: ReturnType<typeof createHomeState>; binding: Binding; replace: (token: string) => Promise<boolean>; uninstall: () => Promise<boolean>; openTokenPage: () => Promise<void> }>()
+const props = withDefaults(defineProps<{ busy: boolean; stale: boolean; configured: boolean; recovery: boolean; serviceRunning: boolean; coreVersion: string | null; buildId: string | null; service: ReturnType<typeof createServiceState>; home: ReturnType<typeof createHomeState>; binding: Binding; replace: (token: string) => Promise<boolean>; uninstall: () => Promise<boolean>; openTokenPage: () => Promise<void>; reload?: () => void }>(), { reload: () => window.location.reload() })
 const replacing = ref(false)
 const confirming = ref(false)
 const readonly = computed(() => props.service.readonly())
@@ -22,6 +22,16 @@ observe([() => props.recovery, readonly, canUninstall], () => {
   if (props.recovery) replacing.value = false
   if (props.recovery || readonly.value || !canUninstall.value) confirming.value = false
 })
+// Languages are named in themselves, so the list reads the same in either locale.
+const LANGUAGE_NAMES: Record<Locale, string> = { en: 'English', ru: 'Русский' }
+const language = currentLocale()
+// `t` is not reactive: the choice is saved and the window reloads into it. If the
+// choice cannot be saved, a reload would change nothing, so none happens.
+function chooseLanguage(value: string) {
+  const locale = LOCALES.find(item => item === value)
+  if (locale === undefined || locale === language) return
+  if (saveLocale(locale)) props.reload()
+}
 async function replace(token: string) { const ok = await props.replace(token); if (ok) replacing.value = false; return ok }
 async function disable() { confirming.value = false; await props.uninstall() }
 </script>
@@ -40,6 +50,8 @@ async function disable() { confirming.value = false; await props.uninstall() }
       <div><dt>{{ t('settings.core') }}</dt><dd>{{ coreVersion ?? t('settings.core_none') }}</dd></div>
       <div><dt>{{ t('settings.build') }}</dt><dd class="mono">{{ buildId ? buildId.slice(0, 16) : t('settings.build_none') }}</dd></div>
     </dl>
+    <div class="settings-row"><label for="language">{{ t('settings.language') }}</label><select id="language" name="language" :value="language" @change="chooseLanguage(($event.target as HTMLSelectElement).value)"><option v-for="locale in LOCALES" :key="locale" :value="locale">{{ LANGUAGE_NAMES[locale] }}</option></select></div>
+    <p class="fine-print">{{ t('settings.language_note') }}</p>
     <HomeAdoption :home="home" :binding="binding" :busy="busy || stale" :disabled="recovery" />
   </section>
 </template>

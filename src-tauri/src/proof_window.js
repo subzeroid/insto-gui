@@ -91,6 +91,8 @@
   // Leg (b): an existing CLI home, adopted and taken over by explicit
   // confirmation, then disabled and released — all through the real controls.
   const adoption = async (home, end) => {
+    // The existing-installation block sits behind one line on the setup screen.
+    await press('[data-action="show-home-adoption"]', end);
     const input = await until(() => { const el = document.querySelector('[data-field="home-path"]'); return el && !el.disabled ? el : null; }, 'timeout', end);
     input.value = home;
     input.dispatchEvent(new Event('input', { bubbles: true }));
