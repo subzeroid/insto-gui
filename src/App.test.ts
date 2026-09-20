@@ -243,6 +243,8 @@ describe('application integration', () => {
       .mockResolvedValueOnce(adoptedBinding).mockResolvedValueOnce(inspection(facts))
       .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
+    expect(wrapper.find('.home-adoption').exists()).toBe(false)
+    await wrapper.get('button[data-action="show-home-adoption"]').trigger('click')
     expect(wrapper.find('.home-adoption').exists()).toBe(true)
     await wrapper.get('input[data-field="home-path"]').setValue('/Users/x/.insto')
     await wrapper.get('button[data-action="check-home"]').trigger('click'); await flushPromises()

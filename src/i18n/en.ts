@@ -77,10 +77,9 @@ export const en = {
   'text.home_unknown_owner': 'The service of this installation is not managed by the app. It keeps running on its own.',
 
   // Window chrome.
-  'header.build': 'Local build · G2',
-  'header.core': 'Bundled core {version}',
-  'header.standalone': 'Self-contained app for macOS',
-  'header.note': 'Local data · no HikerAPI requests from this window',
+  'header.version': 'v{version}',
+  'header.local': 'Your data stays on this Mac',
+  'header.note': 'Opening this window spends no HikerAPI requests',
   'nav.aria': 'Sections',
   'nav.watches': 'Watches',
   'nav.changes': 'Changes',
@@ -107,12 +106,15 @@ export const en = {
   'confirm.cancel': 'Cancel',
 
   // Setup panel and onboarding.
-  'setup.eyebrow': 'START BY CONNECTING',
+  'setup.eyebrow': 'INSTAGRAM ACCOUNT MONITOR',
   'setup.eyebrow_replace': 'API ACCESS',
-  'setup.title': 'Your watches.',
-  'setup.title_muted': 'On your Mac.',
+  'setup.title': 'See what changed.',
+  'setup.title_muted': 'On any public Instagram account.',
   'setup.replace_title': 'Replace the token',
-  'setup.intro': 'The core is already inside the app. Connect HikerAPI — no Python, no commands, no extra installs.',
+  'setup.intro': 'insto checks the accounts you add on a schedule and shows what changed between checks: followers, bio, avatar, links, private and verified status.',
+  'setup.feature_background': 'Checks run in the background, even with the window closed',
+  'setup.feature_history': 'Every check is saved — compare any two snapshots side by side',
+  'setup.feature_no_login': 'No Instagram login: your account is never involved',
   'setup.replace_intro': 'The new token is checked before the current one is replaced.',
   'setup.token_label': 'HikerAPI token',
   'setup.token_placeholder': 'Paste the access token',
@@ -128,7 +130,7 @@ export const en = {
   'setup.replace_note': 'A running service applies the new token after a restart. A stopped service stays stopped.',
   'setup.connect_note': 'The app will turn on a background service: it works after the window is closed and spends HikerAPI quota when it checks the accounts you add.',
   'setup.stale': 'The data is out of date. Changes are blocked until it is refreshed.',
-  'setup.token_hint': 'The token is only needed for a new installation. If insto is already set up in the terminal, connect its folder below — no token has to be entered.',
+  'setup.cli_toggle': 'Already use insto in the terminal?',
 
   // Watches section.
   'watches.stale': 'The data is out of date. Last successful read: {time}. Changes are blocked until it is refreshed.',
@@ -282,6 +284,8 @@ export const en = {
 
   // Settings section.
   'settings.title': 'Settings',
+  'settings.language': 'Language',
+  'settings.language_note': 'The window reloads to apply the language.',
   'settings.access': 'HikerAPI access',
   'settings.close': 'Close',
   'settings.replace': 'Replace the token',

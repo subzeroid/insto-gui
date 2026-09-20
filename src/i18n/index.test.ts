@@ -4,22 +4,27 @@ import { ru } from './ru'
 import { currentLocale, detectLocale, setLocale, localeTag, t, type Key } from './index'
 
 describe('locale detection', () => {
-  it('honours ?lang= only in a development server', () => {
-    expect(detectLocale('en-US', '?lang=ru', true)).toBe('ru')
-    expect(detectLocale('ru-RU', '?lang=en', true)).toBe('en')
-    expect(detectLocale('en-US', '?mock=1&lang=ru', true)).toBe('ru')
-    // A release bundle follows the system language whatever the query says.
-    expect(detectLocale('en-US', '?lang=ru', false)).toBe('en')
-    expect(detectLocale('ru-RU', '?lang=en', false)).toBe('ru')
-    // An unknown value is not a locale: the system language decides.
-    expect(detectLocale('ru-RU', '?lang=de', true)).toBe('ru')
-  })
-  it('falls back to English for every language that is not Russian', () => {
-    expect(detectLocale('ru-RU', '', false)).toBe('ru')
-    expect(detectLocale('RU', '', false)).toBe('ru')
-    expect(detectLocale('en-GB', '', false)).toBe('en')
+  it('is English whatever language the system runs in', () => {
+    expect(detectLocale(null, '', false)).toBe('en')
     expect(detectLocale(undefined, '', false)).toBe('en')
     expect(detectLocale('', '', false)).toBe('en')
+    // Not a locale the app has: the default stands.
+    expect(detectLocale('de', '', false)).toBe('en')
+    expect(detectLocale('ru-RU', '', false)).toBe('en')
+  })
+  it('follows the language saved from Settings', () => {
+    expect(detectLocale('ru', '', false)).toBe('ru')
+    expect(detectLocale('en', '', false)).toBe('en')
+  })
+  it('honours ?lang= only in a development server', () => {
+    expect(detectLocale(null, '?lang=ru', true)).toBe('ru')
+    expect(detectLocale('ru', '?lang=en', true)).toBe('en')
+    expect(detectLocale(null, '?mock=1&lang=ru', true)).toBe('ru')
+    // A release bundle ignores the query.
+    expect(detectLocale(null, '?lang=ru', false)).toBe('en')
+    expect(detectLocale('ru', '?lang=en', false)).toBe('ru')
+    // An unknown value is not a locale: the saved choice decides.
+    expect(detectLocale('ru', '?lang=de', true)).toBe('ru')
   })
 })
 
