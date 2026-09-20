@@ -9,5 +9,6 @@ The interface is in English, or Russian when macOS runs in Russian.
 
 This build is ad-hoc signed and not notarized. On first launch macOS will say it
 cannot verify the app. Open System Settings → Privacy & Security and choose
-*Open Anyway*, or install with `brew install --cask --no-quarantine subzeroid/tap/insto`.
+*Open Anyway*. From a terminal, `xattr -dr com.apple.quarantine /Applications/insto.app`
+does the same; check the DMG hash against `SHA256SUMS` first.
 The README's *Install* section has the full steps.

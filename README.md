@@ -47,7 +47,7 @@ Or install the cask:
 brew install --cask subzeroid/tap/insto
 ```
 
-The cask is published shortly after each release; if `brew` cannot find it yet, use the download. Either way, follow *First launch* below once. (`brew install --cask --no-quarantine` skips that prompt by not marking the download; use it only if you have checked the DMG hash against `SHA256SUMS` on the release page.)
+The cask is published shortly after each release; if `brew` cannot find it yet, use the download. Either way, follow *First launch* below once. (Homebrew no longer has `--no-quarantine`. To skip the prompt from a terminal instead, run `xattr -dr com.apple.quarantine /Applications/insto.app`; do it only if you have checked the DMG hash against `SHA256SUMS` on the release page.)
 
 ## First launch
 
