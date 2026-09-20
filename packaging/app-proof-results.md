@@ -590,3 +590,25 @@ composite action's existence check caught it), and the probe needs an interprete
 
 Not yet recorded: the user's own first-launch check of the published DMG on a Mac
 running macOS 15 (Privacy & Security → Open Anyway, then the service migrating).
+
+## v0.1.1 release evidence
+
+Tag `v0.1.1` at `1380426`, workflow run
+<https://github.com/subzeroid/insto-gui/actions/runs/35365757121>, 2026-09-18. Same pipeline
+and gates as v0.1.0 (both matrix legs green on clean GitHub runners, draft release from
+`publish`, then published). First build with the English interface; the native proof
+checks the token form against the locale the window renders, so it ran in English on
+the en-US runners.
+
+| target | DMG sha256 | executable sha256 | proof executable sha256 | runtime build id | launch → runtime published |
+|---|---|---|---|---|---|
+| aarch64-apple-darwin | `e35fb35ed40a6fe199a9d96273a34390c7037c86c3c6e64e7bdd36d8aa82df76` | `b3a85a75abcd9df1ed1b09d42d7bd23e8336833462e126e97a20a5d0a886df5a` | `775e71caa3361a0c7b440e7aef32d46f7f57d52f1282ea3c3c9d38563f45f298` | `6b8882b52fceffd03848aade17a2ecca3e0d9dd8b5075665549afe142c30570d` | 12 s |
+| x86_64-apple-darwin | `7d91c4e46b873fc3fb4d95c438a9046e1fa56d174b4d4a6e213b0f860f1f88b2` | `6cebb29be8cd678d7cc4fb8ff555f8b10a639a60198b6edba9de916fa861c90b` | `afb977bc2ab3a8c3684b35dc69f17f38acff360592d9fff6ae48481016019196` | `1d3964ed3cca3d31e216423f118f1eadb9cf345aeeffa6c8f32c551f4c0cfe91` | 15 s |
+
+Every gate line in both `evidence-<target>` artifacts is `pass`; the native `migrate` and
+`adopt` proofs report `passed`, `cleanup_confirmed` and `app_group_cleaned` true; the DMG
+hashes equal the published `SHA256SUMS`.
+
+The G1 and G2 proofs recorded above quote the interface strings of their time, when the
+interface was Russian only; since v0.1.1 the same controls render in English unless macOS
+runs in Russian.
