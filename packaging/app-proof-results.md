@@ -612,3 +612,14 @@ hashes equal the published `SHA256SUMS`.
 The G1 and G2 proofs recorded above quote the interface strings of their time, when the
 interface was Russian only; since v0.1.1 the same controls render in English unless macOS
 runs in Russian.
+
+Install check on a developer Mac (arm64, macOS 26.6.2, Homebrew 7.0.4, no earlier insto
+profile): `brew install --cask subzeroid/tap/insto` installed 0.1.1 into `/Applications`
+with `com.apple.quarantine` set; `spctl --assess --type execute` answered `rejected`;
+after `xattr -dr com.apple.quarantine /Applications/insto.app` the app launched and
+published runtime `6b8882b52fceffd03848aade17a2ecca3e0d9dd8b5075665549afe142c30570d`
+under `~/Library/Application Support/insto-gui/runtimes`, the build id of the aarch64
+row above. `brew install --cask --no-quarantine` is rejected by this Homebrew as an
+invalid option, so the documentation now gives the `xattr` command. Still not recorded:
+the *Open Anyway* path through System Settings, and a launch with a token and a migrating
+service.
