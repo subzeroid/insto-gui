@@ -10,7 +10,7 @@
  * from a real profile, a real credential or a real filesystem.
  */
 import { CORE_VERSION, type Invoke, type Profile } from './client'
-import { itemSnapshot, type Change, type ChangeValue, type Comparison, type HistoryItem, type HomeReport, type Overview, type Snapshot, type Watch, type WatchStatus } from './dto'
+import { LOOKUP_FIELDS, LOOKUP_WINDOWS, itemSnapshot, type Change, type ChangeValue, type Comparison, type HistoryItem, type HomeReport, type LookupWindow, type Overview, type Snapshot, type Watch, type WatchStatus } from './dto'
 import { DesktopFailure } from './messages'
 
 const envelope = (kind: string, data: unknown) => ({ kind, data })
@@ -288,6 +288,107 @@ const number = (args: Record<string, unknown> | undefined, group: string, key: s
   return typeof value === 'number' ? value : null
 }
 
+// A lookup asks the provider about an account the user has just typed, so the
+// mock has to invent the posts behind it. The four places, the tags and the
+// mentions below are made up; the numbers are derived from the account's pk, so
+// a screenshot taken twice is the same picture.
+const DEMO_PLACES: readonly { name: string; lat: number; lng: number }[] = [
+  { name: 'Ferry Terminal', lat: 52.3739, lng: 4.8903 },
+  { name: 'Birch Yard', lat: 52.3612, lng: 4.8721 },
+  { name: 'North Pier', lat: 52.4018, lng: 4.9224 },
+  { name: 'Vasa Coffee', lat: 59.3251, lng: 18.0711 },
+]
+const DEMO_TAGS = ['harbour', 'nightferry', 'slowfilm', 'risograph', 'coldlight', 'commissions']
+const DEMO_MENTIONS = ['atlas.ferry', 'birchwood.press', 'cobalt.harbor']
+// A short artificial wait, so the window's loading state is visible in the demo
+// rather than flashing past. A real lookup takes seconds.
+export const MOCK_LOOKUP_MS = 250
+const pause = () => new Promise(resolve => { setTimeout(resolve, MOCK_LOOKUP_MS) })
+
+interface DemoPost { code: string; takenAt: number; likes: number; place: { name: string; lat: number; lng: number } | null; tags: string[]; mentions: string[] }
+
+const round3 = (value: number) => Math.round(value * 1000) / 1000
+const RADIANS = Math.PI / 180
+function haversineKm(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const dLat = (bLat - aLat) * RADIANS, dLng = (bLng - aLng) * RADIANS
+  const chord = Math.sin(dLat / 2) ** 2 + Math.cos(aLat * RADIANS) * Math.cos(bLat * RADIANS) * Math.sin(dLng / 2) ** 2
+  return 2 * 6371.0088 * Math.asin(Math.min(1, Math.sqrt(chord)))
+}
+// Count descending, ties by key ascending, then the top slice — the order
+// `analytics._top_from_counter` produces and the decoder insists on.
+const topTerms = (counts: Map<string, number>, top: number) =>
+  [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).slice(0, top).map(([key, count]) => ({ key, count }))
+
+function demoPosts(pk: string, user: string, count: number): DemoPost[] {
+  const prefix = user.replace(/[^a-z0-9]/g, '').slice(0, 4)
+  return Array.from({ length: count }, (_, index) => {
+    const seed = parseInt(hex(`${pk}:post:${index}`, 8), 16)
+    return {
+      code: `${prefix}${String(index).padStart(2, '0')}`,
+      // Newest first, roughly every half day, jittered by a few hours.
+      takenAt: NOW - index * (DAY / 2) - (seed % (11 * HOUR)),
+      likes: 40 + (seed % 1200),
+      // `Math.floor`, not `>>`: an eight-hex seed exceeds the signed 32-bit
+      // range a shift would truncate it to, and a negative index reads nothing.
+      place: seed % 5 === 0 ? null : DEMO_PLACES[Math.floor(seed / 8) % DEMO_PLACES.length],
+      tags: [DEMO_TAGS[seed % DEMO_TAGS.length], DEMO_TAGS[(seed + index) % DEMO_TAGS.length]],
+      mentions: seed % 3 === 0 ? [DEMO_MENTIONS[Math.floor(seed / 32) % DEMO_MENTIONS.length]] : [],
+    }
+  })
+}
+
+// Every number below is computed from the one post window, exactly as the core
+// computes it from one fetch: the mock is only useful while `dto.ts` accepts it.
+function activityOf(pk: string, user: string, posts: number, window: LookupWindow, quota: number | null) {
+  const inspected = demoPosts(pk, user, Math.min(window, posts))
+  const tagged = inspected.filter(post => post.place !== null)
+  const places = new Map<string, { name: string; lat: number; lng: number; count: number }>()
+  for (const post of tagged) {
+    const place = post.place!
+    const seen = places.get(place.name)
+    places.set(place.name, { ...place, count: (seen?.count ?? 0) + 1 })
+  }
+  const ordered = [...places.values()].sort((a, b) => b.count - a.count || (a.name < b.name ? -1 : 1)).slice(0, 10)
+  const centroid = tagged.length === 0 ? null : {
+    lat: tagged.reduce((sum, post) => sum + post.place!.lat, 0) / tagged.length,
+    lng: tagged.reduce((sum, post) => sum + post.place!.lng, 0) / tagged.length,
+  }
+  const radius = centroid === null ? null : round3(Math.max(...tagged.map(post => haversineKm(centroid.lat, centroid.lng, post.place!.lat, post.place!.lng))))
+  const hours = Array.from({ length: 24 }, () => 0)
+  const days = Array.from({ length: 7 }, () => 0)
+  const hashtags = new Map<string, number>(), mentions = new Map<string, number>(), locations = new Map<string, number>()
+  for (const post of inspected) {
+    const at = new Date(post.takenAt * 1000)
+    hours[at.getUTCHours()]++
+    // Monday first, like `datetime.weekday()`.
+    days[(at.getUTCDay() + 6) % 7]++
+    for (const tag of post.tags) hashtags.set(tag, (hashtags.get(tag) ?? 0) + 1)
+    for (const mention of post.mentions) mentions.set(mention, (mentions.get(mention) ?? 0) + 1)
+    if (post.place !== null) locations.set(post.place.name, (locations.get(post.place.name) ?? 0) + 1)
+  }
+  const total = inspected.reduce((sum, post) => sum + post.likes, 0)
+  const byLikes = [...inspected].sort((a, b) => b.likes - a.likes || (a.code < b.code ? -1 : 1)).slice(0, 5)
+  const stamps = inspected.map(post => post.takenAt)
+  return {
+    target_pk: pk, window, analyzed: inspected.length,
+    geo: {
+      geotagged: tagged.length, anchor: ordered[0] ?? null, centroid,
+      radius_km: radius, places: ordered,
+    },
+    timeline: {
+      hour_of_day: hours, day_of_week: days,
+      first_post_at: stamps.length === 0 ? null : Math.min(...stamps),
+      last_post_at: stamps.length === 0 ? null : Math.max(...stamps),
+    },
+    hashtags: topTerms(hashtags, 20), mentions: topTerms(mentions, 20), locations: topTerms(locations, 20),
+    likes: {
+      total, average: inspected.length === 0 ? 0 : round3(total / inspected.length),
+      top_posts: byLikes.map(post => ({ code: post.code, like_count: post.likes })),
+    },
+    quota_remaining: quota,
+  }
+}
+
 // An adopted home always answers with an expanded absolute path; this one names a
 // user that does not exist on any machine.
 const DEMO_HOME = '/Users/demo/.insto'
@@ -363,6 +464,11 @@ export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
     byUser.set(user, account); byPk.set(pk, account); snapshotsByPk.set(pk, [snapshot])
     feed = [{ kind: 'baseline', snapshot }, ...feed]
     watches.set(user, { ...current, last_ok: snapshot.captured_at, waiting_first_check: false, revision: nextRevision(user) })
+  }
+  // A paid read costs the demo profile what the real one costs: two requests for
+  // a profile, one page request for an analysis.
+  function spend(requests: number): void {
+    if (profile.quota_remaining !== null) profile = { ...profile, quota_remaining: Math.max(0, profile.quota_remaining - requests) }
   }
   function touch(user: string | null, change: (watch: Watch) => Watch): unknown {
     const current = user === null ? undefined : watches.get(user)
@@ -447,6 +553,44 @@ export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
         const filter = text(args, 'query', 'target_pk')
         const items = filter === null ? feed : feed.filter(item => itemSnapshot(item).target_pk === filter)
         return historyPage(items, filter === null ? feed.length : (snapshotsByPk.get(filter)?.length ?? 0))
+      }
+
+      // The two on-demand lookups. Both cost paid requests, so the mock spends
+      // the demo quota too: the number in the footer has to move when a click
+      // costs something.
+      case 'lookup_profile': {
+        const user = text(args, 'lookup', 'username') ?? ''
+        if (!profile.configured) throw new DesktopFailure('not_configured')
+        await pause()
+        const account = byUser.get(user)
+        if (account === undefined) throw new DesktopFailure('target_not_found')
+        const latest = account.steps.length === 0 ? account.profile : fieldsAt(account, account.steps.length - 1).fields
+        // Exactly the thirteen tracked names: a live lookup never has the stored
+        // avatar or banner hash, and this provider supplies every other one.
+        const fields: Fields = {}
+        for (const name of LOOKUP_FIELDS) fields[name] = latest[name] ?? null
+        spend(2)
+        return envelope('lookup_profile', {
+          target_pk: account.pk,
+          access: latest.is_private === true ? 'private' : 'public',
+          fields, unknown_fields: [], quota_remaining: profile.quota_remaining,
+        })
+      }
+      case 'lookup_activity': {
+        const pk = text(args, 'lookup', 'target_pk') ?? ''
+        const requested = number(args, 'lookup', 'window') ?? 0
+        if (!profile.configured) throw new DesktopFailure('not_configured')
+        await pause()
+        const account = byPk.get(pk)
+        const window = (LOOKUP_WINDOWS as readonly number[]).includes(requested) ? (requested as LookupWindow) : 50
+        if (account === undefined) throw new DesktopFailure('target_not_found')
+        const latest = account.steps.length === 0 ? account.profile : fieldsAt(account, account.steps.length - 1).fields
+        // A private account is where the provider stops answering, which is the
+        // refusal the section has to render.
+        if (latest.is_private === true) throw new DesktopFailure('target_private')
+        const posts = typeof latest.media_count === 'number' ? latest.media_count : 0
+        spend(1)
+        return envelope('lookup_activity', activityOf(pk, account.user, posts, window, profile.quota_remaining))
       }
 
       case 'inspect_home': {

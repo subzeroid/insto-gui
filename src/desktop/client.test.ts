@@ -60,6 +60,53 @@ describe('desktop boundary', () => {
     await expect(client.readSnapshot('07', '1')).rejects.toMatchObject({ code: 'invalid_history_input' })
     expect(invoke).not.toHaveBeenCalled()
   })
+  it('sends the exact lookup arguments and refuses a bad one before IPC', async () => {
+    const found = {
+      target_pk: '17841400000000001', access: 'public',
+      fields: {
+        username: 'alice', full_name: 'Alice Example', biography: 'bio line',
+        external_url: null, is_verified: false, is_business: false, is_private: false,
+        follower_count: 1200, following_count: 300, media_count: 87,
+        public_email: null, public_phone: null, business_category: null,
+      },
+      unknown_fields: [], quota_remaining: 4211,
+    }
+    const analysed = {
+      target_pk: '17841400000000001', window: 12, analyzed: 0,
+      geo: { geotagged: 0, anchor: null, centroid: null, radius_km: null, places: [] },
+      timeline: { hour_of_day: Array.from({ length: 24 }, () => 0), day_of_week: Array.from({ length: 7 }, () => 0), first_post_at: null, last_post_at: null },
+      hashtags: [], mentions: [], locations: [],
+      likes: { total: 0, average: 0, top_posts: [] }, quota_remaining: 4210,
+    }
+    const invoke = vi.fn()
+      .mockResolvedValueOnce({ kind: 'lookup_profile', data: found })
+      .mockResolvedValueOnce({ kind: 'lookup_activity', data: analysed })
+    const client = new DesktopClient(invoke)
+    expect((await client.lookupProfile('alice')).target_pk).toBe('17841400000000001')
+    expect((await client.lookupActivity('17841400000000001', 12)).analyzed).toBe(0)
+    expect(invoke.mock.calls).toEqual([
+      ['lookup_profile', { lookup: { username: 'alice' } }],
+      ['lookup_activity', { lookup: { target_pk: '17841400000000001', window: 12 } }],
+    ])
+    // A name or a window the core would refuse never reaches the bridge, so a
+    // typo never costs a paid request.
+    const blocked = vi.fn()
+    const guarded = new DesktopClient(blocked)
+    await expect(guarded.lookupProfile('@Alice')).rejects.toMatchObject({ code: 'invalid_lookup_input' })
+    await expect(guarded.lookupProfile('a b')).rejects.toMatchObject({ code: 'invalid_lookup_input' })
+    await expect(guarded.lookupActivity('0', 12)).rejects.toMatchObject({ code: 'invalid_lookup_input' })
+    await expect(guarded.lookupActivity('07', 12)).rejects.toMatchObject({ code: 'invalid_lookup_input' })
+    await expect(guarded.lookupActivity('7', 13 as 12)).rejects.toMatchObject({ code: 'invalid_lookup_input' })
+    expect(blocked).not.toHaveBeenCalled()
+    // Every lookup failure the core can report crosses as its own code, once.
+    for (const code of ['target_not_found', 'target_private', 'target_unavailable', 'provider_response_invalid']) {
+      const failing = vi.fn().mockResolvedValue({ kind: 'error', data: { code, message: 'TOKEN_SENTINEL @alice', retryable: false } })
+      const desktop = new DesktopClient(failing)
+      await expect(desktop.lookupProfile('alice')).rejects.toMatchObject({ code })
+      try { await desktop.lookupActivity('7', 50) } catch (error) { expect(String(error)).not.toContain('TOKEN_SENTINEL') }
+      expect(failing).toHaveBeenCalledTimes(2)
+    }
+  })
   it('sends exact C2 arguments and decodes kinds', async () => {
     const watch = { user: 'alice', status: 'active', interval_seconds: 300, last_ok: null, waiting_first_check: true, has_error: false, consecutive_errors: 0, revision: 'a'.repeat(64) }
     const invoke = vi.fn()

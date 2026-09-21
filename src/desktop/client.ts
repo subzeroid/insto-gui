@@ -1,8 +1,8 @@
 import { DesktopFailure, safeFailure } from './messages'
-import { CHANGE_KINDS, HISTORY_CURSOR, SNAPSHOT_KINDS, TARGET_KINDS, TARGET_PK, REVISION, USERNAME, WATCH_CURSOR, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeOverview, decodeRemoved, decodeServiceFacts, decodeSnapshotFields, decodeWatch, decodeWatchPage, record, validSnapshotId, type Binding, type Comparison, type HistoryPage, type HomeReport, type Overview, type ServiceFacts, type SnapshotFields, type Watch, type WatchPage } from './dto'
+import { CHANGE_KINDS, HISTORY_CURSOR, LOOKUP_WINDOWS, SNAPSHOT_KINDS, TARGET_KINDS, TARGET_PK, REVISION, USERNAME, WATCH_CURSOR, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeLookupActivity, decodeLookupProfile, decodeOverview, decodeRemoved, decodeServiceFacts, decodeSnapshotFields, decodeWatch, decodeWatchPage, record, validSnapshotId, type Binding, type Comparison, type HistoryPage, type HomeReport, type LookupActivity, type LookupProfile, type LookupWindow, type Overview, type ServiceFacts, type SnapshotFields, type Watch, type WatchPage } from './dto'
 export const CORE_VERSION = '0.7.22'
-export type { Binding, HomeReport, ServiceFacts } from './dto'
-export { RESPONSE_PATH_LIMIT } from './dto'
+export type { Binding, HomeReport, LookupActivity, LookupProfile, LookupWindow, ServiceFacts } from './dto'
+export { LOOKUP_FIELDS, LOOKUP_WINDOWS, RESPONSE_PATH_LIMIT } from './dto'
 export const HOME_PATH_LIMIT = 1024
 // Mirrors the host's `home_path_ok`: absolute or `~`/`~/…`, at most 1024 UTF-8
 // bytes (bytes, not characters), no NUL and no `..` segment. Responses obey a
@@ -53,7 +53,11 @@ export interface Page { limit?: number; cursor?: string }
 // The host admits two concurrent reads; a third would fail with `busy`. Queue
 // reads in the client so polling, history and service reads never collide.
 export const READ_SLOTS = 2
-const READ_COMMANDS = new Set(['inspect_setup', 'read_overview', 'list_watches', 'search_targets', 'list_snapshots', 'compare_snapshots', 'read_snapshot', 'list_changes', 'inspect_service', 'inspect_home'])
+// The two lookups are in here for the queue, not for a retry: they hold one of
+// the host's two read slots for as long as the provider takes, so a poll issued
+// meanwhile has to wait rather than come back `busy`. Nothing in this client ever
+// repeats a lookup — a paid request is made once, on one click.
+const READ_COMMANDS = new Set(['inspect_setup', 'read_overview', 'list_watches', 'search_targets', 'list_snapshots', 'compare_snapshots', 'read_snapshot', 'list_changes', 'inspect_service', 'inspect_home', 'lookup_profile', 'lookup_activity'])
 class ReadGate {
   private active = 0
   private readonly waiting: (() => void)[] = []
@@ -158,6 +162,17 @@ export class DesktopClient {
   async selectHome(path: string | null): Promise<Profile> {
     if (path !== null && !validHomePath(path)) throw new DesktopFailure('invalid_home_input')
     return this.readProfile('select_home', { home: { path } })
+  }
+  // The two on-demand lookups. Each one spends the user's paid HikerAPI quota,
+  // so it is validated here before it can reach the bridge, and it is never
+  // retried, replayed or polled: one click, one request.
+  async lookupProfile(username: string): Promise<LookupProfile> {
+    if (canonicalUsername(username) !== username) throw new DesktopFailure('invalid_lookup_input')
+    return this.read('lookup_profile', 'lookup_profile', decodeLookupProfile, { lookup: { username } })
+  }
+  async lookupActivity(targetPk: string, window: LookupWindow): Promise<LookupActivity> {
+    if (!TARGET_PK.test(targetPk) || !LOOKUP_WINDOWS.includes(window)) throw new DesktopFailure('invalid_lookup_input')
+    return this.read('lookup_activity', 'lookup_activity', data => decodeLookupActivity(data, targetPk, window), { lookup: { target_pk: targetPk, window } })
   }
   // A host-local read of the desktop root's binding file: no bridge call, no
   // `{kind, data}` envelope and no read slot. It answers after a failed core

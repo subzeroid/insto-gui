@@ -24,6 +24,25 @@ export type HistoryItem =
 export type HistoryKind = HistoryItem['kind']
 export interface HistoryPage { items: HistoryItem[]; next_cursor: string | null; scan_complete: boolean; scanned: number }
 
+// The two on-demand lookups. `lookup.profile` answers with the tracked profile
+// vocabulary `snapshots.read` reports, read live instead of out of a saved
+// snapshot, so one renderer serves both — as long as it treats `avatar` and
+// `banner` as optional, since only a stored snapshot ever has them.
+export type Access = 'public' | 'private'
+export interface LookupProfile { target_pk: string; access: Access; fields: Record<string, ChangeValue>; unknown_fields: string[]; quota_remaining: number | null }
+export type LookupWindow = 12 | 30 | 50
+export interface Coordinates { lat: number; lng: number }
+export interface Place { name: string; lat: number; lng: number; count: number }
+export interface Geo { geotagged: number; anchor: Place | null; centroid: Coordinates | null; radius_km: number | null; places: Place[] }
+export interface Timeline { hour_of_day: number[]; day_of_week: number[]; first_post_at: number | null; last_post_at: number | null }
+export interface Term { key: string; count: number }
+export interface TopPost { code: string; like_count: number }
+export interface Likes { total: number; average: number; top_posts: TopPost[] }
+// `analyzed` is the true number of posts inspected: smaller than `window` both
+// for a short account and for one whose cursor hit the core's paid-page ceiling,
+// so it is never proof that the account has nothing more.
+export interface LookupActivity { target_pk: string; window: LookupWindow; analyzed: number; geo: Geo; timeline: Timeline; hashtags: Term[]; mentions: Term[]; locations: Term[]; likes: Likes; quota_remaining: number | null }
+
 export const MAX_TIME = 253402300799
 export const USERNAME = /^[a-z0-9._]{1,255}$/
 export const TARGET_PK = /^[1-9][0-9]{0,63}$/
@@ -37,6 +56,24 @@ export const TARGET_KINDS: readonly HistoryKind[] = ['target', 'diagnostic']
 export const SNAPSHOT_KINDS: readonly HistoryKind[] = ['snapshot', 'diagnostic']
 export const CHANGE_KINDS: readonly HistoryKind[] = ['baseline', 'comparison', 'incomplete', 'diagnostic']
 
+// The three windows the core offers, and the tracked profile names with the
+// value typing and the character bound `insto/desktop/lookup.py` applies to each
+// (`_TEXT_CHARACTERS`, `_BOOLEANS`, `_COUNTS` over `_PROFILE_TRACKED_FIELDS`).
+export const LOOKUP_WINDOWS: readonly LookupWindow[] = [12, 30, 50]
+const TRACKED: readonly (readonly [string, 'text' | 'flag' | 'count', number])[] = [
+  ['username', 'text', 255], ['full_name', 'text', 255], ['biography', 'text', 2048],
+  ['external_url', 'text', 2048], ['is_verified', 'flag', 0], ['is_business', 'flag', 0],
+  ['is_private', 'flag', 0], ['follower_count', 'count', 0], ['following_count', 'count', 0],
+  ['media_count', 'count', 0], ['public_email', 'text', 320], ['public_phone', 'text', 64],
+  ['business_category', 'text', 255],
+]
+// The core's declaration order, which is the order a card renders the rows in.
+export const LOOKUP_FIELDS: readonly string[] = TRACKED.map(([name]) => name)
+const TERM_CHARACTERS = 120
+const CODE_CHARACTERS = 64
+const TOP_PLACES = 10
+const TOP_TERMS = 20
+const TOP_POSTS = 5
 const fail = (): never => { throw new DesktopFailure('protocol') }
 export function record(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value) }
 function exact(value: unknown, keys: string[]): Record<string, unknown> {
@@ -185,6 +222,149 @@ export function decodeHistoryPage(value: unknown, kinds: readonly HistoryKind[],
   return { items, next_cursor: cursor, scan_complete: v.scan_complete as boolean, scanned }
 }
 
+// Python slices a string with `value[:n]`, which counts code points, so every
+// character bound the core applies is measured in code points here as well —
+// `String.length` would count UTF-16 units and refuse a legitimate answer.
+const characters = (value: string) => [...value].length
+function bounded(value: unknown, max: number): string {
+  if (typeof value !== 'string' || characters(value) > max) fail()
+  return value as string
+}
+function decimalNumber(value: unknown, limit: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > limit) fail()
+  return value as number
+}
+function trackedValue(value: unknown, kind: 'text' | 'flag' | 'count', max: number): ChangeValue {
+  // Only an optional text field can be absent; the core always supplies a real
+  // bool and a real integer for the other two kinds.
+  if (kind === 'text') return value === null ? null : bounded(value, max)
+  if (kind === 'flag') { if (typeof value !== 'boolean') fail(); return value as boolean }
+  return count(value)
+}
+export function decodeLookupProfile(value: unknown): LookupProfile {
+  const v = exact(value, ['target_pk', 'access', 'fields', 'unknown_fields', 'quota_remaining'])
+  if (!record(v.fields) || !Array.isArray(v.unknown_fields)) fail()
+  const raw = v.fields as Record<string, unknown>
+  // `FIELD` matches `__proto__`; a null prototype makes every accepted name an
+  // ordinary own property instead of a silent no-op, exactly as in
+  // `decodeSnapshotFields`.
+  const fields: Record<string, ChangeValue> = Object.create(null)
+  const unknown = (v.unknown_fields as unknown[]).map(name => text(name, FIELD))
+  if (new Set(unknown).size !== unknown.length) fail()
+  // The core walks its own declaration list, so every tracked name is either a
+  // value or an unknown — never both and never neither.
+  for (const [name, kind, max] of TRACKED) {
+    const present = Object.hasOwn(raw, name)
+    if (present === unknown.includes(name)) fail()
+    if (present) fields[name] = trackedValue(raw[name], kind, max)
+  }
+  // A name outside the tracked vocabulary — `avatar`, say — survives the loop on
+  // either side; these two counts are what refuse it.
+  if (Object.keys(raw).length !== LOOKUP_FIELDS.length - unknown.length || unknown.some(name => !LOOKUP_FIELDS.includes(name))) fail()
+  return { target_pk: text(v.target_pk, TARGET_PK), access: member(v.access, ACCESSES), fields, unknown_fields: unknown, quota_remaining: nullableCount(v.quota_remaining) }
+}
+const decodePoint = (value: unknown): Coordinates => {
+  const v = exact(value, ['lat', 'lng'])
+  return { lat: decimalNumber(v.lat, 90), lng: decimalNumber(v.lng, 180) }
+}
+function decodePlace(value: unknown): Place {
+  const v = exact(value, ['name', 'lat', 'lng', 'count'])
+  const tagged = count(v.count)
+  // A place exists because at least one post was tagged there.
+  if (tagged === 0) fail()
+  return { name: bounded(v.name, TERM_CHARACTERS), lat: decimalNumber(v.lat, 90), lng: decimalNumber(v.lng, 180), count: tagged }
+}
+const samePlace = (a: Place, b: Place) => a.name === b.name && a.lat === b.lat && a.lng === b.lng && a.count === b.count
+function decodeGeo(value: unknown, analyzed: number): Geo {
+  const v = exact(value, ['geotagged', 'anchor', 'centroid', 'radius_km', 'places'])
+  const geotagged = count(v.geotagged)
+  if (!Array.isArray(v.places) || v.places.length > TOP_PLACES || geotagged > analyzed) fail()
+  const places = (v.places as unknown[]).map(decodePlace)
+  // `Counter.most_common` orders by count descending, and the listed places are
+  // a part of the geotagged posts, never more than all of them.
+  for (let index = 1; index < places.length; index++) if (places[index - 1].count < places[index].count) fail()
+  if (places.reduce((sum, place) => sum + place.count, 0) > geotagged) fail()
+  const anchor = v.anchor === null ? null : decodePlace(v.anchor)
+  const centroid = v.centroid === null ? null : decodePoint(v.centroid)
+  const radius = v.radius_km === null ? null : decimalNumber(v.radius_km, Number.MAX_SAFE_INTEGER)
+  // One geotagged post produces all of these at once: the anchor is the first
+  // listed place, and the centroid and the radius come from the same points.
+  const located = geotagged > 0
+  if (located !== (anchor !== null) || located !== (centroid !== null) || located !== (radius !== null) || located !== (places.length > 0)) fail()
+  if (radius !== null && radius < 0) fail()
+  if (anchor !== null && !samePlace(anchor, places[0])) fail()
+  return { geotagged, anchor, centroid, radius_km: radius, places }
+}
+/** One histogram: exactly `buckets` counts, and their total, which cannot exceed
+ * the posts that were inspected. */
+function histogram(value: unknown, buckets: number, analyzed: number): [number[], number] {
+  if (!Array.isArray(value) || value.length !== buckets) fail()
+  const counts = (value as unknown[]).map(item => count(item))
+  const total = counts.reduce((sum, item) => sum + item, 0)
+  if (total > analyzed) fail()
+  return [counts, total]
+}
+function decodeTimeline(value: unknown, analyzed: number): Timeline {
+  const v = exact(value, ['hour_of_day', 'day_of_week', 'first_post_at', 'last_post_at'])
+  const [hours, hourTotal] = histogram(v.hour_of_day, 24, analyzed)
+  const [days, dayTotal] = histogram(v.day_of_week, 7, analyzed)
+  const first = nullableCount(v.first_post_at, MAX_TIME)
+  const last = nullableCount(v.last_post_at, MAX_TIME)
+  // Both histograms count the same posts — the ones carrying a usable timestamp —
+  // and those are exactly the posts the first/last pair spans.
+  if (hourTotal !== dayTotal || (hourTotal > 0) !== (first !== null) || (first === null) !== (last === null)) fail()
+  if (first !== null && last !== null && first > last) fail()
+  return { hour_of_day: hours, day_of_week: days, first_post_at: first, last_post_at: last }
+}
+function decodeTerms(value: unknown): Term[] {
+  if (!Array.isArray(value) || value.length > TOP_TERMS) fail()
+  const items = (value as unknown[]).map(item => {
+    const v = exact(item, ['key', 'count'])
+    const key = bounded(v.key, TERM_CHARACTERS)
+    const times = count(v.count)
+    // A counted term was read off a post, so it is never empty or zero.
+    if (key === '' || times === 0) fail()
+    return { key, count: times }
+  })
+  // `_top_from_counter` sorts by count descending, ties by key ascending;
+  // truncating a key to its first characters preserves that order.
+  for (let index = 1; index < items.length; index++) {
+    const previous = items[index - 1], current = items[index]
+    if (!(previous.count > current.count || (previous.count === current.count && previous.key <= current.key))) fail()
+  }
+  return items
+}
+function decodeLikes(value: unknown, analyzed: number): Likes {
+  const v = exact(value, ['total', 'average', 'top_posts'])
+  const total = count(v.total)
+  const average = decimalNumber(v.average, Number.MAX_SAFE_INTEGER)
+  if (!Array.isArray(v.top_posts) || average < 0) fail()
+  const raw = v.top_posts as unknown[]
+  // `aggregate_likes` returns the five most liked posts of the window it was
+  // given, so the list is as long as the window, up to five. Nothing inspected
+  // means nothing liked.
+  if (raw.length !== Math.min(analyzed, TOP_POSTS) || (analyzed === 0 && (total > 0 || average > 0))) fail()
+  const top = raw.map(item => {
+    const post = exact(item, ['code', 'like_count'])
+    return { code: bounded(post.code, CODE_CHARACTERS), like_count: count(post.like_count) }
+  })
+  for (let index = 1; index < top.length; index++) if (top[index - 1].like_count < top[index].like_count) fail()
+  return { total, average, top_posts: top }
+}
+export function decodeLookupActivity(value: unknown, targetPk: string, window: LookupWindow): LookupActivity {
+  const v = exact(value, ['target_pk', 'window', 'analyzed', 'geo', 'timeline', 'hashtags', 'mentions', 'locations', 'likes', 'quota_remaining'])
+  // The pk and the window are echoed, never re-derived: the core takes both from
+  // the request it already validated.
+  if (v.target_pk !== targetPk || v.window !== window) fail()
+  const analyzed = count(v.analyzed, window)
+  return {
+    target_pk: targetPk, window, analyzed,
+    geo: decodeGeo(v.geo, analyzed), timeline: decodeTimeline(v.timeline, analyzed),
+    hashtags: decodeTerms(v.hashtags), mentions: decodeTerms(v.mentions), locations: decodeTerms(v.locations),
+    likes: decodeLikes(v.likes, analyzed), quota_remaining: nullableCount(v.quota_remaining),
+  }
+}
+
 export type Registration = 'none' | 'owned' | 'unknown'
 export type Interpreter = 'current' | 'other'
 export type HomeReason = 'home_invalid' | 'home_backend_unsupported' | 'schema_mismatch' | 'storage_error'
@@ -193,6 +373,7 @@ export interface ServiceFacts { registration: Registration; interpreter: Interpr
 export interface HomeReport { path: string; exists: boolean; private: boolean; config: 'ok' | 'missing' | 'invalid'; backend: 'hikerapi' | 'aiograpi' | 'fake' | null; database: 'ok' | 'missing' | 'schema_mismatch' | 'unreadable'; registration: Registration; interpreter: Interpreter | null; loaded: boolean | null; process: 'running' | 'stopped' | 'unknown'; adoptable: boolean; reason: HomeReason | null }
 export interface Binding { state: BindingState; home: string | null }
 
+const ACCESSES: readonly Access[] = ['public', 'private']
 const REGISTRATIONS: readonly Registration[] = ['none', 'owned', 'unknown']
 const INTERPRETERS: readonly Interpreter[] = ['current', 'other']
 const SETTINGS: readonly NonNullable<ServiceFacts['settings']>[] = ['matching', 'different']

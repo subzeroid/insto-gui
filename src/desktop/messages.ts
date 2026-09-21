@@ -46,9 +46,15 @@ export const ERROR_CODES = [
   'history_oversized',
   'snapshot_unavailable',
   'snapshot_identity_mismatch',
+  // The four codes only the two on-demand lookups can return.
+  'target_not_found',
+  'target_private',
+  'target_unavailable',
+  'provider_response_invalid',
   'invalid_watch_input',
   'invalid_history_input',
   'invalid_home_input',
+  'invalid_lookup_input',
   'invalid_params',
   'internal_error',
 ] as const
