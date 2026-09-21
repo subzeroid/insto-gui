@@ -163,6 +163,7 @@ fn c2_commands_validate_arguments_before_the_host() {
             crate::commands::search_targets,
             crate::commands::list_snapshots,
             crate::commands::compare_snapshots,
+            crate::commands::read_snapshot,
             crate::commands::list_changes
         ])
         .build(tauri::generate_context!())
@@ -208,6 +209,10 @@ fn c2_commands_validate_arguments_before_the_host() {
         (
             "compare_snapshots",
             serde_json::json!({"pair": {"target_pk": "7", "older_id": "1", "newer_id": "2"}}),
+        ),
+        (
+            "read_snapshot",
+            serde_json::json!({"snapshot": {"target_pk": "7", "snapshot_id": "2"}}),
         ),
         ("list_changes", serde_json::json!({"query": {}})),
         (
@@ -278,6 +283,16 @@ fn c2_commands_validate_arguments_before_the_host() {
         (
             "compare_snapshots",
             serde_json::json!({"pair": {"target_pk": "7", "older_id": "1", "newer_id": "1"}}),
+            "invalid_history_input",
+        ),
+        (
+            "read_snapshot",
+            serde_json::json!({"snapshot": {"target_pk": "7", "snapshot_id": "0"}}),
+            "invalid_history_input",
+        ),
+        (
+            "read_snapshot",
+            serde_json::json!({"pair": {"target_pk": "7", "snapshot_id": "2"}}),
             "invalid_history_input",
         ),
         (
