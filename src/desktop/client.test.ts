@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { CORE_VERSION, DesktopClient, HOME_PATH_LIMIT, RESPONSE_PATH_LIMIT, validHomePath, type Profile } from './client'
+import { CORE_VERSION, DesktopClient, HOME_PATH_LIMIT, LOOKUP_SLOTS, RESPONSE_PATH_LIMIT, validHomePath, type Profile } from './client'
 import { adoptedBinding, adoptedProfile, facts, homeAdoptable, running, serviceOwnedOther } from './fixtures'
 
 export const unconfigured: Profile = { configured: false, status: 'unconfigured', desired_service: null, service_running: false, quota_remaining: null, quota_checked_at: null, revision: null }
@@ -106,6 +106,37 @@ describe('desktop boundary', () => {
       try { await desktop.lookupActivity('7', 50) } catch (error) { expect(String(error)).not.toContain('TOKEN_SENTINEL') }
       expect(failing).toHaveBeenCalledTimes(2)
     }
+  })
+  it('keeps a paid lookup off the storage-read slots and sends only one at a time', async () => {
+    const overview = { configured: true, desired_service: 'running', service_state: 'running', quota_remaining: 8, quota_checked_at: 100, watches: [], next_cursor: null }
+    const found = {
+      target_pk: '7', access: 'public',
+      fields: {
+        username: 'alice', full_name: null, biography: null, external_url: null,
+        is_verified: false, is_business: false, is_private: false,
+        follower_count: 0, following_count: 0, media_count: 0,
+        public_email: null, public_phone: null, business_category: null,
+      },
+      unknown_fields: [], quota_remaining: 4211,
+    }
+    let release: (() => void) | null = null
+    const held = new Promise<void>(resolve => { release = resolve })
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'lookup_profile') { await held; return { kind: 'lookup_profile', data: found } }
+      return { kind: 'overview', data: overview }
+    })
+    const client = new DesktopClient(invoke)
+    const first = client.lookupProfile('alice')
+    // A second lookup is not sent at all while the first is out: one permit.
+    const second = client.lookupProfile('bob')
+    // The overview poll shares no permit with it and answers straight away.
+    expect((await client.overview()).configured).toBe(true)
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['lookup_profile', 'read_overview'])
+    release!()
+    expect((await first).target_pk).toBe('7')
+    expect((await second).target_pk).toBe('7')
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['lookup_profile', 'read_overview', 'lookup_profile'])
+    expect(LOOKUP_SLOTS).toBe(1)
   })
   it('sends exact C2 arguments and decodes kinds', async () => {
     const watch = { user: 'alice', status: 'active', interval_seconds: 300, last_ok: null, waiting_first_check: true, has_error: false, consecutive_errors: 0, revision: 'a'.repeat(64) }

@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import type { DesktopClient } from './client'
+import { canonicalUsername, type DesktopClient } from './client'
 import type { LookupActivity, LookupProfile, LookupWindow } from './dto'
 import { DesktopFailure, safeFailure } from './messages'
 
@@ -7,14 +7,23 @@ import { DesktopFailure, safeFailure } from './messages'
 // analysis costs one page request either way for a provider page of fifty.
 export const DEFAULT_WINDOW: LookupWindow = 50
 
-const emptyProfile = () => ({ value: null as LookupProfile | null, loading: false, error: null as DesktopFailure | null })
-const emptyActivity = (window: LookupWindow) => ({ value: null as LookupActivity | null, window, loading: false, error: null as DesktopFailure | null })
+// `spent` says whether a provider request was actually dispatched, so a failure
+// can be labelled honestly: a refusal this module made itself costs nothing,
+// while a cancelled or timed-out one may already have been charged. L3 renders
+// `lookup.may_be_charged` beside a failure whose part has it set.
+const emptyProfile = () => ({ value: null as LookupProfile | null, loading: false, spent: false, error: null as DesktopFailure | null })
+const emptyActivity = (window: LookupWindow) => ({ value: null as LookupActivity | null, window, loading: false, spent: false, error: null as DesktopFailure | null })
 
 /**
  * The Lookup section's state. Both calls here spend the user's paid HikerAPI
- * quota, so this module is deliberately dull: it starts one request per kind,
- * never repeats one, never polls, and persists nothing. Results live in memory
- * until `clear()` or a new username, so re-opening the tab costs nothing.
+ * quota, so this module is deliberately dull: it starts one request at a time —
+ * the two kinds are mutually exclusive, not one each — never repeats one, never
+ * polls, and persists nothing. Results live in memory until `clear()` or a new
+ * username, so re-opening the tab costs nothing.
+ *
+ * `lookUp` canonicalizes the name it is given (leading `@`, surrounding
+ * whitespace, case), because this is the only entry point for a name a person
+ * typed; a form need not do it first.
  */
 export function createLookupState(client: DesktopClient) {
   const state = reactive({
@@ -26,16 +35,26 @@ export function createLookupState(client: DesktopClient) {
   // analysis already in flight for the previous one, so a paid answer can never
   // land under the wrong name.
   let generation = 0
+  // The two kinds share the host's single network-read slot, so a second request
+  // of either kind is ignored rather than queued behind up to seventy seconds of
+  // provider round trip. It is also what keeps the running one authoritative: a
+  // click that is refused changes nothing on screen.
+  const idle = () => !state.profile.loading && !state.activity.loading
 
-  async function lookUp(username: string): Promise<boolean> {
-    // A second click while the first request is in flight is ignored rather than
-    // queued: it would cost the same two requests for the same answer.
-    if (state.profile.loading) return false
+  async function lookUp(raw: string): Promise<boolean> {
+    if (!idle()) return false
     generation++
     const expected = generation
-    state.username = username
-    state.profile = { ...emptyProfile(), loading: true }
+    const username = canonicalUsername(raw)
+    state.username = username ?? raw
+    // A new account never leaves the previous one's analysis on screen, and the
+    // chosen window survives, because it is a preference and not a result.
     state.activity = emptyActivity(state.activity.window)
+    if (username === null) {
+      state.profile = { ...emptyProfile(), error: new DesktopFailure('invalid_lookup_input') }
+      return false
+    }
+    state.profile = { ...emptyProfile(), loading: true, spent: true }
     try {
       const value = await client.lookupProfile(username)
       if (generation !== expected) return false
@@ -51,18 +70,18 @@ export function createLookupState(client: DesktopClient) {
 
   async function analyze(window: LookupWindow): Promise<boolean> {
     const found = state.profile.value
-    if (found === null || state.activity.loading) return false
+    if (found === null || !idle()) return false
     // The core's own rule: `lookup.activity` is handed a bare pk and cannot tell
     // a private account from an empty one, because a provider may answer a
     // private account's media with an empty page. A refusal that is already
-    // certain is not worth a paid request.
+    // certain is not worth a paid request — hence `spent: false`.
     if (found.access === 'private') {
       state.activity = { ...emptyActivity(window), error: new DesktopFailure('target_private') }
       return false
     }
     const expected = generation
     const targetPk = found.target_pk
-    state.activity = { ...emptyActivity(window), loading: true }
+    state.activity = { ...emptyActivity(window), loading: true, spent: true }
     try {
       const value = await client.lookupActivity(targetPk, window)
       if (generation !== expected) return false
@@ -77,11 +96,13 @@ export function createLookupState(client: DesktopClient) {
   }
 
   // Nothing was ever written to disk, so forgetting is the whole of clearing.
+  // The chosen window is the one thing that stays: it is the user's setting for
+  // the selector, not a result, and it must not jump under them.
   function clear(): void {
     generation++
     state.username = null
     state.profile = emptyProfile()
-    state.activity = emptyActivity(DEFAULT_WINDOW)
+    state.activity = emptyActivity(state.activity.window)
   }
 
   return { state, lookUp, analyze, clear }

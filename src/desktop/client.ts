@@ -53,18 +53,22 @@ export interface Page { limit?: number; cursor?: string }
 // The host admits two concurrent reads; a third would fail with `busy`. Queue
 // reads in the client so polling, history and service reads never collide.
 export const READ_SLOTS = 2
-// The two lookups are in here for the queue, not for a retry: they hold one of
-// the host's two read slots for as long as the provider takes, so a poll issued
-// meanwhile has to wait rather than come back `busy`. Nothing in this client ever
-// repeats a lookup — a paid request is made once, on one click.
-const READ_COMMANDS = new Set(['inspect_setup', 'read_overview', 'list_watches', 'search_targets', 'list_snapshots', 'compare_snapshots', 'read_snapshot', 'list_changes', 'inspect_service', 'inspect_home', 'lookup_profile', 'lookup_activity'])
-class ReadGate {
+// A paid lookup runs in the host's own network-read pool — one slot, separate
+// from the two storage-read slots — so it can never delay the overview poll or a
+// history page. One permit here means the window never even sends a second one
+// while the first is still out. It is a queue, not a retry: nothing in this
+// client ever repeats a lookup, because each one is charged.
+export const LOOKUP_SLOTS = 1
+const READ_COMMANDS = new Set(['inspect_setup', 'read_overview', 'list_watches', 'search_targets', 'list_snapshots', 'compare_snapshots', 'read_snapshot', 'list_changes', 'inspect_service', 'inspect_home'])
+const LOOKUP_COMMANDS = new Set(['lookup_profile', 'lookup_activity'])
+class Gate {
+  constructor(private readonly slots: number) {}
   private active = 0
   private readonly waiting: (() => void)[] = []
   async run<T>(work: () => Promise<T>): Promise<T> {
     // A waiter receives the finishing call's permit directly; the count only
-    // drops when nobody waits, so a third call can never slip in during hand-off.
-    if (this.active >= READ_SLOTS) await new Promise<void>(resolve => { this.waiting.push(resolve) })
+    // drops when nobody waits, so an extra call can never slip in during hand-off.
+    if (this.active >= this.slots) await new Promise<void>(resolve => { this.waiting.push(resolve) })
     else this.active++
     try { return await work() } finally { const next = this.waiting.shift(); if (next) next(); else this.active-- }
   }
@@ -82,7 +86,10 @@ function ref(value: WatchRef): WatchRef {
 function pk(value: string): string { if (!TARGET_PK.test(value)) throw new DesktopFailure('invalid_history_input'); return value }
 export class DesktopClient {
   constructor(private readonly invoke: Invoke) {}
-  private readonly gate = new ReadGate()
+  private readonly gate = new Gate(READ_SLOTS)
+  // Its own permit: a lookup must never hold a storage read's place, on either
+  // side of the bridge.
+  private readonly lookups = new Gate(LOOKUP_SLOTS)
   private async call(command: string, args?: Record<string, unknown>): Promise<unknown> {
     try { return args ? await this.invoke(command, args) : await this.invoke(command) }
     catch (error) { throw safeFailure(error) }
@@ -95,6 +102,7 @@ export class DesktopClient {
     return decode(response.data)
   }
   private read<T>(command: string, kind: string, decode: (data: unknown) => T, args?: Record<string, unknown>): Promise<T> {
+    if (LOOKUP_COMMANDS.has(command)) return this.lookups.run(() => this.exchange(command, kind, decode, args))
     return READ_COMMANDS.has(command) ? this.gate.run(() => this.exchange(command, kind, decode, args)) : this.exchange(command, kind, decode, args)
   }
   private readProfile(command: string, args?: Record<string, unknown>) { return this.read(command, 'profile', profile, args) }

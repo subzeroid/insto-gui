@@ -8,7 +8,18 @@ use tokio::time::Instant;
 struct State {
     closed: bool,
     reads: usize,
+    /// Paid provider reads. They have a slot of their own, capacity one, because
+    /// one of them can hold a child for seventy seconds: sharing the storage
+    /// reads' two slots would let two lookups freeze the overview poll, the
+    /// history and every other local read for that long.
+    network_reads: usize,
     mutations: usize,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Read,
+    Network,
+    Mutation,
 }
 pub struct Owner {
     launcher: TrustedLauncher,
@@ -19,17 +30,25 @@ pub struct Owner {
 }
 struct Admission {
     owner: Arc<Owner>,
-    mutation: bool,
+    slot: Slot,
 }
 impl Drop for Admission {
     fn drop(&mut self) {
         let mut state = self.owner.state.lock().unwrap_or_else(|e| e.into_inner());
-        if self.mutation {
-            state.mutations -= 1;
-        } else {
-            state.reads -= 1;
-        }
+        *state.counter(self.slot) -= 1;
         self.owner.changed.notify_waiters();
+    }
+}
+impl State {
+    fn counter(&mut self, slot: Slot) -> &mut usize {
+        match slot {
+            Slot::Read => &mut self.reads,
+            Slot::Network => &mut self.network_reads,
+            Slot::Mutation => &mut self.mutations,
+        }
+    }
+    fn busy(&self) -> usize {
+        self.reads + self.network_reads + self.mutations
     }
 }
 impl Owner {
@@ -44,6 +63,7 @@ impl Owner {
             state: Mutex::new(State {
                 closed: false,
                 reads: 0,
+                network_reads: 0,
                 mutations: 0,
             }),
             cancel,
@@ -54,29 +74,35 @@ impl Owner {
     /// operation until supervision completes even if the invoke future is dropped.
     pub async fn execute(self: &Arc<Self>, operation: Operation) -> Result<Response, HostError> {
         let mutation = operation.is_mutation();
+        let budget = operation.budget();
         let deadline = Instant::now()
-            + match operation.budget() {
+            + match budget {
                 crate::protocol::Budget::Read => self.policy.read,
                 crate::protocol::Budget::NetworkRead => self.policy.network_read,
                 crate::protocol::Budget::LocalMutation => self.policy.local_mutation,
                 crate::protocol::Budget::ServiceMutation => self.policy.mutation,
             };
+        // Three independent pools, so a paid read can never take a storage
+        // read's place, and a second one is refused at once rather than queued
+        // behind a seventy-second child.
+        let (slot, capacity) = match budget {
+            crate::protocol::Budget::Read => (Slot::Read, 2),
+            crate::protocol::Budget::NetworkRead => (Slot::Network, 1),
+            _ => (Slot::Mutation, 1),
+        };
         let admission = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
                 return Err(HostError::Closed);
             }
-            if (mutation && state.mutations == 1) || (!mutation && state.reads == 2) {
+            let counter = state.counter(slot);
+            if *counter == capacity {
                 return Err(HostError::Busy);
             }
-            if mutation {
-                state.mutations += 1;
-            } else {
-                state.reads += 1;
-            }
+            *counter += 1;
             Admission {
                 owner: self.clone(),
-                mutation,
+                slot,
             }
         };
         let (tx, rx) = oneshot::channel();
@@ -131,7 +157,7 @@ impl Owner {
             changed.as_mut().enable();
             {
                 let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                if state.reads + state.mutations == 0 {
+                if state.busy() == 0 {
                     return;
                 }
             }
@@ -352,6 +378,138 @@ mod tests {
             HostError::Closed
         );
         owner.shutdown().await;
+    }
+    #[tokio::test]
+    async fn a_paid_read_has_its_own_slot_and_never_takes_a_local_one() {
+        let _lock = crate::process::tests::FIXTURE_LOCK.lock().await;
+        let f = Fixture::new(&gated_response());
+        let owner = owner(&f);
+        // One paid read, held open by the fixture.
+        let mut lookup = tokio::spawn({
+            let o = owner.clone();
+            async move {
+                o.execute(Operation::LookupProfile {
+                    username: "alice".into(),
+                })
+                .await
+            }
+        });
+        ready(&f, "started-lookup.profile", &mut lookup).await;
+        // A second one is refused at once instead of queueing behind seventy
+        // seconds of provider round trip.
+        assert_eq!(
+            owner
+                .execute(Operation::LookupActivity {
+                    target_pk: "7".into(),
+                    window: 50,
+                })
+                .await
+                .unwrap_err(),
+            HostError::Busy
+        );
+        // Both storage read slots are still free, and a local read really
+        // completes while the paid one is still in flight.
+        let mut first = tokio::spawn({
+            let o = owner.clone();
+            async move { o.execute(Operation::SetupInspect).await }
+        });
+        let mut second = tokio::spawn({
+            let o = owner.clone();
+            async move { o.execute(Operation::SettingsInspect).await }
+        });
+        ready(&f, "started-setup.inspect", &mut first).await;
+        ready(&f, "started-settings.inspect", &mut second).await;
+        // Three children now, so the third storage read is the one that is busy.
+        assert_eq!(
+            owner.execute(Operation::Hello).await.unwrap_err(),
+            HostError::Busy
+        );
+        // A mutation has its own slot too and is unaffected by either pool.
+        let mut mutation = tokio::spawn({
+            let o = owner.clone();
+            async move { o.execute(Operation::ServiceStart).await }
+        });
+        ready(&f, "started-service.start", &mut mutation).await;
+        std::fs::write(f._dir.path().join("release"), "").unwrap();
+        assert!(first.await.unwrap().is_ok());
+        assert!(second.await.unwrap().is_ok());
+        assert!(mutation.await.unwrap().is_ok());
+        // The paid read's own answer is a lookup result the profile fixture
+        // cannot produce, so it fails the decode — what matters here is that it
+        // released its slot, which the next admission proves.
+        assert!(lookup.await.unwrap().is_err());
+        assert!(owner
+            .execute(Operation::LookupProfile {
+                username: "alice".into(),
+            })
+            .await
+            .is_err());
+        owner.shutdown().await;
+    }
+    #[tokio::test]
+    async fn network_read_uses_its_own_deadline_not_the_read_or_mutation_budget() {
+        let _lock = crate::process::tests::FIXTURE_LOCK.lock().await;
+        // Nothing here waits for the child: the deadline under test is shorter
+        // than a loaded machine's process startup, so observing a started child
+        // first would race the very deadline the test is about to assert on.
+        let f = Fixture::shell("sleep 120");
+        let owner = Owner::with_policy(
+            f.launcher.clone(),
+            Policy {
+                read: Duration::from_secs(120),
+                network_read: Duration::from_millis(400),
+                local_mutation: Duration::from_secs(120),
+                mutation: Duration::from_secs(120),
+            },
+        );
+        let start = Instant::now();
+        // A paid read changes nothing, so its failure is a transport failure and
+        // never an unknown outcome.
+        assert_eq!(
+            owner
+                .execute(Operation::LookupProfile {
+                    username: "alice".into(),
+                })
+                .await
+                .unwrap_err(),
+            HostError::Transport
+        );
+        // Only the network-read budget can have ended this: the child sleeps for
+        // two minutes and the other three budgets are just as long.
+        assert!(start.elapsed() < Duration::from_secs(20));
+        owner.shutdown().await;
+    }
+    #[tokio::test]
+    async fn closing_the_window_cancels_a_paid_read_in_flight() {
+        let _lock = crate::process::tests::FIXTURE_LOCK.lock().await;
+        let f = Fixture::new("open('started','w').close()\ntime.sleep(30)");
+        let owner = owner(&f);
+        let mut call = tokio::spawn({
+            let o = owner.clone();
+            async move {
+                o.execute(Operation::LookupActivity {
+                    target_pk: "7".into(),
+                    window: 50,
+                })
+                .await
+            }
+        });
+        ready(&f, "started", &mut call).await;
+        let start = Instant::now();
+        // The drain does not wait out the seventy-second budget: a read is
+        // cancelled, and its child is killed with its whole process group.
+        owner.shutdown().await;
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert_eq!(call.await.unwrap().unwrap_err(), HostError::Transport);
+        assert_eq!(
+            owner
+                .execute(Operation::LookupProfile {
+                    username: "alice".into(),
+                })
+                .await
+                .unwrap_err(),
+            HostError::Closed
+        );
     }
     #[tokio::test]
     async fn local_mutation_uses_its_own_deadline_not_the_read_or_service_budget() {

@@ -37,8 +37,12 @@ on-demand reads, so the ACL now allows twenty-eight commands. Both spend paid
 HikerAPI requests on one explicit click and neither writes anything, so they run
 in the host's third budget class, "network read" (70 seconds: the core's own
 60-second composite budget plus the host's margin for interpreter start and
-response drain). They hold a read slot, are cancelled when the window closes, and
-never go through a retry or a poll.
+response drain). That class has an admission slot of its own — one at a time,
+separate from the two storage-read slots — so a paid lookup can never delay the
+overview poll or a history page, and a second one is refused at once with `busy`
+rather than queued behind seventy seconds. They are still reads: cancelled when
+the window closes, never an unknown outcome, and never reached by a retry or a
+poll.
 
 Use the clean revision (insto 0.7.22) in `packaging/core-pin.json` as the read-only
 build input. The pin is `e871ea3e207cb78891b812480aa0a092d02d8402`: it adds
