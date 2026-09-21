@@ -129,7 +129,11 @@ export function decodeSnapshotFields(value: unknown): SnapshotFields {
   const raw = v.fields as Record<string, unknown>
   const names = Object.keys(raw)
   if (names.length > 64) fail()
-  const fields: Record<string, ChangeValue> = {}
+  // `FIELD` matches `__proto__`, and assigning it on an object that inherits
+  // `Object.prototype` is a silent no-op: the entry would vanish instead of being
+  // refused, and would also slip past the disjointness check below. A null
+  // prototype makes every accepted name an ordinary own property.
+  const fields: Record<string, ChangeValue> = Object.create(null)
   for (const name of names) fields[text(name, FIELD)] = changeValue(raw[name])
   const unknown = (v.unknown_fields as unknown[]).map(name => text(name, FIELD))
   if (unknown.some(name => Object.hasOwn(fields, name))) fail()

@@ -7,6 +7,8 @@ export const watch = { user: 'alice', status: 'active', interval_seconds: 300, l
 export const overview = { configured: true, desired_service: 'running', service_state: 'unknown', quota_remaining: 8, quota_checked_at: 100, watches: [watch], next_cursor: null }
 const snap = (id: string, pk: string, at: number) => ({ id, target_pk: pk, captured_at: at })
 const page = (items: unknown[], cursor: string | null = null, scanned = items.length) => ({ items, next_cursor: cursor, scan_complete: cursor === null, scanned })
+// Distinct names the `FIELD` pattern accepts — lowercase letters, no digits.
+const names = (count: number) => Array.from({ length: count }, (_, index) => String.fromCharCode(97 + Math.floor(index / 26)) + String.fromCharCode(97 + (index % 26)))
 
 describe('bridge decoders', () => {
   it('accepts canonical watches and overviews', () => {
@@ -72,7 +74,21 @@ describe('bridge decoders', () => {
       { ...example, unknown_fields: ['username'] },                             // known and unknown at once
       { ...example, unknown_fields: {} },
       { ...example, snapshot: { id: '0', target_pk: '7', captured_at: 1 } },
+      // `FIELD` matches `__proto__`; it must be refused as a duplicate rather than
+      // silently swallowed by the prototype chain.
+      { ...example, fields: JSON.parse('{"__proto__": 1}'), unknown_fields: ['__proto__'] },
+      // The two collections are bounded at 64 entries each.
+      { ...example, fields: Object.fromEntries(names(65).map(name => [name, 1])), unknown_fields: [] },
+      { ...example, unknown_fields: names(65) },
     ]) expect(() => decodeSnapshotFields(bad)).toThrow()
+    // Accepted, and an own property rather than a write into the prototype chain.
+    const hostile = decodeSnapshotFields({ ...example, fields: JSON.parse('{"__proto__": "x"}'), unknown_fields: [] })
+    expect(Object.hasOwn(hostile.fields, '__proto__')).toBe(true)
+    expect(Object.keys(hostile.fields)).toEqual(['__proto__'])
+    expect(Object.getPrototypeOf({}).toString).toBeTypeOf('function')
+    // Exactly 64 of each is still fine.
+    expect(Object.keys(decodeSnapshotFields({ ...example, fields: Object.fromEntries(names(64).map(name => [name, 1])), unknown_fields: [] }).fields)).toHaveLength(64)
+    expect(decodeSnapshotFields({ ...example, unknown_fields: names(64) }).unknown_fields).toHaveLength(64)
   })
   it('bounds change values and comparison identity', () => {
     // compare_snapshots data has no inner kind (the IPC envelope carries it); feed items do.

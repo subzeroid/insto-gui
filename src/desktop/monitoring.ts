@@ -102,6 +102,9 @@ export function createMonitoringState(client: DesktopClient, options: Monitoring
     } finally { state.busy = false }
   }
   return {
+    // The window's one definition of "the user can see this": the overview poll
+    // skips a hidden tick, and so must anything else that reads on a timer.
+    visible,
     state, selected, refresh, reconcile, start, stop, reset,
     select(user: string | null) { state.selectedUser = user },
     add: (user: string, interval: number) => mutate(() => client.addWatch(user, interval)),

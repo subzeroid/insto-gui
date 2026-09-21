@@ -90,7 +90,9 @@ export function createHistoryState(client: DesktopClient) {
   async function refreshProfile() {
     const pk = state.targetPk, newest = state.snapshots.items[0] ?? null
     if (pk === null || newest === null) { profileGeneration++; state.profile = emptyProfile(); return }
-    if (state.profile.snapshotId === newest.id) return
+    // One read per newest snapshot id — but a failed one is not sticky: the next
+    // reload retries it rather than leaving the message until a new check lands.
+    if (state.profile.snapshotId === newest.id && state.profile.error === null) return
     profileGeneration++
     const expected = profileGeneration
     state.profile = { ...emptyProfile(), snapshotId: newest.id }

@@ -1,5 +1,6 @@
 //! Real-bridge proof against the prepared runtime. Set
-//! `INSTO_GUI_RUNTIME=/abs/path/.build/runtime-c2-01`; otherwise the test skips.
+//! `INSTO_GUI_RUNTIME=/abs/path/.build/runtime-first-check`; otherwise the test
+//! skips.
 use insto_desktop_host::{
     owner::Owner,
     process::TrustedLauncher,

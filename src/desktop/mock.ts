@@ -112,6 +112,7 @@ const ACCOUNTS: DemoAccount[] = [
       username: 'cobalt.harbor', full_name: 'Cobalt Harbor', biography: 'Cranes, containers, cold light.',
       external_url: 'https://example.com/cobalt-harbor', is_verified: false, is_business: true, is_private: false,
       follower_count: 96_310, following_count: 341, media_count: 1_204,
+      public_email: 'press@example.com', public_phone: null, business_category: 'Shipping & Freight',
       avatar: hex('cobalt-avatar', 16), banner: hex('cobalt-banner-before', 16),
     },
     steps: [
@@ -234,6 +235,7 @@ function inventedProfile(user: string): Fields {
     full_name: user.split('.').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' '),
     biography: 'Added in the demo window; this is the first saved snapshot.',
     external_url: null, is_verified: false, is_business: false, is_private: false,
+    public_email: null, public_phone: null, business_category: null,
     follower_count: 1_200 + spread('followers', 40_000),
     following_count: 80 + spread('following', 900),
     media_count: 12 + spread('media', 500),
@@ -310,6 +312,13 @@ export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
   let feed: HistoryItem[] = FEED
   let nextPk = 90_000_000_000
   let nextSnapshotId = 100_000 + TOTAL_SNAPSHOTS
+  // Pending first checks, so a watch removed before its check lands — or one
+  // re-added — never leaves a timer running against a discarded mock.
+  const pendingChecks = new Map<string, ReturnType<typeof setTimeout>>()
+  function cancelCheck(user: string): void {
+    const timer = pendingChecks.get(user)
+    if (timer !== undefined) { clearTimeout(timer); pendingChecks.delete(user) }
+  }
   const nextRevision = (user: string) => hex(`${user}:${++revisions}`, 64)
   const watches = new Map<string, Watch>(ACCOUNTS.map(account => {
     const snapshots = snapshotsByPk.get(account.pk)!
@@ -342,6 +351,7 @@ export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
   // registration that is no longer waiting. A watch removed in the meantime, or a
   // name that already has a demo history, gets nothing.
   function firstCheck(user: string): void {
+    pendingChecks.delete(user)
     const current = watches.get(user)
     if (current === undefined || byUser.has(user)) return
     const pk = String(nextPk++)
@@ -399,7 +409,8 @@ export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
           last_ok: null, waiting_first_check: true, has_error: false, consecutive_errors: 0, revision: nextRevision(user),
         }
         watches.set(user, watch)
-        setTimeout(() => firstCheck(user), MOCK_FIRST_CHECK_MS)
+        cancelCheck(user)
+        pendingChecks.set(user, setTimeout(() => firstCheck(user), MOCK_FIRST_CHECK_MS))
         return envelope('watch', watch)
       }
       case 'update_watch': return touch(text(args, 'watch', 'user'), watch => ({ ...watch, interval_seconds: number(args, 'watch', 'interval_seconds') ?? watch.interval_seconds }))
@@ -408,6 +419,7 @@ export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
       case 'remove_watch': {
         const user = text(args, 'watch', 'user') ?? ''
         if (!watches.delete(user)) throw new DesktopFailure('watch_not_found')
+        cancelCheck(user)
         return envelope('removed', { removed_user: user })
       }
 

@@ -1,5 +1,5 @@
 //! Real-bridge proof for the five C3 operations against the prepared 0.7.22
-//! runtime. Set `INSTO_GUI_RUNTIME=/abs/path/.build/runtime-c3-01`; otherwise
+//! runtime. Set `INSTO_GUI_RUNTIME=/abs/path/.build/runtime-first-check`; otherwise
 //! the test skips.
 //!
 //! It installs no LaunchAgent and mutates no launchd state: every registration
@@ -11,8 +11,8 @@ use insto_desktop_host::{
     owner::Owner,
     process::TrustedLauncher,
     protocol::{
-        Backend, ConfigState, DatabaseState, DesiredService, ProcessState, Reason, Registration,
-        ServiceState, Status, CAPABILITIES, CORE_VERSION,
+        Backend, ChangeValue, ConfigState, DatabaseState, DesiredService, HistoryItem,
+        ProcessState, Reason, Registration, ServiceState, Status, CAPABILITIES, CORE_VERSION,
     },
     Operation, Response,
 };
@@ -34,11 +34,15 @@ fn script(name: &str) -> PathBuf {
 }
 
 fn seed_desktop(python: &Path, root: &Path) {
+    seed_desktop_rows(python, root, "[]");
+}
+
+fn seed_desktop_rows(python: &Path, root: &Path, rows: &str) {
     let output = Command::new(python)
         .args(["-I", "-B"])
         .arg(script("seed_desktop_fixture.py"))
         .arg(root)
-        .arg("[]")
+        .arg(rows)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root)
@@ -89,6 +93,181 @@ fn private_dir(path: &Path) -> PathBuf {
     std::fs::create_dir(path).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     path.to_path_buf()
+}
+
+/// `snapshots.read` against the live bridge: the decoder is otherwise only
+/// proven against the documented shape. One happy path over a seeded snapshot
+/// and the two refusals the window has to render.
+#[tokio::test]
+async fn snapshots_read_returns_the_seeded_fields() {
+    let Some(runtime) = std::env::var_os("INSTO_GUI_RUNTIME") else {
+        eprintln!("skipped: INSTO_GUI_RUNTIME is not set");
+        return;
+    };
+    let python = PathBuf::from(runtime)
+        .join("python/bin/python3")
+        .canonicalize()
+        .expect("INSTO_GUI_RUNTIME must contain python/bin/python3");
+    let dir = tempfile::Builder::new()
+        .prefix("insto-gui-read-")
+        .tempdir()
+        .unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let root = private_dir(&base.join("root"));
+    // Two PKs: one snapshot carrying every tracked field the window renders, one
+    // that omits three of them, and a third under another PK for the mismatch.
+    let rows = serde_json::json!([
+        {"pk": "7", "stamp": 1, "fields": {
+            "username": "alice", "full_name": "Alice Harbour", "biography": "Night ferries.",
+            "external_url": "https://example.com/alice", "is_verified": true, "is_business": false,
+            "is_private": false, "follower_count": 18507, "following_count": 809, "media_count": 423,
+            "public_email": "alice@example.com", "public_phone": "", "business_category": "Photographer"
+        }},
+        {"pk": "7", "stamp": 2, "fields": {"username": "alice", "follower_count": 18600, "biography": ""}},
+        {"pk": "8", "stamp": 3, "fields": {"username": "bob", "follower_count": 1}},
+    ]);
+    seed_desktop_rows(&python, &root, &rows.to_string());
+    let owner = Owner::new(TrustedLauncher::new(&root, &python, &root).unwrap());
+
+    let Response::Hello(hello) = call(&owner, Operation::Hello).await else {
+        panic!("hello")
+    };
+    assert_eq!(hello.capabilities.len(), CAPABILITIES.len());
+    assert!(hello.capabilities.iter().any(|c| c == "snapshots.read"));
+
+    let ids = |page: Response| match page {
+        Response::HistoryPage(page) => page
+            .items
+            .iter()
+            .map(|item| match item {
+                HistoryItem::Snapshot { snapshot } => snapshot.id.clone(),
+                other => panic!("{other:?}"),
+            })
+            .collect::<Vec<String>>(),
+        other => panic!("{other:?}"),
+    };
+    let seven = ids(call(
+        &owner,
+        Operation::SnapshotsList {
+            target_pk: "7".into(),
+            limit: None,
+            cursor: None,
+        },
+    )
+    .await);
+    assert_eq!(seven.len(), 2);
+    // The list is newest first, so the complete snapshot is the older of the two.
+    let complete = seven[1].clone();
+
+    let Response::SnapshotFields(full) = call(
+        &owner,
+        Operation::SnapshotsRead {
+            target_pk: "7".into(),
+            snapshot_id: complete.clone(),
+        },
+    )
+    .await
+    else {
+        panic!("snapshots.read")
+    };
+    assert_eq!(full.snapshot.id, complete);
+    assert_eq!(full.snapshot.target_pk, "7");
+    assert!(full.unknown_fields.is_empty());
+    // The thirteen tracked names plus `avatar`/`banner`, typed as the comparison
+    // reports them: text, bool, integer and null all survive the round trip.
+    assert_eq!(full.fields.len(), 15);
+    assert!(matches!(&full.fields["username"], ChangeValue::Text(user) if user == "alice"));
+    assert!(matches!(
+        full.fields["is_verified"],
+        ChangeValue::Bool(true)
+    ));
+    assert!(matches!(
+        full.fields["is_private"],
+        ChangeValue::Bool(false)
+    ));
+    assert!(matches!(
+        full.fields["follower_count"],
+        ChangeValue::Integer(18507)
+    ));
+    assert!(
+        matches!(&full.fields["public_email"], ChangeValue::Text(mail) if mail == "alice@example.com")
+    );
+    assert!(matches!(&full.fields["public_phone"], ChangeValue::Text(phone) if phone.is_empty()));
+    assert!(matches!(full.fields["avatar"], ChangeValue::Null));
+    assert!(matches!(full.fields["banner"], ChangeValue::Null));
+
+    // The second snapshot left most names unset. The fixture seeder stores an
+    // explicit null for each of them, so the core reports them as *known* nulls
+    // rather than as unknown fields — which is the distinction the card turns
+    // into "no value" instead of leaving the row out. A snapshot whose stored
+    // JSON omits a key altogether cannot be produced by this seeder, so the
+    // `unknown_fields` branch stays covered by the unit tests.
+    let Response::SnapshotFields(sparse) = call(
+        &owner,
+        Operation::SnapshotsRead {
+            target_pk: "7".into(),
+            snapshot_id: seven[0].clone(),
+        },
+    )
+    .await
+    else {
+        panic!("snapshots.read")
+    };
+    assert!(sparse.unknown_fields.is_empty());
+    assert_eq!(sparse.fields.len(), 15);
+    assert!(matches!(
+        sparse.fields["follower_count"],
+        ChangeValue::Integer(18600)
+    ));
+    assert!(matches!(&sparse.fields["biography"], ChangeValue::Text(bio) if bio.is_empty()));
+    assert!(matches!(sparse.fields["full_name"], ChangeValue::Null));
+    assert!(matches!(sparse.fields["is_verified"], ChangeValue::Null));
+    // Every name the two snapshots report is the same set, and the decoder keeps
+    // a name out of `fields` exactly when it is in `unknown_fields`.
+    assert!(sparse.fields.keys().eq(full.fields.keys()));
+    assert!(sparse
+        .unknown_fields
+        .iter()
+        .all(|name| !sparse.fields.contains_key(name)));
+
+    // A snapshot that is not there, and one that belongs to another PK.
+    assert_eq!(
+        error_code(
+            &call(
+                &owner,
+                Operation::SnapshotsRead {
+                    target_pk: "7".into(),
+                    snapshot_id: "999999".into(),
+                }
+            )
+            .await
+        ),
+        "snapshot_unavailable"
+    );
+    let eight = ids(call(
+        &owner,
+        Operation::SnapshotsList {
+            target_pk: "8".into(),
+            limit: None,
+            cursor: None,
+        },
+    )
+    .await);
+    assert_eq!(
+        error_code(
+            &call(
+                &owner,
+                Operation::SnapshotsRead {
+                    target_pk: "7".into(),
+                    snapshot_id: eight[0].clone(),
+                }
+            )
+            .await
+        ),
+        "snapshot_identity_mismatch"
+    );
+    owner.shutdown().await;
 }
 
 #[tokio::test]

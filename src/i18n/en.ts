@@ -192,6 +192,7 @@ export const en = {
   'changes.unknown_fields': 'Fields with no data in the older snapshot (unknown): {fields}.',
 
   // The profile as of the newest saved snapshot.
+  'profile.title': 'Profile at the last check',
   'profile.loading': 'Reading the profile…',
   'profile.as_of': 'As of {time}',
   'profile.badge_verified': 'Verified',
@@ -363,6 +364,9 @@ export const en = {
   'field.follower_count': 'Followers',
   'field.following_count': 'Following',
   'field.media_count': 'Posts',
+  'field.public_email': 'Public email',
+  'field.public_phone': 'Public phone',
+  'field.business_category': 'Business category',
   'field.avatar': 'Avatar (hash)',
   'field.banner': 'Banner (hash)',
 } as const

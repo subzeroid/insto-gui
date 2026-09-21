@@ -60,6 +60,28 @@ describe('history state', () => {
     expect(invoke.mock.calls.map(call => call[0])).toEqual(['search_targets', 'list_snapshots', 'read_snapshot', 'compare_snapshots', 'list_snapshots'])
     expect(history.state.profile.error).toBeNull(); expect(history.state.profile.value?.snapshot.id).toBe('2')
   })
+  it('retries a failed profile read when the list is reloaded under the same newest snapshot', async () => {
+    // The one path where "one read per newest id" could strand an error: the
+    // retention reload keeps snapshot 3 at the head, so the skip would otherwise
+    // leave the failure on screen until a new check lands.
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(envelope('history_page', page([target('7', '3', 3)])))
+      .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('1', '7', 1)])))
+      .mockResolvedValueOnce(envelope('error', { code: 'history_corrupt', message: 'x', retryable: false }))
+      .mockResolvedValueOnce(envelope('error', { code: 'snapshot_unavailable', message: 'x', retryable: false }))
+      .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('2', '7', 2)])))
+      .mockResolvedValueOnce(fields('3', '7', 3))
+      .mockResolvedValueOnce(envelope('comparison', { ...bare, older: snap('2', '7', 2), newer: snap('3', '7', 3) }))
+    const history = createHistoryState(new DesktopClient(invoke))
+    await history.load('alice')
+    expect(invoke.mock.calls.map(call => call[0])).toEqual([
+      'search_targets', 'list_snapshots', 'read_snapshot', 'compare_snapshots', 'list_snapshots', 'read_snapshot', 'compare_snapshots',
+    ])
+    expect(history.state.profile.error).toBeNull()
+    expect(history.state.profile.value?.snapshot.id).toBe('3')
+    // The card recovered without disturbing the comparison that follows it.
+    expect(history.state.comparison.value?.newer.id).toBe('3')
+  })
   it('the feed keeps continuation across an empty page and supports a PK filter', async () => {
     const invoke = vi.fn()
       .mockResolvedValueOnce(envelope('history_page', page([], 'cursor-1', 200)))

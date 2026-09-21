@@ -6,7 +6,9 @@ import { localeTag, t } from '../i18n'
 const FIELDS = [
   'username', 'full_name', 'biography', 'external_url',
   'is_verified', 'is_business', 'is_private',
-  'follower_count', 'following_count', 'media_count', 'avatar', 'banner',
+  'follower_count', 'following_count', 'media_count',
+  'public_email', 'public_phone', 'business_category',
+  'avatar', 'banner',
 ] as const
 type Field = (typeof FIELDS)[number]
 const KNOWN: ReadonlySet<string> = new Set(FIELDS)

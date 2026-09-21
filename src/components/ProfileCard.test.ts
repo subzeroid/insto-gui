@@ -6,13 +6,15 @@ import { DesktopFailure } from '../desktop/messages'
 import { formatCount, localTime } from '../desktop/format'
 import { t } from '../i18n'
 
-const card = (value: ReturnType<typeof profileFields> | null, loading = false, error: DesktopFailure | null = null) =>
-  mount(ProfileCard, { props: { profile: { value, loading, error } } })
+const card = (value: ReturnType<typeof profileFields> | null, loading = false, error: DesktopFailure | null = null, watchUser = 'alice') =>
+  mount(ProfileCard, { props: { profile: { value, loading, error }, watchUser } })
 
 describe('profile card', () => {
   it('shows the account, its counts and the time of the snapshot it came from', () => {
     const wrapper = card(profileFields('4102', '7', 1_770_000_000))
-    expect(wrapper.get('.profile-user').text()).toBe('@alice')
+    // The details heading already says "@alice"; the card does not repeat it.
+    expect(wrapper.find('.profile-user').exists()).toBe(false)
+    expect(wrapper.get('.profile-card').attributes('aria-label')).toBe(t('profile.title'))
     expect(wrapper.get('.profile-name').text()).toBe('Alice Harbour')
     expect(wrapper.text()).toContain('Night ferries and harbour light.')
     expect(wrapper.findAll('.profile-counts dt').map(node => node.text())).toEqual(['Followers', 'Following', 'Posts'])
@@ -24,6 +26,21 @@ describe('profile card', () => {
     expect(wrapper.find('img').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('a'.repeat(64))
     expect(wrapper.find('.profile-badges').exists()).toBe(false)
+  })
+  it('names the account only when the snapshot disagrees with the selected watch', () => {
+    // A rename: the saved snapshot still carries the old name, so the card says so.
+    const renamed = card(profileFields('1', '7', 1, { username: 'alice.harbour' }))
+    expect(renamed.get('.profile-user').text()).toBe('@alice.harbour')
+    // An unknown username is not invented.
+    expect(card(profileFields('1', '7', 1, {}, ['username'])).find('.profile-user').exists()).toBe(false)
+  })
+  it('shows every remaining field the core tracks', () => {
+    const wrapper = card(profileFields('1', '7', 1, { public_email: 'hello@example.com', public_phone: '', business_category: 'Photographer' }))
+    expect(wrapper.findAll('.profile-text dt').map(node => node.text()))
+      .toEqual(['Bio', 'Link in the profile', 'Public email', 'Public phone', 'Business category'])
+    expect(wrapper.text()).toContain('hello@example.com')
+    expect(wrapper.text()).toContain('Photographer')
+    expect(wrapper.text()).toContain(t('format.empty'))
   })
   it('renders a quiet badge for each flag that is true', () => {
     const wrapper = card(profileFields('1', '7', 1, { is_verified: true, is_business: true }))
@@ -48,5 +65,7 @@ describe('profile card', () => {
     expect(failed.find('.profile-counts').exists()).toBe(false)
     // Nothing to read, nothing in flight, nothing wrong: no empty frame.
     expect(card(null).find('.profile-card').exists()).toBe(false)
+    // Even with nothing to head it, the landmark is named.
+    expect(card(null, true).get('.profile-card').attributes('aria-label')).toBe(t('profile.title'))
   })
 })

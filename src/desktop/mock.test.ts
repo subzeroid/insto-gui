@@ -117,6 +117,19 @@ describe('mock desktop', () => {
       expect((await client().searchTargets('quillon.works')).items).toHaveLength(0)
     } finally { vi.useRealTimers() }
   })
+  it('leaves no pending check behind for a watch removed before it lands', async () => {
+    vi.useFakeTimers()
+    try {
+      const desktop = client()
+      const added = await desktop.addWatch('quillon.works', 900)
+      expect(vi.getTimerCount()).toBe(1)
+      await desktop.removeWatch(added)
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(MOCK_FIRST_CHECK_MS)
+      expect((await desktop.overview()).watches.some(item => item.user === 'quillon.works')).toBe(false)
+      expect((await desktop.searchTargets('quillon.works')).items).toHaveLength(0)
+    } finally { vi.useRealTimers() }
+  })
   it('builds a non-trivial change feed that filters by account', async () => {
     const desktop = client()
     const feed = await desktop.listChanges()

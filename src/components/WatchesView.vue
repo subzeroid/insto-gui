@@ -26,29 +26,33 @@ function select(user: string) {
 }
 // The service checks a newly added account right away, so the window watches for
 // that first snapshot instead of leaving an empty pane until the next interval.
-// Both reads are local — reading the overview and the saved history makes no
-// HikerAPI request.
+// It only re-reads the saved history: `monitoring` already polls `read_overview`
+// on this same five-second cadence, so a tick adds exactly one local read and no
+// second overview. Neither read reaches HikerAPI.
 const FIRST_CHECK_POLL_MS = 5000
 const awaitingFirstCheck = computed(() => {
   const selected = props.monitoring.selected.value
-  return selected !== null && selected.status === 'active' && (selected.waiting_first_check || selected.last_ok === null)
+  // A watch that has already failed is not waiting for a check that is running:
+  // the details line says so, and the poll must agree with it.
+  return selected !== null && selected.status === 'active' && !selected.has_error
+    && (selected.waiting_first_check || selected.last_ok === null)
     && props.history.state.snapshots.items.length === 0
 })
 let firstCheckTimer: ReturnType<typeof setInterval> | null = null
+let firstCheckBusy = false
 function stopFirstCheckPoll() { if (firstCheckTimer !== null) { clearInterval(firstCheckTimer); firstCheckTimer = null } }
 async function pollFirstCheck() {
-  const before = props.monitoring.selected.value
-  if (before === null) return
-  const { user, last_ok: lastOk } = before
-  await props.monitoring.reconcile()
-  const after = props.monitoring.selected.value
-  // A check that landed changes `last_ok`, and the selection watcher above already
-  // reloads the history for that; only an unchanged overview needs this read.
-  if (after !== null && after.user === user && after.last_ok === lastOk) await props.history.reload()
+  // One tick at a time: a history read is a chain of up to three bridge calls and
+  // can outlast the interval, and the client's read gate has no bounded queue.
+  // The same predicate `monitoring` uses keeps a hidden window quiet.
+  if (firstCheckBusy || !props.monitoring.visible() || props.history.state.username === null) return
+  firstCheckBusy = true
+  try { await props.history.reload() } finally { firstCheckBusy = false }
 }
-// The timer exists exactly while the condition holds: a paused, removed, checked
-// or deselected watch clears it, and so does unmounting.
-observe(awaitingFirstCheck, waiting => {
+// The timer exists exactly while the condition holds, and restarts for a new
+// selection: a paused, failing, removed, checked or deselected watch clears it,
+// and so does unmounting.
+observe([awaitingFirstCheck, () => props.monitoring.selected.value?.user ?? null], ([waiting]) => {
   stopFirstCheckPoll()
   if (waiting) firstCheckTimer = setInterval(() => { void pollFirstCheck() }, FIRST_CHECK_POLL_MS)
 }, { immediate: true })
@@ -68,7 +72,7 @@ onUnmounted(stopFirstCheckPoll)
         <AddWatchForm :busy="busy || state.stale" :add="monitoring.add" />
       </div>
       <div class="pane details-pane">
-        <WatchDetails v-if="monitoring.selected.value" :watch="monitoring.selected.value" :busy="busy" :stale="state.stale" :history="history" :pause="monitoring.pause" :resume="monitoring.resume" :update="monitoring.update" :remove="monitoring.remove" @show-changes="pk => emit('show-changes', pk)" />
+        <WatchDetails v-if="monitoring.selected.value" :watch="monitoring.selected.value" :service-state="state.overview.service_state" :busy="busy" :stale="state.stale" :history="history" :pause="monitoring.pause" :resume="monitoring.resume" :update="monitoring.update" :remove="monitoring.remove" @show-changes="pk => emit('show-changes', pk)" />
         <p v-else class="empty">{{ t('watches.no_selection') }}</p>
       </div>
     </div>

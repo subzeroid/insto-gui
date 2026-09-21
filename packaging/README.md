@@ -25,21 +25,27 @@ reconciles with one read after every mutation; it never replays a mutation.
 
 G2 adds six more on the C3 bridge: `inspect_service`, `migrate_service`,
 `uninstall_service`, `inspect_home`, `select_home` and `inspect_binding`, so the
-ACL allows twenty-five of the twenty-six commands the app now has. Five of them
-reach the core; the sixth does not. `inspect_binding` is a host-local read of `<desktop root>/desktop-home.json`
+ACL now allows twenty-six commands. Five of the six reach the core; the sixth
+does not. `inspect_binding` is a host-local read of `<desktop root>/desktop-home.json`
 through `crates/desktop-host/src/binding.rs`, the only reader of that file, which
 is why a broken binding can still be released after the first core inspection has
 failed. Anything that file cannot be fully trusted to say is reported as an
 unknown binding, and an unknown binding makes every service control read-only.
 
 Use the clean revision (insto 0.7.22) in `packaging/core-pin.json` as the read-only
-build input. The pin moved to `51103f275ea1ac1881f7aacef76f9ba685334890` for R1's
-first-check work, which adds `snapshots.read` as the twenty-fifth capability; the
-staged runtime in `.build/app-resources/runtime` predates that pin and has to be
-prepared again before a bundle is built. After preparing a new runtime, stage it with:
+build input. The pin is `51103f275ea1ac1881f7aacef76f9ba685334890`, which adds
+`snapshots.read` as the twenty-fifth capability. `.build/runtime-first-check` was
+prepared from a plain clone of that exact commit in `.build-core-first-check/` and
+staged into `.build/app-resources/runtime`; its build id is
+`58ca1fffd821adc9dba294922fe2c2b22be5732f31cba5d6198143e15f1ae94d`, and its bridge
+advertises the twenty-five pinned capabilities in the pinned order. A runtime
+prepared from an earlier pin cannot be used: the host's `hello` check demands
+exactly the pinned list, so a 24-capability bridge fails to prepare the desktop.
+
+Build from the staged runtime with:
 
 ```sh
-python3 -B -m scripts.stage_app_runtime .build/runtime-c3-01
+python3 -B -m scripts.stage_app_runtime .build/runtime-first-check
 npm ci --ignore-scripts
 npm test
 npm run build
@@ -80,13 +86,15 @@ G2 adds the five C3 operations on the 0.7.22 bridge: `service.inspect`,
 `.build/runtime-c3-01` was prepared with `scripts.prepare_runtime` from insto
 `3d2c8e7a512625c21e0e1b47c22ec14eea5da19d` (0.7.22); its manifest validated
 against the pin of the day, and its bridge advertised the twenty-four capabilities
-that pin listed. Staged into `.build/app-resources/runtime` (build id
-`4df54faceb61d38bd33ba2498d021384c5236d82a2431dbd932db4bee5ba7d60`). The
-retained 0.7.21 runtime `.build/runtime-c2-01` in the app-shell worktree is the
-"previous version" the native migration proof starts from; it is kept, never
-deleted. Gated bridge tests now need `INSTO_GUI_RUNTIME=$PWD/.build/runtime-c3-01`
-— the host rejects a 0.7.21 handshake. Developer evidence only, not a release
-artifact.
+that pin listed. It was the staged runtime for G2 — build id
+`4df54faceb61d38bd33ba2498d021384c5236d82a2431dbd932db4bee5ba7d60` — and has since
+been superseded by `.build/runtime-first-check` (see above), which is what
+`.build/app-resources/runtime` now holds. The retained 0.7.21 runtime
+`.build/runtime-c2-01` in the app-shell worktree is the "previous version" the
+native migration proof starts from; it is kept, never deleted. Gated bridge tests
+need `INSTO_GUI_RUNTIME=$PWD/.build/runtime-first-check` — the host rejects both a
+0.7.21 handshake and a 24-capability 0.7.22 one. Developer evidence only, not a
+release artifact.
 
 ## G2 developer fixtures and proof modes
 

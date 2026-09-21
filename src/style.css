@@ -65,7 +65,7 @@ footer { display: flex; gap: 8px; align-items: center; padding: 17px 28px; color
 .pair-pickers { display: flex; gap: 14px; flex-wrap: wrap; margin: 12px 0; }
 .changes div { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid #252d37; font-size: 12px; }
 .changes .old { color: #8c97a5; text-decoration: line-through; } .changes .new { color: #d3dde9; }
-.profile-card { border: 1px solid #28313b; border-radius: 9px; padding: 14px 16px; margin: 0 0 24px; }
+.profile-card { border: 1px solid #28313b; border-radius: 9px; padding: 16px 18px; margin: 22px 0 26px; }
 .profile-card .notice, .profile-card .loading { margin: 0; }
 .profile-user { font-size: 15px; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
 .profile-name { color: #b5c7d7; font-size: 13px; margin: 4px 0 0; overflow-wrap: anywhere; }
