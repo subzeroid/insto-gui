@@ -680,3 +680,15 @@ Every gate line in both `evidence-<target>` artifacts is `pass`; the native `mig
 `adopt` proofs report `passed`, `cleanup_confirmed` and `app_group_cleaned` true; the DMG
 hashes equal the published `SHA256SUMS`.
 
+
+Upgrade check on a developer Mac (arm64, macOS 26.6.2, Homebrew 7.0.4) with a connected
+HikerAPI token and a running watch service: `brew upgrade --cask subzeroid/tap/insto` took the
+installed 0.1.1 to 0.2.0 (the cask's sha256 is the `SHA256SUMS` value above); after
+`xattr -dr com.apple.quarantine /Applications/insto.app` the app launched, published runtime
+`375c51ed5d1f…` — the build id of the aarch64 row above — and moved its own watch service onto
+it from a locally staged runtime within seconds, the service coming back under a new pid with
+its registration pointing at the new runtime. The same profile had gone through four earlier
+runtimes that day (0.1.1, 0.1.3-era and two local builds) the same way. On that store the
+service log reads "no changes" for a watched account on every 300 s check since the core's
+stable picture hashes, where every check used to report an avatar change. Still not recorded:
+the *Open Anyway* path through System Settings on a first launch.
