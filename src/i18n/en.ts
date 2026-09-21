@@ -190,6 +190,9 @@ export const en = {
   'changes.more': 'Show more',
   'changes.complete': 'The feed has been scanned to the end of the saved history.',
   'changes.unknown_fields': 'Fields with no data in the older snapshot (unknown): {fields}.',
+  'changes.media_added': 'Added',
+  'changes.media_removed': 'Removed',
+  'changes.media_replaced': 'Replaced with a new one',
 
   // The profile as of the newest saved snapshot.
   'profile.title': 'Profile at the last check',
@@ -368,6 +371,6 @@ export const en = {
   'field.public_email': 'Public email',
   'field.public_phone': 'Public phone',
   'field.business_category': 'Business category',
-  'field.avatar': 'Avatar (hash)',
-  'field.banner': 'Banner (hash)',
+  'field.avatar': 'Profile picture',
+  'field.banner': 'Banner',
 } as const
