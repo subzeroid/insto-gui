@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HOME_REASONS, RESPONSE_PATH_LIMIT, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeOverview, decodeServiceFacts, decodeSnapshotFields, decodeWatch, decodeWatchPage, CHANGE_KINDS, SNAPSHOT_KINDS, TARGET_KINDS } from './dto'
+import { HOME_REASONS, LOOKUP_FIELDS, RESPONSE_PATH_LIMIT, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeLookupActivity, decodeLookupProfile, decodeOverview, decodeServiceFacts, decodeSnapshotFields, decodeWatch, decodeWatchPage, CHANGE_KINDS, SNAPSHOT_KINDS, TARGET_KINDS } from './dto'
 import { ERROR_CODES } from './messages'
 import { adoptedBinding, current, expandedPath, facts, foreign, homeAdoptable, homeCliOwned, homeInvalidConfig, homeMissing, homeNotPrivate, homeRejected, homeSchemaMismatch, homeUnsupportedBackend, ownBinding, serviceForeign, serviceNone, serviceNoneStopped, serviceOwnedCurrent, serviceOwnedOther, serviceRejected, unknownBinding, unregistered, wire } from './fixtures'
 
@@ -181,6 +181,162 @@ describe('bridge decoders', () => {
       { state: 'adopted', home: `/${'ä'.repeat(RESPONSE_PATH_LIMIT / 2)}` },
       { state: 'own' }, { state: 'own', home: null, uid: 501 },
     ]) expect(() => decodeBinding(bad)).toThrow(expect.objectContaining({ code: 'protocol' }))
+  })
+  it('accepts the live profile a lookup answers with and refuses anything else', () => {
+    // The example from the core's own fake-backend test of `lookup.profile`.
+    const example = {
+      target_pk: '17841400000000001', access: 'public',
+      fields: {
+        username: 'alice', full_name: 'Alice Example', biography: 'bio line',
+        external_url: 'https://example.test/alice', is_verified: true, is_business: false,
+        is_private: false, follower_count: 1200, following_count: 300, media_count: 87,
+        public_email: 'alice@example.test', public_phone: null, business_category: null,
+      },
+      unknown_fields: [] as string[], quota_remaining: 4211,
+    }
+    const decoded = decodeLookupProfile(example)
+    expect(decoded.access).toBe('public')
+    expect(decoded.fields.follower_count).toBe(1200)
+    expect(decoded.fields.public_phone).toBeNull()
+    expect(Object.keys(decoded.fields)).toEqual([...LOOKUP_FIELDS])
+    // A live lookup never carries the stored avatar or banner hash.
+    expect(Object.hasOwn(decoded.fields, 'avatar')).toBe(false)
+    expect(decodeLookupProfile({ ...example, access: 'private' }).access).toBe('private')
+    // A tracked field the provider cannot supply is named, never invented.
+    const { business_category: _dropped, ...rest } = example.fields
+    const sparse = decodeLookupProfile({ ...example, fields: rest, unknown_fields: ['business_category'] })
+    expect(sparse.unknown_fields).toEqual(['business_category'])
+    expect(Object.hasOwn(sparse.fields, 'business_category')).toBe(false)
+    for (const bad of [
+      { ...example, target_pk: '017841400000000001' }, { ...example, target_pk: '0' },
+      { ...example, target_pk: 17841400000000001 }, { ...example, access: 'followed' },
+      { ...example, access: null }, { ...example, quota_remaining: -1 },
+      { ...example, quota_remaining: 1.5 },
+      // A name is a value or an unknown, never both and never neither.
+      { ...example, unknown_fields: ['username'] },
+      { ...example, unknown_fields: ['pronouns'] },
+      { ...example, fields: rest },
+      { ...example, fields: rest, unknown_fields: ['business_category', 'business_category'] },
+      { ...example, fields: { ...example.fields, avatar: null } },
+      { ...example, unknown_fields: ['Business_Category'] },
+      // Value typing per name: a text field may be absent, a flag and a count never.
+      { ...example, fields: { ...example.fields, username: 7 } },
+      { ...example, fields: { ...example.fields, is_verified: 'true' } },
+      { ...example, fields: { ...example.fields, is_verified: null } },
+      { ...example, fields: { ...example.fields, follower_count: null } },
+      { ...example, fields: { ...example.fields, follower_count: -1 } },
+      { ...example, fields: { ...example.fields, follower_count: 2 ** 53 } },
+      // The core's own character bounds, measured in code points.
+      { ...example, fields: { ...example.fields, biography: 'b'.repeat(2049) } },
+      { ...example, fields: { ...example.fields, public_phone: '7'.repeat(65) } },
+      { ...example, fields: { ...example.fields, username: '☃'.repeat(256) } },
+      { ...example, secret: 'TOKEN_SENTINEL' },
+    ]) expect(() => decodeLookupProfile(bad)).toThrow(expect.objectContaining({ code: 'protocol' }))
+    // Exactly the bound is accepted, and it is characters, not UTF-16 units.
+    expect(decodeLookupProfile({ ...example, fields: { ...example.fields, username: '☃'.repeat(255) } }).fields.username).toHaveLength(255)
+  })
+  it('accepts the activity a lookup answers with and refuses anything else', () => {
+    // The example from the core's own fake-backend test of `lookup.activity`.
+    const cafe = { name: 'Cafe Zero', lat: 52.37, lng: 4.89, count: 2 }
+    const museum = { name: 'Museum', lat: 52.36, lng: 4.88, count: 1 }
+    const example = {
+      target_pk: '17841400000000001', window: 50, analyzed: 4,
+      geo: {
+        geotagged: 3, anchor: cafe, centroid: { lat: 52.36666666666667, lng: 4.886666666666667 },
+        radius_km: 0.869, places: [cafe, museum],
+      },
+      timeline: {
+        hour_of_day: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        day_of_week: [0, 1, 1, 1, 1, 0, 0], first_post_at: 1789468200, last_post_at: 1789727400,
+      },
+      hashtags: [{ key: 'ams', count: 2 }, { key: 'coffee', count: 2 }],
+      mentions: [{ key: 'bob', count: 2 }],
+      locations: [{ key: 'Cafe Zero', count: 2 }, { key: 'Museum', count: 1 }],
+      likes: {
+        total: 100, average: 25,
+        top_posts: [{ code: 'code3', like_count: 40 }, { code: 'code1', like_count: 30 }, { code: 'code2', like_count: 20 }, { code: 'code0', like_count: 10 }],
+      },
+      quota_remaining: 4208,
+    }
+    const decoded = decodeLookupActivity(example, '17841400000000001', 50)
+    expect(decoded.analyzed).toBe(4)
+    expect(decoded.geo.anchor).toEqual(cafe)
+    expect(decoded.geo.radius_km).toBe(0.869)
+    expect(decoded.timeline.hour_of_day[10]).toBe(4)
+    expect(decoded.likes.top_posts).toHaveLength(4)
+    expect(decoded.locations[0].key).toBe('Cafe Zero')
+    // An account with nothing to analyse answers the same shape.
+    const empty = {
+      ...example, target_pk: '7', window: 12, analyzed: 0,
+      geo: { geotagged: 0, anchor: null, centroid: null, radius_km: null, places: [] },
+      timeline: { hour_of_day: Array.from({ length: 24 }, () => 0), day_of_week: Array.from({ length: 7 }, () => 0), first_post_at: null, last_post_at: null },
+      hashtags: [], mentions: [], locations: [],
+      likes: { total: 0, average: 0, top_posts: [] }, quota_remaining: null,
+    }
+    expect(decodeLookupActivity(empty, '7', 12).geo.anchor).toBeNull()
+    const geo = (over: Record<string, unknown>) => ({ ...example, geo: { ...example.geo, ...over } })
+    const likes = (over: Record<string, unknown>) => ({ ...example, likes: { ...example.likes, ...over } })
+    const time = (over: Record<string, unknown>) => ({ ...example, timeline: { ...example.timeline, ...over } })
+    for (const bad of [
+      // The pk and the window are echoed, so a different answer is refused.
+      { ...example, target_pk: '7' }, { ...example, window: 30 }, { ...example, analyzed: 51 },
+      { ...example, analyzed: -1 }, { ...example, kind: 'lookup_activity' },
+      // Geotagged posts are a part of those inspected; the listed places are a
+      // part of the geotagged ones, ordered by count descending.
+      geo({ geotagged: 5 }), geo({ geotagged: 2 }),
+      geo({ places: [museum, cafe] }),
+      geo({ places: [{ ...cafe, count: 0 }], anchor: { ...cafe, count: 0 } }),
+      geo({ anchor: null }), geo({ anchor: museum }), geo({ centroid: null }),
+      geo({ radius_km: null }), geo({ radius_km: -1 }), geo({ radius_km: '0.869' }),
+      geo({ anchor: { ...cafe, lat: 92 }, places: [{ ...cafe, lat: 92 }, museum] }),
+      geo({ anchor: { ...cafe, lng: -181 }, places: [{ ...cafe, lng: -181 }, museum] }),
+      geo({ places: Array.from({ length: 11 }, (_, index) => ({ name: `p${index}`, lat: 1, lng: 1, count: 1 })) }),
+      geo({ anchor: { ...cafe, name: 'p'.repeat(121) } }),
+      geo({ empty: false }),
+      // Exactly 24 and exactly 7 buckets, counting the same posts.
+      time({ hour_of_day: Array.from({ length: 23 }, () => 0) }),
+      time({ day_of_week: [0, 1, 1, 1, 1, 0, 0, 0] }),
+      time({ day_of_week: [0, 1, 1, 1, 0, 0, 0] }),
+      time({ first_post_at: null }), time({ last_post_at: null }),
+      time({ first_post_at: 1789727401 }), time({ last_post_at: 253402300800 }),
+      // Counted terms: descending, ties by key ascending, never empty.
+      { ...example, hashtags: [{ key: 'coffee', count: 2 }, { key: 'ams', count: 2 }] },
+      { ...example, mentions: [{ key: 'bob', count: 0 }] },
+      { ...example, mentions: [{ key: '', count: 2 }] },
+      { ...example, mentions: [{ key: 'k'.repeat(121), count: 2 }] },
+      { ...example, locations: Array.from({ length: 21 }, (_, index) => ({ key: `t${String(index).padStart(2, '0')}`, count: 1 })) },
+      // The top-liked list is as long as the window, up to five.
+      likes({ top_posts: example.likes.top_posts.slice(0, 3) }),
+      likes({ top_posts: [{ code: 'code0', like_count: 10 }, { code: 'code3', like_count: 40 }, { code: 'code1', like_count: 30 }, { code: 'code2', like_count: 20 }] }),
+      likes({ top_posts: example.likes.top_posts.map(post => ({ ...post, code: 'c'.repeat(65) })) }),
+      likes({ average: -1 }), likes({ average: '25' }), likes({ total: -100 }),
+    ]) expect(() => decodeLookupActivity(bad, '17841400000000001', 50)).toThrow(expect.objectContaining({ code: 'protocol' }))
+    // The accepting side of the three bounds: exactly 120 characters of place
+    // name and term key, exactly 64 of post code, measured in code points. An
+    // off-by-one the other way would refuse an answer already paid for.
+    const bounded = decodeLookupActivity({
+      ...example,
+      geo: { ...example.geo, anchor: { ...cafe, name: '☃'.repeat(120) }, places: [{ ...cafe, name: '☃'.repeat(120) }, museum] },
+      mentions: [{ key: 'k'.repeat(120), count: 2 }],
+      likes: { ...example.likes, top_posts: example.likes.top_posts.map(post => ({ ...post, code: 'c'.repeat(64) })) },
+    }, '17841400000000001', 50)
+    expect([...bounded.geo.places[0].name]).toHaveLength(120)
+    expect(bounded.mentions[0].key).toHaveLength(120)
+    expect(bounded.likes.top_posts[0].code).toHaveLength(64)
+    // The two float ceilings the host applies, on both sides.
+    expect(decodeLookupActivity(geo({ radius_km: 20100 }), '17841400000000001', 50).geo.radius_km).toBe(20100)
+    expect(decodeLookupActivity(likes({ average: Number.MAX_SAFE_INTEGER }), '17841400000000001', 50).likes.average).toBe(Number.MAX_SAFE_INTEGER)
+    for (const bad of [geo({ radius_km: 20100.001 }), likes({ average: Number.MAX_SAFE_INTEGER + 2 })]) {
+      expect(() => decodeLookupActivity(bad, '17841400000000001', 50)).toThrow(expect.objectContaining({ code: 'protocol' }))
+    }
+    // Nothing inspected means nothing liked, and nowhere to have been.
+    for (const bad of [
+      { ...empty, likes: { ...empty.likes, total: 1 } },
+      { ...empty, likes: { ...empty.likes, average: 1 } },
+      { ...empty, likes: { ...empty.likes, top_posts: [{ code: 'c', like_count: 0 }] } },
+      { ...empty, geo: { ...empty.geo, radius_km: 0 } },
+      { ...empty, timeline: { ...empty.timeline, first_post_at: 1 } },
+    ]) expect(() => decodeLookupActivity(bad, '7', 12)).toThrow(expect.objectContaining({ code: 'protocol' }))
   })
   it('accepts a configured overview whose quota is not yet known', () => {
     // The two quota fields are written together (`new_state`), so an adopted home

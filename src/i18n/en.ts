@@ -46,11 +46,21 @@ export const en = {
   'error.history_oversized': 'A saved snapshot is larger than the supported size.',
   'error.snapshot_unavailable': 'The selected snapshot is no longer available. The snapshot list is refreshed.',
   'error.snapshot_identity_mismatch': 'Only snapshots of the same saved history can be compared.',
+  'error.target_not_found': 'There is no such account. Check the name and try again.',
+  'error.target_private': 'That account does not share this data publicly.',
+  'error.target_unavailable': 'HikerAPI would not answer about that account and did not say why. It may be restricted, or your plan may not cover it.',
+  'error.provider_response_invalid': 'HikerAPI sent an answer this version cannot read. Nothing was shown, and repeating the request would cost the same and return the same.',
   'error.invalid_watch_input': 'Account name: Latin letters, digits, dots and underscores, up to 255 characters. The interval is at least 300 seconds.',
   'error.invalid_history_input': 'Invalid request to the saved history.',
   'error.invalid_home_input': 'The path must start with / or ~, contain no "..", and be no longer than 1024 bytes.',
+  'error.invalid_lookup_input': 'Account name: Latin letters, digits, dots and underscores, up to 255 characters. The analysis covers the last 12, 30 or 50 posts.',
   'error.invalid_params': 'The core rejected the request parameters. Refresh the list and repeat the action.',
   'error.internal_error': 'The action could not be completed. Refresh the state of the app.',
+
+  // A failed lookup is not a failed local read: the requests may already have
+  // been paid for. `error.*` cannot carry this, because that prefix is the
+  // closed set of bridge codes, one sentence each.
+  'lookup.may_be_charged': 'The request may already have been charged. Look up again only if you are willing to pay for it.',
 
   // Shared UI copy. One sentence per migration outcome (R13), and each says only
   // what the core actually reported. `service_error` reaches migrate two ways — a
@@ -83,6 +93,7 @@ export const en = {
   'nav.aria': 'Sections',
   'nav.watches': 'Watches',
   'nav.changes': 'Changes',
+  'nav.lookup': 'Lookup',
   'nav.service': 'Service',
   'nav.settings': 'Settings',
 
@@ -193,6 +204,61 @@ export const en = {
   'changes.media_added': 'Added',
   'changes.media_removed': 'Removed',
   'changes.media_replaced': 'Replaced with a new one',
+
+  // Lookup section: an on-demand check of any public account. It spends the paid
+  // quota, so every button says what it costs before it is pressed, and every
+  // number says how many posts it was counted from. `lookup.may_be_charged` sits
+  // above, next to the error copy it belongs with.
+  'lookup.title': 'Look up an account',
+  'lookup.intro': 'Check any public account right now: the profile first, then an analysis of its recent posts. Nothing here runs on a schedule and nothing is saved to disk — but each lookup spends HikerAPI requests.',
+  'lookup.user_label': 'Instagram username',
+  'lookup.action': 'Look up',
+  'lookup.looking': 'Looking up…',
+  'lookup.cost_profile': 'A profile costs 2 HikerAPI requests, or up to 4 if they have to be tried again. The @ is optional.',
+  'lookup.clear': 'Clear the result',
+  'lookup.result_label': 'The account that was looked up',
+  'lookup.as_of': 'Looked up at {time}',
+  'lookup.other_name': 'The account answers under this name:',
+  'lookup.private_notice': 'This account is private. Its posts are not public, so there is nothing to analyse.',
+  'lookup.quota_after': 'HikerAPI balance after this lookup: {count}',
+  'lookup.analysis_title': 'Recent posts',
+  'lookup.window_label': 'How many recent posts to read',
+  'lookup.window_option': 'Last {count} posts',
+  'lookup.analyse': 'Analyse recent posts',
+  'lookup.analysing': 'Reading the posts…',
+  'lookup.cost_activity': 'One HikerAPI request per page of posts, usually 1 to 5. Reading stops after 6 pages, and a page that fails is tried once more, so one analysis costs at most 12 requests. It starts only when you press the button.',
+  'lookup.analyzed': 'Counted from the last {count} posts.',
+  'lookup.analyzed_short': 'Counted from the {analyzed} posts that could be read, not from the {window} asked for. Reading stops after six pages, so this is not proof that there are no more.',
+  'lookup.analyzed_none': 'No posts could be read, so there is nothing to show here. This is not proof that the account has no posts.',
+  'lookup.where_title': 'Where',
+  'lookup.geotagged': '{tagged} of the {analyzed} posts read carry a place with coordinates.',
+  'lookup.anchor': 'Most often {place} — {count} of the posts with coordinates.',
+  'lookup.radius': 'The named places lie within {km} km of their midpoint.',
+  'lookup.centroid': 'Midpoint of those places: {lat}, {lng}.',
+  'lookup.geo_note': 'Places come from what the posts themselves say. They are not the whereabouts of a person.',
+  'lookup.places_title': 'Places',
+  'lookup.places_note': 'Every place the posts name, with or without coordinates, and how many posts name it. A row shows coordinates when the answer carried them.',
+  'lookup.when_title': 'When',
+  'lookup.hours_title': 'Posts by hour of the day, UTC',
+  'lookup.days_title': 'Posts by day of the week, UTC',
+  'lookup.hour_label': '{hour}:00 UTC',
+  'lookup.first_post': 'Earliest post read: {time}',
+  'lookup.last_post': 'Latest post read: {time}',
+  'lookup.times_note': 'The charts are in UTC; these two dates are in your own time zone.',
+  'lookup.chart_top': 'Most posts: {items}.',
+  'lookup.chart_item': '{label} — {count}',
+  'lookup.hashtags_title': 'Hashtags',
+  'lookup.mentions_title': 'Mentions',
+  'lookup.likes_title': 'Likes',
+  'lookup.likes_total': 'Likes on the posts read',
+  'lookup.likes_average': 'Average per post',
+  'lookup.top_posts_title': 'Most liked posts',
+  'lookup.post_code': 'Post {code}',
+  'lookup.watch_action': 'Watch this account',
+  'lookup.watch_adding': 'Adding…',
+  'lookup.watch_note': 'Adds it to Watches with the minimum interval of {seconds} seconds, which you can change there.',
+  'lookup.already_watched': 'This account is already watched.',
+  'lookup.open_watch': 'Open it in Watches',
 
   // The profile as of the newest saved snapshot.
   'profile.title': 'Profile at the last check',

@@ -25,29 +25,46 @@ reconciles with one read after every mutation; it never replays a mutation.
 
 G2 adds six more on the C3 bridge: `inspect_service`, `migrate_service`,
 `uninstall_service`, `inspect_home`, `select_home` and `inspect_binding`, so the
-ACL now allows twenty-six commands. Five of the six reach the core; the sixth
+ACL allowed twenty-six commands. Five of the six reach the core; the sixth
 does not. `inspect_binding` is a host-local read of `<desktop root>/desktop-home.json`
 through `crates/desktop-host/src/binding.rs`, the only reader of that file, which
 is why a broken binding can still be released after the first core inspection has
 failed. Anything that file cannot be fully trusted to say is reported as an
 unknown binding, and an unknown binding makes every service control read-only.
 
+The lookup section adds `lookup_profile` and `lookup_activity` for the core's two
+on-demand reads, so the ACL now allows twenty-eight commands. Both spend paid
+HikerAPI requests on one explicit click and neither writes anything, so they run
+in the host's third budget class, "network read" (70 seconds: the core's own
+60-second composite budget plus the host's margin for interpreter start and
+response drain). That class has an admission slot of its own — one at a time,
+separate from the two storage-read slots — so a paid lookup can never delay the
+overview poll or a history page, and a second one is refused at once with `busy`
+rather than queued behind seventy seconds. They are still reads: cancelled when
+the window closes, never an unknown outcome, and never reached by a retry or a
+poll.
+
 Use the clean revision (insto 0.7.22) in `packaging/core-pin.json` as the read-only
-build input. The pin is `2dc187a905a0620bfc322a08bb66d380a5c07df7`: it carries
-`snapshots.read` as the twenty-fifth capability, checks a new account right away,
-and identifies a profile picture by its file name instead of the signed CDN URL,
-so a check no longer looks like a picture change. `.build/runtime-media-hash` was
-prepared from a plain clone of that exact commit in `.build-core-media-hash/` and
-staged into `.build/app-resources/runtime`; its build id is
-`efcf80e3ebefc505404824e9793ca439627066dff1f88cd5293ede748af532f0`, and its bridge
-advertises the twenty-five pinned capabilities in the pinned order. A runtime
-prepared from an earlier pin cannot be used: the host's `hello` check demands
-exactly the pinned list, so a 24-capability bridge fails to prepare the desktop.
+build input. The pin is `e871ea3e207cb78891b812480aa0a092d02d8402`: it adds
+`lookup.profile` and `lookup.activity` as the twenty-sixth and twenty-seventh
+capabilities on top of the previous pin
+(`2dc187a905a0620bfc322a08bb66d380a5c07df7`, which carried `snapshots.read`,
+checked a new account right away and identified a profile picture by its file
+name instead of the signed CDN URL). `.build/runtime-lookup` was prepared from a
+plain clone of that exact commit in `.build-core-lookup/` and staged into
+`.build/app-resources/runtime`; its build id is
+`61cf77f11d18b67a50e79a3fffc8424817a87e0590643dab37e5e8353630bb8d`, and its bridge
+advertises the twenty-seven pinned capabilities in the pinned order. The runtime it
+replaced is retained as `.build/app-resources/runtime.prev-2dc187a` (build id
+`efcf80e3ebefc505404824e9793ca439627066dff1f88cd5293ede748af532f0`, prepared as
+`.build/runtime-media-hash`). A runtime prepared from an earlier pin cannot be
+used: the host's `hello` check demands exactly the pinned list, so a
+25-capability bridge fails to prepare the desktop.
 
 Build from the staged runtime with:
 
 ```sh
-python3 -B -m scripts.stage_app_runtime .build/runtime-media-hash
+python3 -B -m scripts.stage_app_runtime .build/runtime-lookup
 npm ci --ignore-scripts
 npm test
 npm run build
@@ -90,13 +107,13 @@ G2 adds the five C3 operations on the 0.7.22 bridge: `service.inspect`,
 against the pin of the day, and its bridge advertised the twenty-four capabilities
 that pin listed. It was the staged runtime for G2 — build id
 `4df54faceb61d38bd33ba2498d021384c5236d82a2431dbd932db4bee5ba7d60` — and has since
-been superseded by `.build/runtime-media-hash` (see above), which is what
+been superseded by `.build/runtime-lookup` (see above), which is what
 `.build/app-resources/runtime` now holds. The retained 0.7.21 runtime
 `.build/runtime-c2-01` in the app-shell worktree is the "previous version" the
 native migration proof starts from; it is kept, never deleted. Gated bridge tests
-need `INSTO_GUI_RUNTIME=$PWD/.build/runtime-media-hash` — the host rejects both a
-0.7.21 handshake and a 24-capability 0.7.22 one. Developer evidence only, not a
-release artifact.
+need `INSTO_GUI_RUNTIME=$PWD/.build/runtime-lookup` — the host rejects both a
+0.7.21 handshake and any 0.7.22 one that is not the twenty-seven pinned names.
+Developer evidence only, not a release artifact.
 
 ## G2 developer fixtures and proof modes
 

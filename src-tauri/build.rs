@@ -27,6 +27,8 @@ fn main() {
             "inspect_home",
             "select_home",
             "inspect_binding",
+            "lookup_profile",
+            "lookup_activity",
         ]),
     ))
     .expect("application configuration is invalid");

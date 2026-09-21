@@ -41,6 +41,7 @@ impl TrustedLauncher {
 #[derive(Clone, Copy)]
 pub(crate) struct Policy {
     pub read: Duration,
+    pub network_read: Duration,
     pub local_mutation: Duration,
     pub mutation: Duration,
 }
@@ -48,6 +49,11 @@ impl Default for Policy {
     fn default() -> Self {
         Self {
             read: Duration::from_secs(10),
+            // The core owns a 60-second composite budget for a network read,
+            // its HTTP client's close included. The ten seconds on top are what
+            // the host pays around it: interpreter start, the import of the
+            // lookup module, and draining the answer off the pipes.
+            network_read: Duration::from_secs(70),
             local_mutation: Duration::from_secs(15),
             mutation: Duration::from_secs(120),
         }

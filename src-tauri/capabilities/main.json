@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-local",
-  "description": "Only the bundled main window can call the twenty-six desktop commands.",
+  "description": "Only the bundled main window can call the twenty-eight desktop commands.",
   "local": true,
   "windows": ["main"],
   "permissions": [
@@ -13,6 +13,7 @@
     "allow-remove-watch", "allow-search-targets", "allow-list-snapshots",
     "allow-compare-snapshots", "allow-read-snapshot", "allow-list-changes",
     "allow-inspect-service", "allow-migrate-service", "allow-uninstall-service",
-    "allow-inspect-home", "allow-select-home", "allow-inspect-binding"
+    "allow-inspect-home", "allow-select-home", "allow-inspect-binding",
+    "allow-lookup-profile", "allow-lookup-activity"
   ]
 }

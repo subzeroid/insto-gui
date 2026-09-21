@@ -1,8 +1,8 @@
 import { DesktopFailure, safeFailure } from './messages'
-import { CHANGE_KINDS, HISTORY_CURSOR, SNAPSHOT_KINDS, TARGET_KINDS, TARGET_PK, REVISION, USERNAME, WATCH_CURSOR, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeOverview, decodeRemoved, decodeServiceFacts, decodeSnapshotFields, decodeWatch, decodeWatchPage, record, validSnapshotId, type Binding, type Comparison, type HistoryPage, type HomeReport, type Overview, type ServiceFacts, type SnapshotFields, type Watch, type WatchPage } from './dto'
+import { CHANGE_KINDS, HISTORY_CURSOR, LOOKUP_WINDOWS, SNAPSHOT_KINDS, TARGET_KINDS, TARGET_PK, REVISION, USERNAME, WATCH_CURSOR, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeLookupActivity, decodeLookupProfile, decodeOverview, decodeRemoved, decodeServiceFacts, decodeSnapshotFields, decodeWatch, decodeWatchPage, record, validSnapshotId, type Binding, type Comparison, type HistoryPage, type HomeReport, type LookupActivity, type LookupProfile, type LookupWindow, type Overview, type ServiceFacts, type SnapshotFields, type Watch, type WatchPage } from './dto'
 export const CORE_VERSION = '0.7.22'
-export type { Binding, HomeReport, ServiceFacts } from './dto'
-export { RESPONSE_PATH_LIMIT } from './dto'
+export type { Binding, HomeReport, LookupActivity, LookupProfile, LookupWindow, ServiceFacts } from './dto'
+export { LOOKUP_FIELDS, LOOKUP_WINDOWS, RESPONSE_PATH_LIMIT } from './dto'
 export const HOME_PATH_LIMIT = 1024
 // Mirrors the host's `home_path_ok`: absolute or `~`/`~/…`, at most 1024 UTF-8
 // bytes (bytes, not characters), no NUL and no `..` segment. Responses obey a
@@ -43,8 +43,17 @@ function profile(value: unknown): Profile {
 }
 export const MIN_INTERVAL = 300
 export const MAX_INTERVAL = 2147483647
+// The one place a name a person typed becomes a name the bridge accepts. The
+// core's own normalizer (`watch_params._user`) strips the leading `@` before the
+// whitespace, so it refuses " @alice"; a pasted name arrives with whitespace on
+// either side of the `@` often enough that refusing it here would only read as a
+// bug, so surrounding whitespace goes first and the `@` after it. Nothing is
+// sent in this form: every caller checks `canonicalUsername(x) === x` before it
+// crosses the bridge, and the result of this function always satisfies that, so
+// the host and the core still see exactly the strict form they demand. Inner
+// whitespace is still not a name.
 export function canonicalUsername(raw: string): string | null {
-  const user = raw.replace(/^@+/, '').trim().toLowerCase()
+  const user = raw.trim().replace(/^@+/, '').trim().toLowerCase()
   return USERNAME.test(user) && user !== '.' && user !== '..' ? user : null
 }
 export const validInterval = (value: number) => Number.isSafeInteger(value) && value >= MIN_INTERVAL && value <= MAX_INTERVAL
@@ -53,14 +62,22 @@ export interface Page { limit?: number; cursor?: string }
 // The host admits two concurrent reads; a third would fail with `busy`. Queue
 // reads in the client so polling, history and service reads never collide.
 export const READ_SLOTS = 2
+// A paid lookup runs in the host's own network-read pool — one slot, separate
+// from the two storage-read slots — so it can never delay the overview poll or a
+// history page. One permit here means the window never even sends a second one
+// while the first is still out. It is a queue, not a retry: nothing in this
+// client ever repeats a lookup, because each one is charged.
+export const LOOKUP_SLOTS = 1
 const READ_COMMANDS = new Set(['inspect_setup', 'read_overview', 'list_watches', 'search_targets', 'list_snapshots', 'compare_snapshots', 'read_snapshot', 'list_changes', 'inspect_service', 'inspect_home'])
-class ReadGate {
+const LOOKUP_COMMANDS = new Set(['lookup_profile', 'lookup_activity'])
+class Gate {
+  constructor(private readonly slots: number) {}
   private active = 0
   private readonly waiting: (() => void)[] = []
   async run<T>(work: () => Promise<T>): Promise<T> {
     // A waiter receives the finishing call's permit directly; the count only
-    // drops when nobody waits, so a third call can never slip in during hand-off.
-    if (this.active >= READ_SLOTS) await new Promise<void>(resolve => { this.waiting.push(resolve) })
+    // drops when nobody waits, so an extra call can never slip in during hand-off.
+    if (this.active >= this.slots) await new Promise<void>(resolve => { this.waiting.push(resolve) })
     else this.active++
     try { return await work() } finally { const next = this.waiting.shift(); if (next) next(); else this.active-- }
   }
@@ -78,7 +95,10 @@ function ref(value: WatchRef): WatchRef {
 function pk(value: string): string { if (!TARGET_PK.test(value)) throw new DesktopFailure('invalid_history_input'); return value }
 export class DesktopClient {
   constructor(private readonly invoke: Invoke) {}
-  private readonly gate = new ReadGate()
+  private readonly gate = new Gate(READ_SLOTS)
+  // Its own permit: a lookup must never hold a storage read's place, on either
+  // side of the bridge.
+  private readonly lookups = new Gate(LOOKUP_SLOTS)
   private async call(command: string, args?: Record<string, unknown>): Promise<unknown> {
     try { return args ? await this.invoke(command, args) : await this.invoke(command) }
     catch (error) { throw safeFailure(error) }
@@ -91,6 +111,7 @@ export class DesktopClient {
     return decode(response.data)
   }
   private read<T>(command: string, kind: string, decode: (data: unknown) => T, args?: Record<string, unknown>): Promise<T> {
+    if (LOOKUP_COMMANDS.has(command)) return this.lookups.run(() => this.exchange(command, kind, decode, args))
     return READ_COMMANDS.has(command) ? this.gate.run(() => this.exchange(command, kind, decode, args)) : this.exchange(command, kind, decode, args)
   }
   private readProfile(command: string, args?: Record<string, unknown>) { return this.read(command, 'profile', profile, args) }
@@ -158,6 +179,17 @@ export class DesktopClient {
   async selectHome(path: string | null): Promise<Profile> {
     if (path !== null && !validHomePath(path)) throw new DesktopFailure('invalid_home_input')
     return this.readProfile('select_home', { home: { path } })
+  }
+  // The two on-demand lookups. Each one spends the user's paid HikerAPI quota,
+  // so it is validated here before it can reach the bridge, and it is never
+  // retried, replayed or polled: one click, one request.
+  async lookupProfile(username: string): Promise<LookupProfile> {
+    if (canonicalUsername(username) !== username) throw new DesktopFailure('invalid_lookup_input')
+    return this.read('lookup_profile', 'lookup_profile', decodeLookupProfile, { lookup: { username } })
+  }
+  async lookupActivity(targetPk: string, window: LookupWindow): Promise<LookupActivity> {
+    if (!TARGET_PK.test(targetPk) || !LOOKUP_WINDOWS.includes(window)) throw new DesktopFailure('invalid_lookup_input')
+    return this.read('lookup_activity', 'lookup_activity', data => decodeLookupActivity(data, targetPk, window), { lookup: { target_pk: targetPk, window } })
   }
   // A host-local read of the desktop root's binding file: no bridge call, no
   // `{kind, data}` envelope and no read slot. It answers after a failed core

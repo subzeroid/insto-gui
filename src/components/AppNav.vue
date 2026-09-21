@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick } from 'vue'
 import { t } from '../i18n'
-export type Section = 'watches' | 'changes' | 'service' | 'settings'
+export type Section = 'watches' | 'changes' | 'lookup' | 'service' | 'settings'
 defineProps<{ current: Section }>()
 const emit = defineEmits<{ navigate: [section: Section] }>()
 // Built per instance, not once per module: the locale is fixed before the app
@@ -9,6 +9,7 @@ const emit = defineEmits<{ navigate: [section: Section] }>()
 const sections: { id: Section; label: string }[] = [
   { id: 'watches', label: t('nav.watches') },
   { id: 'changes', label: t('nav.changes') },
+  { id: 'lookup', label: t('nav.lookup') },
   { id: 'service', label: t('nav.service') },
   { id: 'settings', label: t('nav.settings') }
 ]

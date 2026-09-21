@@ -6,7 +6,8 @@ import { createMockInvoke, MOCK_FIRST_CHECK_MS } from './mock'
 // than no mock at all, because it produces a screenshot of a screen the app can
 // never show. Every read the app performs at boot and in each section is driven
 // through `DesktopClient`, so `dto.ts` is the judge here, not this file.
-const client = () => new DesktopClient(createMockInvoke())
+// The artificial lookup delay exists for the demo window, not for this suite.
+const client = () => new DesktopClient(createMockInvoke({ lookupDelayMs: 0 }))
 
 describe('mock desktop', () => {
   it('prepares and inspects a configured, running profile', async () => {
@@ -187,6 +188,81 @@ describe('mock desktop', () => {
     await desktop.openTokenPage()
   })
 
+  it('answers both lookups with data the real client accepts', async () => {
+    const desktop = client()
+    const before = (await desktop.inspect()).quota_remaining!
+    const found = await desktop.lookupProfile('atlas.ferry')
+    expect(found.access).toBe('public')
+    expect(found.fields.username).toBe('atlas.ferry')
+    // The thirteen tracked names, and never the stored avatar or banner hash.
+    expect(Object.keys(found.fields)).toHaveLength(13)
+    expect(Object.hasOwn(found.fields, 'avatar')).toBe(false)
+    expect(found.unknown_fields).toEqual([])
+    // A lookup costs paid requests, so the demo quota moves.
+    expect(found.quota_remaining).toBe(before - 2)
+    const activity = await desktop.lookupActivity(found.target_pk, 30)
+    expect(activity.window).toBe(30)
+    expect(activity.analyzed).toBe(30)
+    expect(activity.geo.geotagged).toBeGreaterThan(0)
+    expect(activity.geo.anchor).toEqual(activity.geo.places[0])
+    expect(activity.geo.radius_km).toBeGreaterThanOrEqual(0)
+    expect(activity.timeline.hour_of_day.reduce((sum, count) => sum + count, 0)).toBe(30)
+    expect(activity.timeline.day_of_week.reduce((sum, count) => sum + count, 0)).toBe(30)
+    expect(activity.timeline.first_post_at).toBeLessThan(activity.timeline.last_post_at!)
+    expect(activity.hashtags.length).toBeGreaterThan(0)
+    expect(activity.mentions.length).toBeGreaterThan(0)
+    expect(activity.locations.length).toBeGreaterThan(0)
+    expect(activity.likes.top_posts).toHaveLength(5)
+    expect(activity.likes.total).toBeGreaterThan(0)
+    expect(activity.quota_remaining).toBe(before - 3)
+    // The same window twice is the same picture.
+    expect(await desktop.lookupActivity(found.target_pk, 30)).toMatchObject({ analyzed: 30, geo: activity.geo })
+  })
+
+  it('refuses an unknown account and the analysis of a private one', async () => {
+    const desktop = client()
+    await expect(desktop.lookupProfile('nobody.here')).rejects.toMatchObject({ code: 'target_not_found' })
+    const closed = await desktop.lookupProfile('emberline.co')
+    // The demo account that went private: its profile is still readable.
+    expect(closed.access).toBe('private')
+    expect(closed.fields.is_private).toBe(true)
+    await expect(desktop.lookupActivity(closed.target_pk, 12)).rejects.toMatchObject({ code: 'target_private' })
+    await expect(desktop.lookupActivity('99999999999', 12)).rejects.toMatchObject({ code: 'target_not_found' })
+  })
+
+  it('analyses fewer posts than the window when the account is short', async () => {
+    const desktop = client()
+    const found = await desktop.lookupProfile('fernwood.labs')
+    expect(found.fields.media_count).toBe(24)
+    const activity = await desktop.lookupActivity(found.target_pk, 50)
+    // `analyzed < window` is honest: it is the number of posts really inspected.
+    expect(activity.analyzed).toBe(24)
+    expect(activity.likes.top_posts).toHaveLength(5)
+  })
+
+  it('answers about an account that is not watched, whose posts name places without coordinates', async () => {
+    const desktop = client()
+    const found = await desktop.lookupProfile('harbour.notes')
+    // Not a registration: the Lookup section is what reaches it, and the watch
+    // list does not carry it.
+    expect((await desktop.overview()).watches.some(watch => watch.user === 'harbour.notes')).toBe(false)
+    const activity = await desktop.lookupActivity(found.target_pk, 30)
+    // The shape `insto/models.py` warns about: names, no GPS. The geo
+    // fingerprint is empty and the locations list is not.
+    expect(activity.geo.geotagged).toBe(0)
+    expect(activity.geo.anchor).toBeNull()
+    expect(activity.geo.centroid).toBeNull()
+    expect(activity.geo.radius_km).toBeNull()
+    expect(activity.geo.places).toEqual([])
+    expect(activity.locations.length).toBeGreaterThan(0)
+    expect(activity.locations.reduce((sum, term) => sum + term.count, 0)).toBeGreaterThan(0)
+    expect(activity.analyzed).toBeGreaterThan(0)
+  })
+  it('refuses a lookup before a token is connected', async () => {
+    const desktop = new DesktopClient(createMockInvoke({ setup: true, lookupDelayMs: 0 }))
+    await expect(desktop.lookupProfile('atlas.ferry')).rejects.toMatchObject({ code: 'not_configured' })
+    await expect(desktop.lookupActivity('51884219307', 12)).rejects.toMatchObject({ code: 'not_configured' })
+  })
   it('refuses a home it does not know', async () => {
     const report = await client().inspectHome('/tmp/not-an-insto-home')
     expect(report.exists).toBe(false)

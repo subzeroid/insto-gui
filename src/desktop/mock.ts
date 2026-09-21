@@ -10,7 +10,7 @@
  * from a real profile, a real credential or a real filesystem.
  */
 import { CORE_VERSION, type Invoke, type Profile } from './client'
-import { itemSnapshot, type Change, type ChangeValue, type Comparison, type HistoryItem, type HomeReport, type Overview, type Snapshot, type Watch, type WatchStatus } from './dto'
+import { LOOKUP_FIELDS, LOOKUP_WINDOWS, itemSnapshot, type Change, type ChangeValue, type Comparison, type HistoryItem, type HomeReport, type LookupWindow, type Overview, type Snapshot, type Watch, type WatchStatus } from './dto'
 import { DesktopFailure } from './messages'
 
 const envelope = (kind: string, data: unknown) => ({ kind, data })
@@ -53,6 +53,14 @@ interface DemoAccount {
   /** The absolute tracked values of the first snapshot; later ones apply the steps. */
   profile: Fields
   steps: DemoStep[]
+  /**
+   * What the provider answers about the places of this account's posts.
+   * `coordinates` is a post with a geotag and GPS; `names` is a post that names
+   * a place and carries no GPS, which `insto/models.py` says is common (older
+   * posts, and locations Instagram returns as text only). The two feed different
+   * numbers: the geometry counts the first, the places list counts both.
+   */
+  geo?: 'coordinates' | 'names'
 }
 
 // Six invented accounts: three active (the core's cap), three paused, one of the
@@ -179,6 +187,24 @@ const ACCOUNTS: DemoAccount[] = [
   },
 ]
 
+// Accounts the provider knows and the user is not watching — what the Lookup
+// section is for. They are never registrations, so they never appear in the
+// watch list, which also makes "Watch this account" reachable in the demo.
+// `harbour.notes` is the account whose posts name places and carry no GPS.
+const LOOKUP_ONLY: DemoAccount[] = [
+  {
+    user: 'harbour.notes', pk: '64108255390', status: 'active', interval: 900, errors: 0, geo: 'names',
+    profile: {
+      username: 'harbour.notes', full_name: 'Harbour Notes', biography: 'Notes from the water, mostly at night.',
+      external_url: null, is_verified: false, is_business: false, is_private: false,
+      follower_count: 12_407, following_count: 341, media_count: 76,
+      avatar: hex('harbour-avatar', 16), banner: null,
+    },
+    steps: [],
+  },
+]
+const EVERY_ACCOUNT = [...ACCOUNTS, ...LOOKUP_ONLY]
+
 // Snapshot ids ascend with capture time across every account, the way a shared
 // storage sequence does, so the feed's ordering key is never ambiguous.
 const SNAPSHOT_IDS = new Map<string, string>()
@@ -191,9 +217,9 @@ ACCOUNTS
 const snapshotsOf = (account: DemoAccount): Snapshot[] =>
   account.steps.map(step => ({ id: SNAPSHOT_IDS.get(`${account.pk}|${step.ago}`)!, target_pk: account.pk, captured_at: NOW - step.ago }))
 
-const SNAPSHOTS = new Map<string, Snapshot[]>(ACCOUNTS.map(account => [account.pk, snapshotsOf(account)]))
-const BY_PK = new Map<string, DemoAccount>(ACCOUNTS.map(account => [account.pk, account]))
-const BY_USER = new Map<string, DemoAccount>(ACCOUNTS.map(account => [account.user, account]))
+const SNAPSHOTS = new Map<string, Snapshot[]>(EVERY_ACCOUNT.map(account => [account.pk, snapshotsOf(account)]))
+const BY_PK = new Map<string, DemoAccount>(EVERY_ACCOUNT.map(account => [account.pk, account]))
+const BY_USER = new Map<string, DemoAccount>(EVERY_ACCOUNT.map(account => [account.user, account]))
 
 // The history page order: newest first, ties broken by the ascending id, which is
 // exactly the key `decodeHistoryPage` checks.
@@ -288,6 +314,118 @@ const number = (args: Record<string, unknown> | undefined, group: string, key: s
   return typeof value === 'number' ? value : null
 }
 
+// A lookup asks the provider about an account the user has just typed, so the
+// mock has to invent the posts behind it. The four places, the tags and the
+// mentions below are made up; the numbers are derived from the account's pk, so
+// a screenshot taken twice is the same picture.
+const DEMO_PLACES: readonly { name: string; lat: number; lng: number }[] = [
+  { name: 'Ferry Terminal', lat: 52.3739, lng: 4.8903 },
+  { name: 'Birch Yard', lat: 52.3612, lng: 4.8721 },
+  { name: 'North Pier', lat: 52.4018, lng: 4.9224 },
+  { name: 'Vasa Coffee', lat: 59.3251, lng: 18.0711 },
+]
+const DEMO_TAGS = ['harbour', 'nightferry', 'slowfilm', 'risograph', 'coldlight', 'commissions']
+const DEMO_MENTIONS = ['atlas.ferry', 'birchwood.press', 'cobalt.harbor']
+// A short artificial wait, so the window's loading state is visible in the demo
+// rather than flashing past. A real lookup takes seconds. Tests pass
+// `lookupDelayMs: 0` rather than spending it nine times over in wall-clock.
+export const MOCK_LOOKUP_MS = 250
+const pause = (ms: number) => (ms === 0 ? Promise.resolve() : new Promise(resolve => { setTimeout(resolve, ms) }))
+
+// `lat`/`lng` are null for a post that names a place and carries no GPS — the
+// shape `insto/models.py` warns about, and the one the core's `extract_locations`
+// counts while `compute_geo_fingerprint` skips it.
+interface DemoPlace { name: string; lat: number | null; lng: number | null }
+interface DemoPost { code: string; takenAt: number; likes: number; place: DemoPlace | null; tags: string[]; mentions: string[] }
+
+const round3 = (value: number) => Math.round(value * 1000) / 1000
+const named = (place: { name: string; lat: number; lng: number }, geo: 'coordinates' | 'names'): DemoPlace =>
+  geo === 'names' ? { name: place.name, lat: null, lng: null } : place
+const RADIANS = Math.PI / 180
+function haversineKm(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const dLat = (bLat - aLat) * RADIANS, dLng = (bLng - aLng) * RADIANS
+  const chord = Math.sin(dLat / 2) ** 2 + Math.cos(aLat * RADIANS) * Math.cos(bLat * RADIANS) * Math.sin(dLng / 2) ** 2
+  return 2 * 6371.0088 * Math.asin(Math.min(1, Math.sqrt(chord)))
+}
+// Count descending, ties by key ascending, then the top slice — the order
+// `analytics._top_from_counter` produces and the decoder insists on.
+const topTerms = (counts: Map<string, number>, top: number) =>
+  [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).slice(0, top).map(([key, count]) => ({ key, count }))
+
+function demoPosts(pk: string, user: string, count: number, geo: 'coordinates' | 'names'): DemoPost[] {
+  const prefix = user.replace(/[^a-z0-9]/g, '').slice(0, 4)
+  return Array.from({ length: count }, (_, index) => {
+    const seed = parseInt(hex(`${pk}:post:${index}`, 8), 16)
+    return {
+      code: `${prefix}${String(index).padStart(2, '0')}`,
+      // Newest first, roughly every half day, jittered by a few hours.
+      takenAt: NOW - index * (DAY / 2) - (seed % (11 * HOUR)),
+      likes: 40 + (seed % 1200),
+      // `Math.floor`, not `>>`: an eight-hex seed exceeds the signed 32-bit
+      // range a shift would truncate it to, and a negative index reads nothing.
+      place: seed % 5 === 0 ? null : named(DEMO_PLACES[Math.floor(seed / 8) % DEMO_PLACES.length], geo),
+      tags: [DEMO_TAGS[seed % DEMO_TAGS.length], DEMO_TAGS[(seed + index) % DEMO_TAGS.length]],
+      mentions: seed % 3 === 0 ? [DEMO_MENTIONS[Math.floor(seed / 32) % DEMO_MENTIONS.length]] : [],
+    }
+  })
+}
+
+// Every number below is computed from the one post window, exactly as the core
+// computes it from one fetch: the mock is only useful while `dto.ts` accepts it.
+function activityOf(pk: string, user: string, posts: number, window: LookupWindow, quota: number | null, geo: 'coordinates' | 'names' = 'coordinates') {
+  const inspected = demoPosts(pk, user, Math.min(window, posts), geo)
+  // `named` is every post that names a place; `tagged` is the subset the payload
+  // also carried GPS for. The geo block is built from the second, the locations
+  // list from the first — the same split the core makes.
+  const named = inspected.filter(post => post.place !== null)
+  const tagged = named.filter(post => post.place!.lat !== null)
+  const places = new Map<string, { name: string; lat: number; lng: number; count: number }>()
+  for (const post of tagged) {
+    const place = post.place!
+    const seen = places.get(place.name)
+    places.set(place.name, { name: place.name, lat: place.lat!, lng: place.lng!, count: (seen?.count ?? 0) + 1 })
+  }
+  const ordered = [...places.values()].sort((a, b) => b.count - a.count || (a.name < b.name ? -1 : 1)).slice(0, 10)
+  const centroid = tagged.length === 0 ? null : {
+    lat: tagged.reduce((sum, post) => sum + post.place!.lat!, 0) / tagged.length,
+    lng: tagged.reduce((sum, post) => sum + post.place!.lng!, 0) / tagged.length,
+  }
+  const radius = centroid === null ? null : round3(Math.max(...tagged.map(post => haversineKm(centroid.lat, centroid.lng, post.place!.lat!, post.place!.lng!))))
+  const hours = Array.from({ length: 24 }, () => 0)
+  const days = Array.from({ length: 7 }, () => 0)
+  const hashtags = new Map<string, number>(), mentions = new Map<string, number>(), locations = new Map<string, number>()
+  for (const post of inspected) {
+    const at = new Date(post.takenAt * 1000)
+    hours[at.getUTCHours()]++
+    // Monday first, like `datetime.weekday()`.
+    days[(at.getUTCDay() + 6) % 7]++
+    for (const tag of post.tags) hashtags.set(tag, (hashtags.get(tag) ?? 0) + 1)
+    for (const mention of post.mentions) mentions.set(mention, (mentions.get(mention) ?? 0) + 1)
+    if (post.place !== null) locations.set(post.place.name, (locations.get(post.place.name) ?? 0) + 1)
+  }
+  const total = inspected.reduce((sum, post) => sum + post.likes, 0)
+  const byLikes = [...inspected].sort((a, b) => b.likes - a.likes || (a.code < b.code ? -1 : 1)).slice(0, 5)
+  const stamps = inspected.map(post => post.takenAt)
+  return {
+    target_pk: pk, window, analyzed: inspected.length,
+    geo: {
+      geotagged: tagged.length, anchor: ordered[0] ?? null, centroid,
+      radius_km: radius, places: ordered,
+    },
+    timeline: {
+      hour_of_day: hours, day_of_week: days,
+      first_post_at: stamps.length === 0 ? null : Math.min(...stamps),
+      last_post_at: stamps.length === 0 ? null : Math.max(...stamps),
+    },
+    hashtags: topTerms(hashtags, 20), mentions: topTerms(mentions, 20), locations: topTerms(locations, 20),
+    likes: {
+      total, average: inspected.length === 0 ? 0 : round3(total / inspected.length),
+      top_posts: byLikes.map(post => ({ code: post.code, like_count: post.likes })),
+    },
+    quota_remaining: quota,
+  }
+}
+
 // An adopted home always answers with an expanded absolute path; this one names a
 // user that does not exist on any machine.
 const DEMO_HOME = '/Users/demo/.insto'
@@ -303,7 +441,8 @@ const ADOPTABLE: HomeReport = {
 // pane. Two seconds is long enough to see the wait and short enough to sit through.
 export const MOCK_FIRST_CHECK_MS = 2000
 
-export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
+export function createMockInvoke(options: { setup?: boolean; lookupDelayMs?: number } = {}): Invoke {
+  const lookupDelayMs = options.lookupDelayMs ?? MOCK_LOOKUP_MS
   let revisions = 0
   // Per-instance overlays: an account added here must not leak into another mock.
   const snapshotsByPk = new Map(SNAPSHOTS)
@@ -363,6 +502,11 @@ export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
     byUser.set(user, account); byPk.set(pk, account); snapshotsByPk.set(pk, [snapshot])
     feed = [{ kind: 'baseline', snapshot }, ...feed]
     watches.set(user, { ...current, last_ok: snapshot.captured_at, waiting_first_check: false, revision: nextRevision(user) })
+  }
+  // A paid read costs the demo profile what the real one costs: two requests for
+  // a profile, one page request for an analysis.
+  function spend(requests: number): void {
+    if (profile.quota_remaining !== null) profile = { ...profile, quota_remaining: Math.max(0, profile.quota_remaining - requests) }
   }
   function touch(user: string | null, change: (watch: Watch) => Watch): unknown {
     const current = user === null ? undefined : watches.get(user)
@@ -447,6 +591,44 @@ export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
         const filter = text(args, 'query', 'target_pk')
         const items = filter === null ? feed : feed.filter(item => itemSnapshot(item).target_pk === filter)
         return historyPage(items, filter === null ? feed.length : (snapshotsByPk.get(filter)?.length ?? 0))
+      }
+
+      // The two on-demand lookups. Both cost paid requests, so the mock spends
+      // the demo quota too: the number in the footer has to move when a click
+      // costs something.
+      case 'lookup_profile': {
+        const user = text(args, 'lookup', 'username') ?? ''
+        if (!profile.configured) throw new DesktopFailure('not_configured')
+        await pause(lookupDelayMs)
+        const account = byUser.get(user)
+        if (account === undefined) throw new DesktopFailure('target_not_found')
+        const latest = account.steps.length === 0 ? account.profile : fieldsAt(account, account.steps.length - 1).fields
+        // Exactly the thirteen tracked names: a live lookup never has the stored
+        // avatar or banner hash, and this provider supplies every other one.
+        const fields: Fields = {}
+        for (const name of LOOKUP_FIELDS) fields[name] = latest[name] ?? null
+        spend(2)
+        return envelope('lookup_profile', {
+          target_pk: account.pk,
+          access: latest.is_private === true ? 'private' : 'public',
+          fields, unknown_fields: [], quota_remaining: profile.quota_remaining,
+        })
+      }
+      case 'lookup_activity': {
+        const pk = text(args, 'lookup', 'target_pk') ?? ''
+        const requested = number(args, 'lookup', 'window') ?? 0
+        if (!profile.configured) throw new DesktopFailure('not_configured')
+        await pause(lookupDelayMs)
+        const account = byPk.get(pk)
+        const window = (LOOKUP_WINDOWS as readonly number[]).includes(requested) ? (requested as LookupWindow) : 50
+        if (account === undefined) throw new DesktopFailure('target_not_found')
+        const latest = account.steps.length === 0 ? account.profile : fieldsAt(account, account.steps.length - 1).fields
+        // A private account is where the provider stops answering, which is the
+        // refusal the section has to render.
+        if (latest.is_private === true) throw new DesktopFailure('target_private')
+        const posts = typeof latest.media_count === 'number' ? latest.media_count : 0
+        spend(1)
+        return envelope('lookup_activity', activityOf(pk, account.user, posts, window, profile.quota_remaining, account.geo ?? 'coordinates'))
       }
 
       case 'inspect_home': {
