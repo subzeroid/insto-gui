@@ -94,7 +94,11 @@ describe('lookup state', () => {
     // other one leaves it set, which is the safe side of the question.
     const free = ['not_configured', 'invalid_lookup_input', 'busy', 'closed', 'launcher',
       'runtime_manifest', 'runtime_handshake', 'home_invalid', 'home_backend_unsupported',
-      'profile_ownership', 'invalid_params', 'unsupported_platform'] as const
+      'profile_ownership', 'invalid_params', 'unsupported_platform',
+      // Parameter validation and the profile's admission control: refused before
+      // a process is spawned, exactly like `busy`.
+      'invalid_token_input', 'invalid_watch_input', 'invalid_history_input',
+      'invalid_home_input', 'profile_busy'] as const
     const charged = ['transport', 'operation_timeout', 'protocol', 'outcome_unknown', 'invalid_token',
       'quota_exhausted', 'rate_limited', 'network_error', 'access_unconfirmed', 'target_not_found',
       'target_unavailable', 'provider_response_invalid'] as const

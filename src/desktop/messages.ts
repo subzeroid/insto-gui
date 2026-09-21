@@ -80,6 +80,15 @@ const FREE_FAILURES: ReadonlySet<string> = new Set<string>([
   'busy',
   'closed',
   'launcher',
+  // Parameter validation in the Tauri command, and the profile's own admission
+  // control: all five are refused before a process is spawned, exactly like
+  // `busy` above. None of them can reach a lookup today, but this predicate is
+  // written for every code, not for the two operations that call it.
+  'invalid_token_input',
+  'invalid_watch_input',
+  'invalid_history_input',
+  'invalid_home_input',
+  'profile_busy',
   'home_invalid',
   'home_backend_unsupported',
   'profile_ownership',

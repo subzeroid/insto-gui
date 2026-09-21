@@ -40,6 +40,9 @@ const caption = computed(() => (state.value.profile.at === null ? '' : t('lookup
 // so the line is not shown at all rather than shown as "after this lookup".
 const quota = computed(() => {
   const activity = state.value.activity
+  // A running analysis resets the part, so a repeat one would fall back to the
+  // profile's number — which the previous analysis has already made too high.
+  if (activity.loading) return null
   if (activity.error !== null && activity.spent) return null
   if (activity.value !== null) return activity.value.quota_remaining
   return found.value?.quota_remaining ?? null
