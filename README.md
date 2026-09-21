@@ -10,7 +10,7 @@ Powered by [HikerAPI](https://hikerapi.com/p/uk064a1b) · built with [Tauri 2](h
 
 ---
 
-Paste your HikerAPI token once, add a few accounts, and a background service keeps checking them on the interval you choose — it goes on running after you close the window. The app saves a snapshot of every check and shows you the difference between any two of them: followers gained and lost, a rewritten bio, a new avatar, a profile that turned private. Because the checks go through the HikerAPI cloud instead of a logged-in session, **your Instagram account never touches the flow**.
+Paste your HikerAPI token once, add a few accounts, and a background service checks each new account straight away and then keeps checking it on the interval you choose — it goes on running after you close the window. The app saves a snapshot of every check and shows you the difference between any two of them: followers gained and lost, a rewritten bio, a new avatar, a profile that turned private. Because the checks go through the HikerAPI cloud instead of a logged-in session, **your Instagram account never touches the flow**.
 
 ![insto-gui watching six accounts, with the saved snapshots of one of them compared side by side](docs/screenshot.png)
 
@@ -20,6 +20,7 @@ Paste your HikerAPI token once, add a few accounts, and a background service kee
 
 - **Watched accounts** — add by username, give each one its own check interval (300 s and up), pause, resume or remove it; up to three watches run at a time
 - **Status you can trust** — each row shows the last *successful* check, not the fact that a process is alive, plus the interval and any run of consecutive errors
+- **The profile, right away** — a new account is checked as soon as you add it, and its followers, following, posts, bio, link and verified / business / private flags appear in the window a few seconds later, dated to the check they came from
 - **Snapshot history** — every successful check is stored; pick any two saved snapshots of one account and compare exactly those two
 - **Change feed** — all accounts, newest first, filterable down to one; a first snapshot is labelled a baseline rather than dressed up as a change, and a comparison whose older snapshot lacked a field is labelled incomplete rather than guessed at
 - **Tracked fields** — username, full name, biography, profile link, verified / business / private flags, follower, following and media counts, and avatar and banner hashes

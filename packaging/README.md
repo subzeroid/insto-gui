@@ -17,20 +17,26 @@ Cached quota and native process state are not monitoring-health guarantees.
 G1 adds eleven commands on the C2 bridge: `read_overview`, `list_watches`,
 `add_watch`, `update_watch`, `pause_watch`, `resume_watch`, `remove_watch`,
 `search_targets`, `list_snapshots`, `compare_snapshots` and `list_changes`.
+R1 adds a twelfth, `read_snapshot`, for the core's `snapshots.read`: one saved
+snapshot's tracked fields, so the window can show the profile as soon as the
+service has checked a newly added account.
 Vue polls `read_overview` every five seconds while the window is visible and
 reconciles with one read after every mutation; it never replays a mutation.
 
 G2 adds six more on the C3 bridge: `inspect_service`, `migrate_service`,
 `uninstall_service`, `inspect_home`, `select_home` and `inspect_binding`, so the
-ACL now allows twenty-five commands. Five of them reach the core; the sixth does
-not. `inspect_binding` is a host-local read of `<desktop root>/desktop-home.json`
+ACL allows twenty-five of the twenty-six commands the app now has. Five of them
+reach the core; the sixth does not. `inspect_binding` is a host-local read of `<desktop root>/desktop-home.json`
 through `crates/desktop-host/src/binding.rs`, the only reader of that file, which
 is why a broken binding can still be released after the first core inspection has
 failed. Anything that file cannot be fully trusted to say is reported as an
 unknown binding, and an unknown binding makes every service control read-only.
 
-Use the clean C3 revision (insto 0.7.22) in `packaging/core-pin.json` as the read-only build
-input. After preparing a new runtime, stage it with:
+Use the clean revision (insto 0.7.22) in `packaging/core-pin.json` as the read-only
+build input. The pin moved to `51103f275ea1ac1881f7aacef76f9ba685334890` for R1's
+first-check work, which adds `snapshots.read` as the twenty-fifth capability; the
+staged runtime in `.build/app-resources/runtime` predates that pin and has to be
+prepared again before a bundle is built. After preparing a new runtime, stage it with:
 
 ```sh
 python3 -B -m scripts.stage_app_runtime .build/runtime-c3-01
@@ -72,9 +78,9 @@ shell, provider-network or arbitrary-URL IPC is exposed.
 G2 adds the five C3 operations on the 0.7.22 bridge: `service.inspect`,
 `service.migrate`, `service.uninstall`, `home.inspect` and `home.select`.
 `.build/runtime-c3-01` was prepared with `scripts.prepare_runtime` from insto
-`3d2c8e7a512625c21e0e1b47c22ec14eea5da19d` (0.7.22); its manifest validates
-against the pin, and its bridge advertises the twenty-four pinned capabilities
-in the pinned order. Staged into `.build/app-resources/runtime` (build id
+`3d2c8e7a512625c21e0e1b47c22ec14eea5da19d` (0.7.22); its manifest validated
+against the pin of the day, and its bridge advertised the twenty-four capabilities
+that pin listed. Staged into `.build/app-resources/runtime` (build id
 `4df54faceb61d38bd33ba2498d021384c5236d82a2431dbd932db4bee5ba7d60`). The
 retained 0.7.21 runtime `.build/runtime-c2-01` in the app-shell worktree is the
 "previous version" the native migration proof starts from; it is kept, never
