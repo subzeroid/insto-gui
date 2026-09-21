@@ -438,12 +438,15 @@ mod tests {
         // cannot produce, so it fails the decode — what matters here is that it
         // released its slot, which the next admission proves.
         assert!(lookup.await.unwrap().is_err());
-        assert!(owner
+        // `Busy` here would be the leak this test exists to rule out, so the next
+        // admission must fail for the decode reason, never for a held slot.
+        let next = owner
             .execute(Operation::LookupProfile {
                 username: "alice".into(),
             })
-            .await
-            .is_err());
+            .await;
+        assert!(next.is_err());
+        assert_ne!(next.err(), Some(HostError::Busy));
         owner.shutdown().await;
     }
     #[tokio::test]
