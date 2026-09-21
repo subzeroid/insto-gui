@@ -661,3 +661,22 @@ Every gate line in both `evidence-<target>` artifacts is `pass`; the native `mig
 `adopt` proofs report `passed`, `cleanup_confirmed` and `app_group_cleaned` true; the DMG
 hashes equal the published `SHA256SUMS`.
 
+
+## v0.2.0 release evidence
+
+Tag `v0.2.0` at `a8b2110`, workflow run
+<https://github.com/subzeroid/insto-gui/actions/runs/35569563052>, 2026-09-21. Same pipeline
+and gates as v0.1.0 (both matrix legs green on clean GitHub runners, draft release from
+`publish`, then published). First release on core commit e871ea3 (27 capabilities): adds the Lookup section — lookup.profile and lookup.activity with a 70 s network-read budget in its own admission slot. The proof
+checks the token form against the locale the window renders, so it ran in English on
+the en-US runners.
+
+| target | DMG sha256 | executable sha256 | proof executable sha256 | runtime build id | launch → runtime published |
+|---|---|---|---|---|---|
+| aarch64-apple-darwin | `34681d16d296aab1679349e6710e68989f829575617e22c2489b949a5030dc09` | `885974a6734858568ef80de3420dd7998a16a8047b383ab3c1c41d02ca5f2404` | `87648bec220a138b60125750cae6132bea6ebcd59156143778639e37b38aa4d2` | `375c51ed5d1fb7ae76b3cc6a6031a3199278cf6790f33fc9931b71b741c47b60` | 12 s |
+| x86_64-apple-darwin | `c2171bff08ec5852ed8fa45a995ee230186191610135c37cd2e5b3a7254fc2aa` | `33a8707881205b5abff61ad250e4b93f39bc3c12089da3c2d84a1ee3f94fd7ac` | `f5d619c1d6761efd1277b641804aafc0dd43cf9511585cc0268bb7f34b4c0fbd` | `2b13416471204f24ffe35fa0484d1c33d0ae220dedf0458399232deeabcf4ab6` | 24 s |
+
+Every gate line in both `evidence-<target>` artifacts is `pass`; the native `migrate` and
+`adopt` proofs report `passed`, `cleanup_confirmed` and `app_group_cleaned` true; the DMG
+hashes equal the published `SHA256SUMS`.
+
