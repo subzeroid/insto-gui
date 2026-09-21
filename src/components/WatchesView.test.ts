@@ -5,6 +5,7 @@ import { DesktopClient, type Invoke } from '../desktop/client'
 import { createHistoryState } from '../desktop/history'
 import { createMonitoringState } from '../desktop/monitoring'
 import { envelope, overview, page, profileFields, snap, watch } from '../desktop/fixtures'
+import { formatCount } from '../desktop/format'
 
 describe('watches view', () => {
   it('selects a row without network, confirms removal in page and shows the empty call to action', async () => {
@@ -83,6 +84,11 @@ describe('watches view', () => {
         .mockResolvedValueOnce(envelope('history_page', page([{ kind: 'target', target_pk: '7', snapshot: snap('2', '7', 2) }])))
         .mockResolvedValueOnce(envelope('history_page', page([{ kind: 'snapshot', snapshot: snap('2', '7', 2) }])))
         .mockResolvedValueOnce(envelope('snapshot_fields', profileFields('2', '7', 2)))
+        // The landing tick brings the overview with it, and the `last_ok` change
+        // then reloads the history once more for the same account.
+        .mockResolvedValueOnce(envelope('overview', { ...overview, watches: [landed] }))
+        .mockResolvedValueOnce(envelope('history_page', page([{ kind: 'target', target_pk: '7', snapshot: snap('2', '7', 2) }])))
+        .mockResolvedValueOnce(envelope('history_page', page([{ kind: 'snapshot', snapshot: snap('2', '7', 2) }])))
       const { monitoring, wrapper } = mounted(invoke)
       await monitoring.refresh(); await flushPromises()
       await wrapper.get('[role="option"]').trigger('click'); await flushPromises()
@@ -95,14 +101,48 @@ describe('watches view', () => {
       await vi.advanceTimersByTimeAsync(5_000); await flushPromises()
       expect(invoke.mock.calls.map(call => call[0])).toEqual([
         'read_overview', 'search_targets', 'search_targets',
-        'search_targets', 'list_snapshots', 'read_snapshot',
+        // the tick that found it, then one overview so the status line and the
+        // list row catch up with the card instead of trailing it by an interval
+        'search_targets', 'list_snapshots', 'read_snapshot', 'read_overview',
+        // the `last_ok` change reloads the history; the card is already current
+        // for this snapshot, so it is not read again
+        'search_targets', 'list_snapshots',
       ])
       expect(wrapper.text()).toContain('Alice Harbour')
+      expect(wrapper.text()).not.toContain('Waiting for the first check')
       // The snapshot is there, so the timer is gone.
       const settled = invoke.mock.calls.length
       await vi.advanceTimersByTimeAsync(20_000); await flushPromises()
       expect(invoke).toHaveBeenCalledTimes(settled)
       expect(vi.getTimerCount()).toBe(0)
+      wrapper.unmount()
+    } finally { vi.useRealTimers() }
+  })
+  it('keeps the profile card on screen while the reload that follows the check runs', async () => {
+    vi.useFakeTimers()
+    try {
+      const targets = envelope('history_page', page([{ kind: 'target', target_pk: '7', snapshot: snap('2', '7', 2) }]))
+      const snapshots = envelope('history_page', page([{ kind: 'snapshot', snapshot: snap('2', '7', 2) }]))
+      const invoke = vi.fn()
+        .mockResolvedValueOnce(envelope('overview', overview))
+        .mockResolvedValueOnce(envelope('history_page', page([])))
+        .mockResolvedValueOnce(targets)                                   // the landing tick
+        .mockResolvedValueOnce(snapshots)
+        .mockResolvedValueOnce(envelope('snapshot_fields', profileFields('2', '7', 2)))
+        .mockResolvedValueOnce(envelope('overview', { ...overview, watches: [landed] }))
+        .mockImplementationOnce(() => new Promise(() => {}))              // the follow-up reload hangs
+      const { monitoring, wrapper } = mounted(invoke)
+      await monitoring.refresh(); await flushPromises()
+      await wrapper.get('[role="option"]').trigger('click'); await flushPromises()
+      await vi.advanceTimersByTimeAsync(5_000); await flushPromises()
+      expect(wrapper.find('.profile-card').exists()).toBe(true)
+      expect(wrapper.text()).toContain('Alice Harbour')
+      // The `last_ok` change reloads the history for the same account; the card
+      // must stay readable throughout rather than unmounting and coming back.
+      expect(invoke.mock.calls.at(-1)?.[0]).toBe('search_targets')
+      expect(wrapper.find('.profile-card').exists()).toBe(true)
+      expect(wrapper.text()).toContain('Alice Harbour')
+      expect(wrapper.text()).toContain(formatCount(18507))
       wrapper.unmount()
     } finally { vi.useRealTimers() }
   })

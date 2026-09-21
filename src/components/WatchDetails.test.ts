@@ -61,7 +61,7 @@ describe('watch details', () => {
     history.state.targets.scanComplete = true
     history.state.snapshots.items = [{ id: '2', target_pk: '7', captured_at: 1_770_000_000 }]
     history.state.snapshots.loaded = true
-    history.state.profile = { value: profileFields('2', '7', 1_770_000_000), snapshotId: '2', loading: false, error: null }
+    history.state.profile = { value: profileFields('2', '7', 1_770_000_000), targetPk: '7', snapshotId: '2', loading: false, error: null }
     const wrapper = mount(WatchDetails, { props: { watch, serviceState: 'running' as const, busy: false, stale: false, history, ...actions } })
     await flushPromises()
     const text = wrapper.text()

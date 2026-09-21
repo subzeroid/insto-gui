@@ -37,7 +37,8 @@ const texts = computed(() => TEXTS.filter(field => known(field) !== undefined).m
     <p v-if="profile.error" role="alert" class="notice danger">{{ profile.error.message }}</p>
     <p v-else-if="!profile.value" role="status" class="loading">{{ t('profile.loading') }}</p>
     <template v-else>
-      <h3 v-if="renamedTo" class="profile-user">@{{ renamedTo }}</h3>
+      <!-- Only after a rename, so it needs to say which of the two names it is. -->
+      <p v-if="renamedTo" class="profile-user"><span class="label">{{ t('profile.renamed') }}</span> @{{ renamedTo }}</p>
       <p v-if="fullName" class="profile-name">{{ fullName }}</p>
       <p v-if="badges.length" class="profile-badges"><span v-for="key in badges" :key="key" class="badge">{{ t(key) }}</span></p>
       <dl v-if="counts.length" class="profile-counts">

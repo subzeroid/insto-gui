@@ -20,10 +20,10 @@ Paste your HikerAPI token once, add a few accounts, and a background service che
 
 - **Watched accounts** — add by username, give each one its own check interval (300 s and up), pause, resume or remove it; up to three watches run at a time
 - **Status you can trust** — each row shows the last *successful* check, not the fact that a process is alive, plus the interval and any run of consecutive errors
-- **The profile, right away** — a new account is checked as soon as you add it, and every field it tracks — followers, following, posts, bio, link, public contact details, business category and the verified / business / private flags — appears in the window a few seconds later, dated to the check they came from
+- **The profile, right away** — a new account is checked as soon as you add it, and every tracked field except the avatar and banner hashes — followers, following, posts, bio, link, public email and phone, business category and the verified / business / private flags — appears in the window a few seconds later, dated to the check it came from
 - **Snapshot history** — every successful check is stored; pick any two saved snapshots of one account and compare exactly those two
 - **Change feed** — all accounts, newest first, filterable down to one; a first snapshot is labelled a baseline rather than dressed up as a change, and a comparison whose older snapshot lacked a field is labelled incomplete rather than guessed at
-- **Tracked fields** — username, full name, biography, profile link, verified / business / private flags, follower, following and media counts, and avatar and banner hashes
+- **Tracked fields** — username, full name, biography, profile link, verified / business / private flags, follower, following and media counts, public email, public phone, business category, and avatar and banner hashes
 - **Background service** — a macOS LaunchAgent that keeps checking with the app closed; start, stop and repair it from the app, and disable it from **Settings** before you move the app to the Trash
 - **Bundled core** — a compatible Python insto core ships inside the app; no Python, uv or CLI install, and no downloads on first run
 - **Adopts an existing `~/.insto`** — inspect the folder first, connect it only after an explicit confirmation, and go back to the app's own profile later without the folder's files being touched

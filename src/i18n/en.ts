@@ -193,6 +193,7 @@ export const en = {
 
   // The profile as of the newest saved snapshot.
   'profile.title': 'Profile at the last check',
+  'profile.renamed': 'Username in this snapshot:',
   'profile.loading': 'Reading the profile…',
   'profile.as_of': 'As of {time}',
   'profile.badge_verified': 'Verified',

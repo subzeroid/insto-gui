@@ -67,7 +67,8 @@ footer { display: flex; gap: 8px; align-items: center; padding: 17px 28px; color
 .changes .old { color: #8c97a5; text-decoration: line-through; } .changes .new { color: #d3dde9; }
 .profile-card { border: 1px solid #28313b; border-radius: 9px; padding: 16px 18px; margin: 22px 0 26px; }
 .profile-card .notice, .profile-card .loading { margin: 0; }
-.profile-user { font-size: 15px; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+.profile-user { font-size: 14px; font-weight: 600; margin: 0 0 2px; overflow-wrap: anywhere; }
+.profile-user .label { display: block; font-size: 10px; font-weight: 400; letter-spacing: .4px; color: #929fae; }
 .profile-name { color: #b5c7d7; font-size: 13px; margin: 4px 0 0; overflow-wrap: anywhere; }
 .profile-badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
 .profile-badges .badge { border: 1px solid #3b4651; border-radius: 999px; padding: 2px 9px; font-size: 10px; color: #9db0c2; }

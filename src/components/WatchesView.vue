@@ -47,7 +47,13 @@ async function pollFirstCheck() {
   // The same predicate `monitoring` uses keeps a hidden window quiet.
   if (firstCheckBusy || !props.monitoring.visible() || props.history.state.username === null) return
   firstCheckBusy = true
-  try { await props.history.reload() } finally { firstCheckBusy = false }
+  try {
+    await props.history.reload()
+    // The snapshot landed. One overview read brings the status line and the list
+    // row up with the card instead of leaving them a poll interval behind it;
+    // every other tick still reads the history alone.
+    if (props.history.state.snapshots.items.length > 0) void props.monitoring.reconcile()
+  } finally { firstCheckBusy = false }
 }
 // The timer exists exactly while the condition holds, and restarts for a new
 // selection: a paused, failing, removed, checked or deselected watch clears it,

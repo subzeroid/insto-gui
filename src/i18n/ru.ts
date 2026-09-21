@@ -176,6 +176,7 @@ export const ru: Dictionary = {
   'changes.unknown_fields': 'Поля без данных в старом снимке (неизвестно): {fields}.',
 
   'profile.title': 'Профиль на момент последней проверки',
+  'profile.renamed': 'Имя пользователя в этом снимке:',
   'profile.loading': 'Читаем профиль…',
   'profile.as_of': 'По состоянию на {time}',
   'profile.badge_verified': 'Подтверждён',

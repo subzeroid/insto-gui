@@ -30,7 +30,9 @@ describe('profile card', () => {
   it('names the account only when the snapshot disagrees with the selected watch', () => {
     // A rename: the saved snapshot still carries the old name, so the card says so.
     const renamed = card(profileFields('1', '7', 1, { username: 'alice.harbour' }))
-    expect(renamed.get('.profile-user').text()).toBe('@alice.harbour')
+    // Labelled, so it is clear which of the two names on screen this one is.
+    expect(renamed.get('.profile-user .label').text()).toBe(t('profile.renamed'))
+    expect(renamed.get('.profile-user').text()).toContain('@alice.harbour')
     // An unknown username is not invented.
     expect(card(profileFields('1', '7', 1, {}, ['username'])).find('.profile-user').exists()).toBe(false)
   })
