@@ -534,6 +534,53 @@ pub async fn select_home(
         )?)
         .await
 }
+// The two on-demand lookups. Both are validated here with the host's own rules
+// before a process is spawned, so a mistyped name never costs a paid request.
+const LOOKUP: &str = "invalid_lookup_input";
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LookupProfileInput {
+    username: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LookupActivityInput {
+    target_pk: String,
+    // A `u8` refuses a float, a bool and anything outside a byte before the
+    // window set itself is checked.
+    window: u8,
+}
+#[tauri::command]
+pub async fn lookup_profile(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: LookupProfileInput = argument(request, "lookup", LOOKUP)?;
+    state
+        .execute(checked(
+            Operation::LookupProfile {
+                username: input.username,
+            },
+            LOOKUP,
+        )?)
+        .await
+}
+#[tauri::command]
+pub async fn lookup_activity(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: LookupActivityInput = argument(request, "lookup", LOOKUP)?;
+    state
+        .execute(checked(
+            Operation::LookupActivity {
+                target_pk: input.target_pk,
+                window: input.window,
+            },
+            LOOKUP,
+        )?)
+        .await
+}
 #[tauri::command]
 pub async fn inspect_binding(
     state: tauri::State<'_, Arc<DesktopState>>,

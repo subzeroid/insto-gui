@@ -395,6 +395,152 @@ fn c3_commands_map_to_operations_and_budgets() {
 }
 
 #[test]
+fn lookup_commands_validate_arguments_before_the_host() {
+    use insto_desktop_host::{protocol::Budget, Operation};
+    let state = std::sync::Arc::new(crate::state::DesktopState::new("/unused".into()));
+    state.close();
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .invoke_handler(tauri::generate_handler![
+            crate::commands::lookup_profile,
+            crate::commands::lookup_activity
+        ])
+        .build(tauri::generate_context!())
+        .unwrap();
+    // A closed state proves the argument was accepted: execution is refused with "closed".
+    let accepted = [
+        (
+            "lookup_profile",
+            serde_json::json!({"lookup": {"username": "alice"}}),
+        ),
+        (
+            "lookup_activity",
+            serde_json::json!({"lookup": {"target_pk": "17841400000000001", "window": 12}}),
+        ),
+        (
+            "lookup_activity",
+            serde_json::json!({"lookup": {"target_pk": "7", "window": 30}}),
+        ),
+        (
+            "lookup_activity",
+            serde_json::json!({"lookup": {"target_pk": "7", "window": 50}}),
+        ),
+    ];
+    for (cmd, body) in accepted {
+        assert_eq!(
+            ipc(&app, "main", cmd, body.clone()).unwrap_err(),
+            serde_json::json!("closed"),
+            "{cmd} {body}"
+        );
+    }
+    let rejected = [
+        // The username rule, the pk rule and the window set, all before a spawn:
+        // a mistyped name must never cost a paid provider request.
+        (
+            "lookup_profile",
+            serde_json::json!({"lookup": {"username": "SECRET_SENTINEL user"}}),
+        ),
+        (
+            "lookup_profile",
+            serde_json::json!({"lookup": {"username": "@alice"}}),
+        ),
+        (
+            "lookup_profile",
+            serde_json::json!({"lookup": {"username": "Alice"}}),
+        ),
+        ("lookup_profile", serde_json::json!({"lookup": {}})),
+        (
+            "lookup_profile",
+            serde_json::json!({"query": {"username": "alice"}}),
+        ),
+        (
+            "lookup_profile",
+            serde_json::json!({"lookup": {"username": "alice", "window": 12}}),
+        ),
+        (
+            "lookup_profile",
+            serde_json::json!({"lookup": {"username": "alice"}, "extra": 1}),
+        ),
+        (
+            "lookup_activity",
+            serde_json::json!({"lookup": {"target_pk": "0", "window": 12}}),
+        ),
+        (
+            "lookup_activity",
+            serde_json::json!({"lookup": {"target_pk": 7, "window": 12}}),
+        ),
+        (
+            "lookup_activity",
+            serde_json::json!({"lookup": {"target_pk": "7", "window": 13}}),
+        ),
+        (
+            "lookup_activity",
+            serde_json::json!({"lookup": {"target_pk": "7", "window": 12.0}}),
+        ),
+        (
+            "lookup_activity",
+            serde_json::json!({"lookup": {"target_pk": "7", "window": true}}),
+        ),
+        (
+            "lookup_activity",
+            serde_json::json!({"lookup": {"target_pk": "7", "window": 300}}),
+        ),
+        (
+            "lookup_activity",
+            serde_json::json!({"lookup": {"target_pk": "7"}}),
+        ),
+    ];
+    for (cmd, body) in rejected {
+        let result = ipc(&app, "main", cmd, body.clone()).unwrap_err();
+        assert_eq!(
+            result,
+            serde_json::json!("invalid_lookup_input"),
+            "{cmd} {body}"
+        );
+        assert!(!result.to_string().contains("SECRET_SENTINEL"));
+    }
+    // Only the bundled main window is on the ACL.
+    for cmd in ["lookup_profile", "lookup_activity"] {
+        assert!(ipc(
+            &app,
+            "other",
+            cmd,
+            serde_json::json!({"lookup": {"username": "alice"}})
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("not allowed"));
+    }
+    // The wire request the accepted arguments build, and the class it runs in.
+    for (operation, name, params) in [
+        (
+            Operation::LookupProfile {
+                username: "alice".into(),
+            },
+            "lookup.profile",
+            serde_json::json!({"username": "alice"}),
+        ),
+        (
+            Operation::LookupActivity {
+                target_pk: "17841400000000001".into(),
+                window: 12,
+            },
+            "lookup.activity",
+            serde_json::json!({"target_pk": "17841400000000001", "window": 12}),
+        ),
+    ] {
+        assert_eq!(operation.name(), name);
+        assert_eq!(operation.budget(), Budget::NetworkRead);
+        // A network read is a read: cancelled on close, never outcome-unknown.
+        assert!(!operation.is_mutation());
+        let request: serde_json::Value =
+            serde_json::from_slice(&operation.request("t").unwrap()).unwrap();
+        assert_eq!(request["operation"], name);
+        assert_eq!(request["params"], params);
+    }
+}
+
+#[test]
 fn c3_binding_report_carries_a_home_only_for_an_adopted_root() {
     use insto_desktop_host::binding::Binding;
     for (binding, state, home) in [

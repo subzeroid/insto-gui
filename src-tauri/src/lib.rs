@@ -148,7 +148,9 @@ pub fn run() {
             commands::uninstall_service,
             commands::inspect_home,
             commands::select_home,
-            commands::inspect_binding
+            commands::inspect_binding,
+            commands::lookup_profile,
+            commands::lookup_activity
         ])
         .setup(move |app| {
             let bundle = app.path().resource_dir()?.join("runtime");
