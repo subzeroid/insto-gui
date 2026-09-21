@@ -1465,6 +1465,12 @@ const LOOKUP_CODE_CHARACTERS: usize = 64;
 const LOOKUP_TOP_PLACES: usize = 10;
 const LOOKUP_TOP_TERMS: usize = 20;
 const LOOKUP_TOP_POSTS: usize = 5;
+/// Half the Earth's circumference, rounded up: `compute_geo_fingerprint` measures
+/// the radius as the largest haversine distance from the centroid, and no two
+/// points on the planet are further apart than this.
+const MAX_RADIUS_KM: f64 = 20_100.0;
+/// `MAX_SAFE` as a float: an average of counts none of which exceeds it.
+const MAX_AVERAGE: f64 = 9_007_199_254_740_991.0;
 #[derive(Clone, Copy)]
 enum Tracked {
     /// A string or JSON null, at most this many characters.
@@ -1573,6 +1579,12 @@ fn lookup_profile(result: &Value) -> Result<LookupProfile, HostError> {
         quota_remaining: quota(&obj["quota_remaining"])?,
     })
 }
+// The brief's rule, which is stricter than the core's: `lookup.py:_coordinate`
+// only checks finiteness, so one absurd coordinate from the provider makes the
+// whole already-paid answer a protocol failure instead of an answer with one
+// place missing. Recorded as a core follow-up (`_locatable` should drop an
+// out-of-range coordinate exactly as it drops a non-finite one); until then the
+// app refuses rather than renders a place that is not on the planet.
 fn coordinate(value: &Value, limit: f64) -> Result<f64, HostError> {
     value
         .as_f64()
@@ -1637,10 +1649,11 @@ fn geo(value: &Value, analyzed: u64) -> Result<Geo, HostError> {
     };
     let radius_km = match &obj["radius_km"] {
         Value::Null => None,
-        // A distance, not a coordinate: finite and never negative.
+        // A distance, not a coordinate: finite, never negative, and never
+        // wider than the planet.
         item => Some(
             item.as_f64()
-                .filter(|number| number.is_finite() && *number >= 0.0)
+                .filter(|number| number.is_finite() && (0.0..=MAX_RADIUS_KM).contains(number))
                 .ok_or(HostError::Protocol)?,
         ),
     };
@@ -1753,7 +1766,7 @@ fn likes(value: &Value, analyzed: u64) -> Result<Likes, HostError> {
     let total = counted(&obj["total"])?;
     let average = obj["average"]
         .as_f64()
-        .filter(|number| number.is_finite() && *number >= 0.0)
+        .filter(|number| number.is_finite() && (0.0..=MAX_AVERAGE).contains(number))
         .ok_or(HostError::Protocol)?;
     let raw = obj["top_posts"].as_array().ok_or(HostError::Protocol)?;
     // `aggregate_likes` returns the five most liked posts of the window it was
@@ -4072,6 +4085,70 @@ mod tests {
                 decode(&envelope(&rejected), "test", &activity_lookup()).unwrap_err(),
                 HostError::Protocol,
                 "{rejected}"
+            );
+        }
+        // The accepting side of the three bounds: exactly 120 characters of
+        // place name and term key, exactly 64 of post code. An off-by-one the
+        // other way would refuse an answer the user has already paid for.
+        let exact = LOOKUP_ACTIVITY
+            .replace(
+                "\"name\":\"Museum\"",
+                &format!("\"name\":\"{}\"", "p".repeat(120)),
+            )
+            .replace(
+                "\"key\":\"bob\"",
+                &format!("\"key\":\"{}\"", "k".repeat(120)),
+            )
+            .replace(
+                "\"code\":\"code0\"",
+                &format!("\"code\":\"{}\"", "c".repeat(64)),
+            );
+        let Response::LookupActivity(bounded) =
+            decode(&envelope(&exact), "test", &activity_lookup()).unwrap()
+        else {
+            panic!("lookup.activity")
+        };
+        assert_eq!(bounded.geo.places[1].name.chars().count(), 120);
+        assert_eq!(bounded.mentions[0].key.chars().count(), 120);
+        assert_eq!(bounded.likes.top_posts[3].code.chars().count(), 64);
+        // The core truncates by code point, so a bound is 120 characters and not
+        // 120 bytes.
+        let wide = LOOKUP_ACTIVITY.replace(
+            "\"key\":\"bob\"",
+            &format!("\"key\":\"{}\"", "\u{2603}".repeat(120)),
+        );
+        assert!(decode(&envelope(&wide), "test", &activity_lookup()).is_ok());
+        // The two float ceilings, on the accepting and the refusing side.
+        for (accepted, refused) in [
+            ("\"radius_km\":20100.0", "\"radius_km\":20100.001"),
+            (
+                "\"average\":9007199254740991.0",
+                "\"average\":9007199254740992.0",
+            ),
+        ] {
+            let source = if accepted.starts_with("\"radius_km\"") {
+                "\"radius_km\":0.869"
+            } else {
+                "\"average\":25.0"
+            };
+            assert!(
+                decode(
+                    &envelope(&LOOKUP_ACTIVITY.replace(source, accepted)),
+                    "test",
+                    &activity_lookup()
+                )
+                .is_ok(),
+                "{accepted}"
+            );
+            assert_eq!(
+                decode(
+                    &envelope(&LOOKUP_ACTIVITY.replace(source, refused)),
+                    "test",
+                    &activity_lookup()
+                )
+                .unwrap_err(),
+                HostError::Protocol,
+                "{refused}"
             );
         }
         // An empty account that claims a like is refused too.

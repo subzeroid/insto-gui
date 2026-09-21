@@ -57,6 +57,11 @@ export const en = {
   'error.invalid_params': 'The core rejected the request parameters. Refresh the list and repeat the action.',
   'error.internal_error': 'The action could not be completed. Refresh the state of the app.',
 
+  // A failed lookup is not a failed local read: the requests may already have
+  // been paid for. `error.*` cannot carry this, because that prefix is the
+  // closed set of bridge codes, one sentence each.
+  'lookup.may_be_charged': 'The request may already have been charged. Look up again only if you are willing to pay for it.',
+
   // Shared UI copy. One sentence per migration outcome (R13), and each says only
   // what the core actually reported. `service_error` reaches migrate two ways — a
   // completed rollback whose restored registration did not restart

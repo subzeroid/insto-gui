@@ -301,9 +301,10 @@ const DEMO_PLACES: readonly { name: string; lat: number; lng: number }[] = [
 const DEMO_TAGS = ['harbour', 'nightferry', 'slowfilm', 'risograph', 'coldlight', 'commissions']
 const DEMO_MENTIONS = ['atlas.ferry', 'birchwood.press', 'cobalt.harbor']
 // A short artificial wait, so the window's loading state is visible in the demo
-// rather than flashing past. A real lookup takes seconds.
+// rather than flashing past. A real lookup takes seconds. Tests pass
+// `lookupDelayMs: 0` rather than spending it nine times over in wall-clock.
 export const MOCK_LOOKUP_MS = 250
-const pause = () => new Promise(resolve => { setTimeout(resolve, MOCK_LOOKUP_MS) })
+const pause = (ms: number) => (ms === 0 ? Promise.resolve() : new Promise(resolve => { setTimeout(resolve, ms) }))
 
 interface DemoPost { code: string; takenAt: number; likes: number; place: { name: string; lat: number; lng: number } | null; tags: string[]; mentions: string[] }
 
@@ -404,7 +405,8 @@ const ADOPTABLE: HomeReport = {
 // pane. Two seconds is long enough to see the wait and short enough to sit through.
 export const MOCK_FIRST_CHECK_MS = 2000
 
-export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
+export function createMockInvoke(options: { setup?: boolean; lookupDelayMs?: number } = {}): Invoke {
+  const lookupDelayMs = options.lookupDelayMs ?? MOCK_LOOKUP_MS
   let revisions = 0
   // Per-instance overlays: an account added here must not leak into another mock.
   const snapshotsByPk = new Map(SNAPSHOTS)
@@ -561,7 +563,7 @@ export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
       case 'lookup_profile': {
         const user = text(args, 'lookup', 'username') ?? ''
         if (!profile.configured) throw new DesktopFailure('not_configured')
-        await pause()
+        await pause(lookupDelayMs)
         const account = byUser.get(user)
         if (account === undefined) throw new DesktopFailure('target_not_found')
         const latest = account.steps.length === 0 ? account.profile : fieldsAt(account, account.steps.length - 1).fields
@@ -580,7 +582,7 @@ export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
         const pk = text(args, 'lookup', 'target_pk') ?? ''
         const requested = number(args, 'lookup', 'window') ?? 0
         if (!profile.configured) throw new DesktopFailure('not_configured')
-        await pause()
+        await pause(lookupDelayMs)
         const account = byPk.get(pk)
         const window = (LOOKUP_WINDOWS as readonly number[]).includes(requested) ? (requested as LookupWindow) : 50
         if (account === undefined) throw new DesktopFailure('target_not_found')

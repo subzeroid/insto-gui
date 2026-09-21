@@ -6,7 +6,8 @@ import { createMockInvoke, MOCK_FIRST_CHECK_MS } from './mock'
 // than no mock at all, because it produces a screenshot of a screen the app can
 // never show. Every read the app performs at boot and in each section is driven
 // through `DesktopClient`, so `dto.ts` is the judge here, not this file.
-const client = () => new DesktopClient(createMockInvoke())
+// The artificial lookup delay exists for the demo window, not for this suite.
+const client = () => new DesktopClient(createMockInvoke({ lookupDelayMs: 0 }))
 
 describe('mock desktop', () => {
   it('prepares and inspects a configured, running profile', async () => {
@@ -240,7 +241,7 @@ describe('mock desktop', () => {
   })
 
   it('refuses a lookup before a token is connected', async () => {
-    const desktop = new DesktopClient(createMockInvoke({ setup: true }))
+    const desktop = new DesktopClient(createMockInvoke({ setup: true, lookupDelayMs: 0 }))
     await expect(desktop.lookupProfile('atlas.ferry')).rejects.toMatchObject({ code: 'not_configured' })
     await expect(desktop.lookupActivity('51884219307', 12)).rejects.toMatchObject({ code: 'not_configured' })
   })

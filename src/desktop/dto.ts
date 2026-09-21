@@ -74,6 +74,12 @@ const CODE_CHARACTERS = 64
 const TOP_PLACES = 10
 const TOP_TERMS = 20
 const TOP_POSTS = 5
+// Half the Earth's circumference, rounded up: the radius is the largest
+// haversine distance from the centroid, and no two points on the planet are
+// further apart. `average` is an average of counts, none of which exceeds
+// `MAX_SAFE_INTEGER`. The host applies exactly these two ceilings.
+const MAX_RADIUS_KM = 20_100
+const MAX_AVERAGE = Number.MAX_SAFE_INTEGER
 const fail = (): never => { throw new DesktopFailure('protocol') }
 export function record(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value) }
 function exact(value: unknown, keys: string[]): Record<string, unknown> {
@@ -230,6 +236,11 @@ function bounded(value: unknown, max: number): string {
   if (typeof value !== 'string' || characters(value) > max) fail()
   return value as string
 }
+// The coordinate rule is stricter than the core's: `lookup.py:_coordinate` only
+// checks finiteness, so one absurd coordinate makes the whole already-paid answer
+// a protocol failure instead of an answer with one place missing. Recorded as a
+// core follow-up; until then the app refuses rather than renders a place that is
+// not on the planet.
 function decimalNumber(value: unknown, limit: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > limit) fail()
   return value as number
@@ -286,7 +297,7 @@ function decodeGeo(value: unknown, analyzed: number): Geo {
   if (places.reduce((sum, place) => sum + place.count, 0) > geotagged) fail()
   const anchor = v.anchor === null ? null : decodePlace(v.anchor)
   const centroid = v.centroid === null ? null : decodePoint(v.centroid)
-  const radius = v.radius_km === null ? null : decimalNumber(v.radius_km, Number.MAX_SAFE_INTEGER)
+  const radius = v.radius_km === null ? null : decimalNumber(v.radius_km, MAX_RADIUS_KM)
   // One geotagged post produces all of these at once: the anchor is the first
   // listed place, and the centroid and the radius come from the same points.
   const located = geotagged > 0
@@ -337,7 +348,7 @@ function decodeTerms(value: unknown): Term[] {
 function decodeLikes(value: unknown, analyzed: number): Likes {
   const v = exact(value, ['total', 'average', 'top_posts'])
   const total = count(v.total)
-  const average = decimalNumber(v.average, Number.MAX_SAFE_INTEGER)
+  const average = decimalNumber(v.average, MAX_AVERAGE)
   if (!Array.isArray(v.top_posts) || average < 0) fail()
   const raw = v.top_posts as unknown[]
   // `aggregate_likes` returns the five most liked posts of the window it was

@@ -311,6 +311,24 @@ describe('bridge decoders', () => {
       likes({ top_posts: example.likes.top_posts.map(post => ({ ...post, code: 'c'.repeat(65) })) }),
       likes({ average: -1 }), likes({ average: '25' }), likes({ total: -100 }),
     ]) expect(() => decodeLookupActivity(bad, '17841400000000001', 50)).toThrow(expect.objectContaining({ code: 'protocol' }))
+    // The accepting side of the three bounds: exactly 120 characters of place
+    // name and term key, exactly 64 of post code, measured in code points. An
+    // off-by-one the other way would refuse an answer already paid for.
+    const bounded = decodeLookupActivity({
+      ...example,
+      geo: { ...example.geo, anchor: { ...cafe, name: '☃'.repeat(120) }, places: [{ ...cafe, name: '☃'.repeat(120) }, museum] },
+      mentions: [{ key: 'k'.repeat(120), count: 2 }],
+      likes: { ...example.likes, top_posts: example.likes.top_posts.map(post => ({ ...post, code: 'c'.repeat(64) })) },
+    }, '17841400000000001', 50)
+    expect([...bounded.geo.places[0].name]).toHaveLength(120)
+    expect(bounded.mentions[0].key).toHaveLength(120)
+    expect(bounded.likes.top_posts[0].code).toHaveLength(64)
+    // The two float ceilings the host applies, on both sides.
+    expect(decodeLookupActivity(geo({ radius_km: 20100 }), '17841400000000001', 50).geo.radius_km).toBe(20100)
+    expect(decodeLookupActivity(likes({ average: Number.MAX_SAFE_INTEGER }), '17841400000000001', 50).likes.average).toBe(Number.MAX_SAFE_INTEGER)
+    for (const bad of [geo({ radius_km: 20100.001 }), likes({ average: Number.MAX_SAFE_INTEGER + 2 })]) {
+      expect(() => decodeLookupActivity(bad, '17841400000000001', 50)).toThrow(expect.objectContaining({ code: 'protocol' }))
+    }
     // Nothing inspected means nothing liked, and nowhere to have been.
     for (const bad of [
       { ...empty, likes: { ...empty.likes, total: 1 } },
