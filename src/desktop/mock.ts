@@ -53,6 +53,14 @@ interface DemoAccount {
   /** The absolute tracked values of the first snapshot; later ones apply the steps. */
   profile: Fields
   steps: DemoStep[]
+  /**
+   * What the provider answers about the places of this account's posts.
+   * `coordinates` is a post with a geotag and GPS; `names` is a post that names
+   * a place and carries no GPS, which `insto/models.py` says is common (older
+   * posts, and locations Instagram returns as text only). The two feed different
+   * numbers: the geometry counts the first, the places list counts both.
+   */
+  geo?: 'coordinates' | 'names'
 }
 
 // Six invented accounts: three active (the core's cap), three paused, one of the
@@ -179,6 +187,24 @@ const ACCOUNTS: DemoAccount[] = [
   },
 ]
 
+// Accounts the provider knows and the user is not watching — what the Lookup
+// section is for. They are never registrations, so they never appear in the
+// watch list, which also makes "Watch this account" reachable in the demo.
+// `harbour.notes` is the account whose posts name places and carry no GPS.
+const LOOKUP_ONLY: DemoAccount[] = [
+  {
+    user: 'harbour.notes', pk: '64108255390', status: 'active', interval: 900, errors: 0, geo: 'names',
+    profile: {
+      username: 'harbour.notes', full_name: 'Harbour Notes', biography: 'Notes from the water, mostly at night.',
+      external_url: null, is_verified: false, is_business: false, is_private: false,
+      follower_count: 12_407, following_count: 341, media_count: 76,
+      avatar: hex('harbour-avatar', 16), banner: null,
+    },
+    steps: [],
+  },
+]
+const EVERY_ACCOUNT = [...ACCOUNTS, ...LOOKUP_ONLY]
+
 // Snapshot ids ascend with capture time across every account, the way a shared
 // storage sequence does, so the feed's ordering key is never ambiguous.
 const SNAPSHOT_IDS = new Map<string, string>()
@@ -191,9 +217,9 @@ ACCOUNTS
 const snapshotsOf = (account: DemoAccount): Snapshot[] =>
   account.steps.map(step => ({ id: SNAPSHOT_IDS.get(`${account.pk}|${step.ago}`)!, target_pk: account.pk, captured_at: NOW - step.ago }))
 
-const SNAPSHOTS = new Map<string, Snapshot[]>(ACCOUNTS.map(account => [account.pk, snapshotsOf(account)]))
-const BY_PK = new Map<string, DemoAccount>(ACCOUNTS.map(account => [account.pk, account]))
-const BY_USER = new Map<string, DemoAccount>(ACCOUNTS.map(account => [account.user, account]))
+const SNAPSHOTS = new Map<string, Snapshot[]>(EVERY_ACCOUNT.map(account => [account.pk, snapshotsOf(account)]))
+const BY_PK = new Map<string, DemoAccount>(EVERY_ACCOUNT.map(account => [account.pk, account]))
+const BY_USER = new Map<string, DemoAccount>(EVERY_ACCOUNT.map(account => [account.user, account]))
 
 // The history page order: newest first, ties broken by the ascending id, which is
 // exactly the key `decodeHistoryPage` checks.
@@ -306,9 +332,15 @@ const DEMO_MENTIONS = ['atlas.ferry', 'birchwood.press', 'cobalt.harbor']
 export const MOCK_LOOKUP_MS = 250
 const pause = (ms: number) => (ms === 0 ? Promise.resolve() : new Promise(resolve => { setTimeout(resolve, ms) }))
 
-interface DemoPost { code: string; takenAt: number; likes: number; place: { name: string; lat: number; lng: number } | null; tags: string[]; mentions: string[] }
+// `lat`/`lng` are null for a post that names a place and carries no GPS — the
+// shape `insto/models.py` warns about, and the one the core's `extract_locations`
+// counts while `compute_geo_fingerprint` skips it.
+interface DemoPlace { name: string; lat: number | null; lng: number | null }
+interface DemoPost { code: string; takenAt: number; likes: number; place: DemoPlace | null; tags: string[]; mentions: string[] }
 
 const round3 = (value: number) => Math.round(value * 1000) / 1000
+const named = (place: { name: string; lat: number; lng: number }, geo: 'coordinates' | 'names'): DemoPlace =>
+  geo === 'names' ? { name: place.name, lat: null, lng: null } : place
 const RADIANS = Math.PI / 180
 function haversineKm(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const dLat = (bLat - aLat) * RADIANS, dLng = (bLng - aLng) * RADIANS
@@ -320,7 +352,7 @@ function haversineKm(aLat: number, aLng: number, bLat: number, bLng: number): nu
 const topTerms = (counts: Map<string, number>, top: number) =>
   [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).slice(0, top).map(([key, count]) => ({ key, count }))
 
-function demoPosts(pk: string, user: string, count: number): DemoPost[] {
+function demoPosts(pk: string, user: string, count: number, geo: 'coordinates' | 'names'): DemoPost[] {
   const prefix = user.replace(/[^a-z0-9]/g, '').slice(0, 4)
   return Array.from({ length: count }, (_, index) => {
     const seed = parseInt(hex(`${pk}:post:${index}`, 8), 16)
@@ -331,7 +363,7 @@ function demoPosts(pk: string, user: string, count: number): DemoPost[] {
       likes: 40 + (seed % 1200),
       // `Math.floor`, not `>>`: an eight-hex seed exceeds the signed 32-bit
       // range a shift would truncate it to, and a negative index reads nothing.
-      place: seed % 5 === 0 ? null : DEMO_PLACES[Math.floor(seed / 8) % DEMO_PLACES.length],
+      place: seed % 5 === 0 ? null : named(DEMO_PLACES[Math.floor(seed / 8) % DEMO_PLACES.length], geo),
       tags: [DEMO_TAGS[seed % DEMO_TAGS.length], DEMO_TAGS[(seed + index) % DEMO_TAGS.length]],
       mentions: seed % 3 === 0 ? [DEMO_MENTIONS[Math.floor(seed / 32) % DEMO_MENTIONS.length]] : [],
     }
@@ -340,21 +372,25 @@ function demoPosts(pk: string, user: string, count: number): DemoPost[] {
 
 // Every number below is computed from the one post window, exactly as the core
 // computes it from one fetch: the mock is only useful while `dto.ts` accepts it.
-function activityOf(pk: string, user: string, posts: number, window: LookupWindow, quota: number | null) {
-  const inspected = demoPosts(pk, user, Math.min(window, posts))
-  const tagged = inspected.filter(post => post.place !== null)
+function activityOf(pk: string, user: string, posts: number, window: LookupWindow, quota: number | null, geo: 'coordinates' | 'names' = 'coordinates') {
+  const inspected = demoPosts(pk, user, Math.min(window, posts), geo)
+  // `named` is every post that names a place; `tagged` is the subset the payload
+  // also carried GPS for. The geo block is built from the second, the locations
+  // list from the first — the same split the core makes.
+  const named = inspected.filter(post => post.place !== null)
+  const tagged = named.filter(post => post.place!.lat !== null)
   const places = new Map<string, { name: string; lat: number; lng: number; count: number }>()
   for (const post of tagged) {
     const place = post.place!
     const seen = places.get(place.name)
-    places.set(place.name, { ...place, count: (seen?.count ?? 0) + 1 })
+    places.set(place.name, { name: place.name, lat: place.lat!, lng: place.lng!, count: (seen?.count ?? 0) + 1 })
   }
   const ordered = [...places.values()].sort((a, b) => b.count - a.count || (a.name < b.name ? -1 : 1)).slice(0, 10)
   const centroid = tagged.length === 0 ? null : {
-    lat: tagged.reduce((sum, post) => sum + post.place!.lat, 0) / tagged.length,
-    lng: tagged.reduce((sum, post) => sum + post.place!.lng, 0) / tagged.length,
+    lat: tagged.reduce((sum, post) => sum + post.place!.lat!, 0) / tagged.length,
+    lng: tagged.reduce((sum, post) => sum + post.place!.lng!, 0) / tagged.length,
   }
-  const radius = centroid === null ? null : round3(Math.max(...tagged.map(post => haversineKm(centroid.lat, centroid.lng, post.place!.lat, post.place!.lng))))
+  const radius = centroid === null ? null : round3(Math.max(...tagged.map(post => haversineKm(centroid.lat, centroid.lng, post.place!.lat!, post.place!.lng!))))
   const hours = Array.from({ length: 24 }, () => 0)
   const days = Array.from({ length: 7 }, () => 0)
   const hashtags = new Map<string, number>(), mentions = new Map<string, number>(), locations = new Map<string, number>()
@@ -592,7 +628,7 @@ export function createMockInvoke(options: { setup?: boolean; lookupDelayMs?: num
         if (latest.is_private === true) throw new DesktopFailure('target_private')
         const posts = typeof latest.media_count === 'number' ? latest.media_count : 0
         spend(1)
-        return envelope('lookup_activity', activityOf(pk, account.user, posts, window, profile.quota_remaining))
+        return envelope('lookup_activity', activityOf(pk, account.user, posts, window, profile.quota_remaining, account.geo ?? 'coordinates'))
       }
 
       case 'inspect_home': {

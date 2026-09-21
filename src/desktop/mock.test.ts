@@ -240,6 +240,24 @@ describe('mock desktop', () => {
     expect(activity.likes.top_posts).toHaveLength(5)
   })
 
+  it('answers about an account that is not watched, whose posts name places without coordinates', async () => {
+    const desktop = client()
+    const found = await desktop.lookupProfile('harbour.notes')
+    // Not a registration: the Lookup section is what reaches it, and the watch
+    // list does not carry it.
+    expect((await desktop.overview()).watches.some(watch => watch.user === 'harbour.notes')).toBe(false)
+    const activity = await desktop.lookupActivity(found.target_pk, 30)
+    // The shape `insto/models.py` warns about: names, no GPS. The geo
+    // fingerprint is empty and the locations list is not.
+    expect(activity.geo.geotagged).toBe(0)
+    expect(activity.geo.anchor).toBeNull()
+    expect(activity.geo.centroid).toBeNull()
+    expect(activity.geo.radius_km).toBeNull()
+    expect(activity.geo.places).toEqual([])
+    expect(activity.locations.length).toBeGreaterThan(0)
+    expect(activity.locations.reduce((sum, term) => sum + term.count, 0)).toBeGreaterThan(0)
+    expect(activity.analyzed).toBeGreaterThan(0)
+  })
   it('refuses a lookup before a token is connected', async () => {
     const desktop = new DesktopClient(createMockInvoke({ setup: true, lookupDelayMs: 0 }))
     await expect(desktop.lookupProfile('atlas.ferry')).rejects.toMatchObject({ code: 'not_configured' })

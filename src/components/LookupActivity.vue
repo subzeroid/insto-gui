@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { LookupActivity as Activity } from '../desktop/dto'
+import type { LookupActivity as Activity, Place } from '../desktop/dto'
 import { formatCount, formatDecimal, localTime, weekdayNames } from '../desktop/format'
 import { t } from '../i18n'
 import BarChart from './BarChart.vue'
@@ -26,17 +26,32 @@ const hourLabels = Array.from({ length: 24 }, (_, hour) => t('lookup.hour_label'
 const hourTicks = Array.from({ length: 24 }, (_, hour) => (hour % 6 === 0 ? String(hour) : ''))
 const dayLabels = weekdayNames('long')
 const dayTicks = weekdayNames('short')
-// The ordered top list of place names, with the coordinates of the ones the
-// answer also placed on the map. One list rather than two: `locations` and the
-// places of the geo block are the same counted names, seen from two sides.
-const coordinates = computed(() => new Map(geo.value.places.map(place => [place.name, place])))
+// The two sides count different things. `geo.places` (and `geo.geotagged`, and
+// the anchor) count only posts whose payload carried GPS; `locations` counts
+// every post that names a place, which the core says is often many more. So the
+// list is `locations` — the whole of what was paid for — and the geometry is
+// shown separately, each saying which population it counts.
+//
+// Joining them is a lookup by name, and the names are not identical on the two
+// sides: `geo.places[].name` is the raw `location_name`, `locations[].key` is
+// that name stripped. And `geo.places` buckets by place pk where there is one,
+// so two entries can share a displayed name — nothing here can tell which of
+// them a counted post belongs to, and a wrong coordinate is worse than none.
+const coordinates = computed(() => {
+  const byName = new Map<string, Place | null>()
+  for (const place of geo.value.places) {
+    const key = place.name.trim()
+    byName.set(key, byName.has(key) ? null : place)
+  }
+  return byName
+})
 // A coordinate is written with a dot in both languages: the locale separator
 // would print "52,3739, 4,8903" in Russian, which is four numbers and no pair.
 // The radius below is a measurement, not a coordinate, and keeps the separator.
 const coordinatePair = (lat: number, lng: number) => `${lat.toFixed(4)}, ${lng.toFixed(4)}`
 const places = computed(() => props.activity.locations.map(term => {
-  const known = coordinates.value.get(term.key)
-  return { name: term.key, count: term.count, at: known === undefined ? null : coordinatePair(known.lat, known.lng) }
+  const known = coordinates.value.get(term.key) ?? null
+  return { name: term.key, count: term.count, at: known === null ? null : coordinatePair(known.lat, known.lng) }
 }))
 </script>
 <template>
@@ -50,8 +65,15 @@ const places = computed(() => props.activity.locations.map(term => {
         <p v-if="geo.anchor">{{ t('lookup.anchor', { place: geo.anchor.name, count: formatCount(geo.anchor.count) }) }}</p>
         <p v-if="geo.radius_km !== null">{{ t('lookup.radius', { km: formatDecimal(geo.radius_km, 1) }) }}</p>
         <p v-if="geo.centroid">{{ t('lookup.centroid', { lat: geo.centroid.lat.toFixed(4), lng: geo.centroid.lng.toFixed(4) }) }}</p>
-        <h5 v-if="places.length">{{ t('lookup.places_title') }}</h5>
-        <dl v-if="places.length" class="term-list" data-list="places">
+      </section>
+
+      <!-- Its own block, and its own population: an account whose posts name
+           places without ever carrying GPS has no geometry above and still gets
+           the list it paid for. -->
+      <section v-if="places.length" class="result-block" data-block="places">
+        <h4>{{ t('lookup.places_title') }}</h4>
+        <p class="fine-print block-note">{{ t('lookup.places_note') }}</p>
+        <dl class="term-list" data-list="places">
           <div v-for="place in places" :key="place.name">
             <dt>{{ place.name }}<span v-if="place.at" class="term-note">{{ place.at }}</span></dt>
             <dd>{{ formatCount(place.count) }}</dd>

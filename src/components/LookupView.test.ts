@@ -75,6 +75,8 @@ const look = async (harness: ReturnType<typeof setup>, name = 'alice') => {
   await harness.wrapper.get('form').trigger('submit')
   await flushPromises()
 }
+const blocks = (harness: ReturnType<typeof setup>) =>
+  harness.wrapper.findAll('[data-block]').map(node => node.attributes('data-block'))
 const analyse = async (harness: ReturnType<typeof setup>) => {
   await harness.wrapper.get('[data-action="analyse"]').trigger('click')
   await flushPromises()
@@ -227,8 +229,7 @@ describe('lookup section', () => {
     const harness = setup()
     await look(harness)
     await analyse(harness)
-    const blocks = () => harness.wrapper.findAll('[data-block]').map(node => node.attributes('data-block'))
-    expect(blocks()).toEqual(['where', 'when', 'hashtags', 'mentions', 'likes'])
+    expect(blocks(harness)).toEqual(['where', 'places', 'when', 'hashtags', 'mentions', 'likes'])
     expect(harness.wrapper.text()).toContain(t('lookup.geotagged', { tagged: '3', analyzed: '3' }))
     expect(harness.wrapper.text()).toContain(t('lookup.anchor', { place: 'Ferry Terminal', count: '2' }))
     expect(harness.wrapper.text()).toContain(t('lookup.radius', { km: '1.2' }))
@@ -238,8 +239,12 @@ describe('lookup section', () => {
     // The disclaimer stands above the numbers it qualifies, not after them.
     const where = harness.wrapper.get('[data-block="where"]')
     expect(where.get('p').text()).toBe(t('lookup.geo_note'))
-    // Both lists carry the heading their dictionary key names.
-    expect(where.findAll('h5').map(node => node.text())).toEqual([t('lookup.places_title')])
+    // The places list is its own block now, with its own heading and its own
+    // one-line note about which posts it counts.
+    const placesBlock = harness.wrapper.get('[data-block="places"]')
+    expect(placesBlock.get('h4').text()).toBe(t('lookup.places_title'))
+    expect(placesBlock.get('p').text()).toBe(t('lookup.places_note'))
+    expect(where.findAll('h5')).toHaveLength(0)
     expect(harness.wrapper.get('[data-block="likes"]').findAll('h5').map(node => node.text())).toEqual([t('lookup.top_posts_title')])
     expect(harness.wrapper.findAll('.bar-chart').length).toBe(2)
     // An hour reads as a time, and the day chart says which zone it counts in.
@@ -266,7 +271,7 @@ describe('lookup section', () => {
     })) })
     await look(quiet)
     await analyse(quiet)
-    expect(quiet.wrapper.findAll('[data-block]').map(node => node.attributes('data-block'))).toEqual(['when', 'likes'])
+    expect(blocks(quiet)).toEqual(['when', 'likes'])
     expect(quiet.wrapper.get('[data-note="analyzed"]').text()).toBe(t('lookup.analyzed', { count: '30' }))
   })
 
@@ -295,6 +300,78 @@ describe('lookup section', () => {
     const unknown = setup({ lookupProfile: () => Promise.resolve(profile({ quota_remaining: null })) })
     await look(unknown)
     expect(unknown.wrapper.find('[data-note="quota"]').exists()).toBe(false)
+
+    // And nothing is shown while an analysis is running: a second one would
+    // otherwise fall back to a number the first has already made too high.
+    let finish: (value: LookupActivity) => void = () => {}
+    const running = setup({ lookupActivity: () => new Promise<LookupActivity>(resolve => { finish = resolve }) })
+    await look(running)
+    expect(running.wrapper.find('[data-note="quota"]').exists()).toBe(true)
+    await running.wrapper.get('[data-action="analyse"]').trigger('click')
+    expect(running.wrapper.find('[data-note="quota"]').exists()).toBe(false)
+    finish(activity({ quota_remaining: 4209 }))
+    await flushPromises()
+    expect(running.wrapper.get('[data-note="quota"]').text()).toBe(t('lookup.quota_after', { count: formatCount(4209) }))
+  })
+
+  it('keeps the geometry and the places list apart, because they count different posts', async () => {
+    // Posts that name a place and carry no GPS: the core counts them in
+    // `locations` and skips them in the geo fingerprint. There is no geometry to
+    // show, and the list the user paid for must still be there.
+    const namesOnly = setup({ lookupActivity: () => Promise.resolve(activity({
+      analyzed: 12,
+      geo: { geotagged: 0, anchor: null, centroid: null, radius_km: null, places: [] },
+      locations: [{ key: 'Ferry Terminal', count: 7 }, { key: 'Birch Yard', count: 3 }],
+    })) })
+    await look(namesOnly)
+    await analyse(namesOnly)
+    expect(blocks(namesOnly)).toEqual(['places', 'when', 'hashtags', 'mentions', 'likes'])
+    expect(namesOnly.wrapper.find('[data-block="where"]').exists()).toBe(false)
+    expect(namesOnly.wrapper.get('[data-block="places"]').get('h4').text()).toBe(t('lookup.places_title'))
+    expect(namesOnly.wrapper.get('[data-block="places"]').get('p').text()).toBe(t('lookup.places_note'))
+    expect(namesOnly.wrapper.findAll('[data-list="places"] dt').map(node => node.text())).toEqual(['Ferry Terminal', 'Birch Yard'])
+    expect(namesOnly.wrapper.findAll('[data-list="places"] dd').map(node => node.text())).toEqual(['7', '3'])
+    // Nothing invents a coordinate for a place that came without one.
+    expect(namesOnly.wrapper.find('.term-note').exists()).toBe(false)
+
+    // Mixed: 3 of the 12 posts carry coordinates, 9 name a place. The same place
+    // therefore has two counts, and each sentence says which one it is showing.
+    const mixed = setup({ lookupActivity: () => Promise.resolve(activity({
+      analyzed: 12,
+      locations: [{ key: 'Ferry Terminal', count: 7 }, { key: 'Birch Yard', count: 2 }],
+    })) })
+    await look(mixed)
+    await analyse(mixed)
+    const where = mixed.wrapper.get('[data-block="where"]')
+    expect(where.text()).toContain(t('lookup.geotagged', { tagged: '3', analyzed: '12' }))
+    expect(where.text()).toContain(t('lookup.anchor', { place: 'Ferry Terminal', count: '2' }))
+    // The anchor's 2 is the posts with coordinates; the list's 7 is the posts
+    // that name it. Neither number appears in the other's block.
+    expect(where.text()).not.toContain('7')
+    expect(mixed.wrapper.findAll('[data-list="places"] dd').map(node => node.text())).toEqual(['7', '2'])
+  })
+
+  it('shows a coordinate only when one place of that name carried it', async () => {
+    const geo = activity().geo
+    // The provider's own name is unstripped; the term list has stripped it. The
+    // two are the same place, and the row gets its coordinates.
+    const padded = setup({ lookupActivity: () => Promise.resolve(activity({
+      geo: { ...geo, places: [{ name: ' Ferry Terminal ', lat: 52.3739, lng: 4.8903, count: 2 }, { name: 'Birch Yard', lat: 52.3612, lng: 4.8721, count: 1 }] },
+    })) })
+    await look(padded)
+    await analyse(padded)
+    expect(padded.wrapper.findAll('[data-list="places"] dt').map(node => node.text()))
+      .toEqual(['Ferry Terminal52.3739, 4.8903', 'Birch Yard52.3612, 4.8721'])
+
+    // Two buckets under one displayed name (two place ids): nothing here can say
+    // which of them a counted post belongs to, so the row shows no coordinates.
+    const duplicated = setup({ lookupActivity: () => Promise.resolve(activity({
+      geo: { ...geo, places: [{ name: 'Ferry Terminal', lat: 52.3739, lng: 4.8903, count: 1 }, { name: 'Ferry Terminal ', lat: 1.5, lng: 2.5, count: 1 }] },
+    })) })
+    await look(duplicated)
+    await analyse(duplicated)
+    expect(duplicated.wrapper.findAll('[data-list="places"] dt').map(node => node.text()))
+      .toEqual(['Ferry Terminal', 'Birch Yard'])
   })
 
   it('has one honest empty state when no posts could be read', async () => {
