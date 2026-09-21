@@ -1,5 +1,5 @@
 {
-  "core_commit": "3d2c8e7a512625c21e0e1b47c22ec14eea5da19d",
+  "core_commit": "51103f275ea1ac1881f7aacef76f9ba685334890",
   "core_version": "0.7.22",
   "schema_version_supported": 2,
   "capabilities": [
@@ -21,6 +21,7 @@
     "snapshots.targets",
     "snapshots.list",
     "snapshots.compare",
+    "snapshots.read",
     "changes.list",
     "service.inspect",
     "service.migrate",

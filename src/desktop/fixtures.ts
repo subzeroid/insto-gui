@@ -1,4 +1,4 @@
-import type { Binding, HistoryItem, HomeReport, Overview, ServiceFacts, Snapshot, Watch } from './dto'
+import type { Binding, ChangeValue, HistoryItem, HomeReport, Overview, ServiceFacts, Snapshot, SnapshotFields, Watch } from './dto'
 import { CORE_VERSION, type Profile } from './client'
 
 export const watch: Watch = { user: 'alice', status: 'active', interval_seconds: 300, last_ok: null, waiting_first_check: true, has_error: false, consecutive_errors: 0, revision: 'a'.repeat(64) }
@@ -6,6 +6,17 @@ export const overview: Overview = { configured: true, desired_service: 'running'
 export const envelope = (kind: string, data: unknown) => ({ kind, data })
 export const snap = (id: string, pk: string, at: number): Snapshot => ({ id, target_pk: pk, captured_at: at })
 export const page = (items: HistoryItem[], cursor: string | null = null, scanned = items.length) => ({ items, next_cursor: cursor, scan_complete: cursor === null, scanned })
+// One `snapshots.read` answer. A name listed as unknown carries no value, which
+// is exactly what the parser insists on.
+export function profileFields(id: string, pk: string, at: number, overrides: Record<string, ChangeValue> = {}, unknown: string[] = []): SnapshotFields {
+  const fields: Record<string, ChangeValue> = {
+    username: 'alice', full_name: 'Alice Harbour', biography: 'Night ferries and harbour light.', external_url: null,
+    is_verified: false, is_business: false, is_private: false,
+    follower_count: 18507, following_count: 809, media_count: 423, avatar: 'a'.repeat(64), banner: null, ...overrides,
+  }
+  for (const name of unknown) delete fields[name]
+  return { snapshot: snap(id, pk, at), fields, unknown_fields: unknown }
+}
 export const prepared = { core_version: CORE_VERSION, build_id: 'a'.repeat(64) }
 export const running: Profile = { configured: true, status: 'running', desired_service: 'running', service_running: true, quota_remaining: 10, quota_checked_at: 100, revision: 'a'.repeat(32) }
 // An adopted home before its first credential check: configured, quota not yet known.

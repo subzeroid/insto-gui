@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DesktopClient, CORE_VERSION, MIN_INTERVAL } from './client'
-import { createMockInvoke } from './mock'
+import { createMockInvoke, MOCK_FIRST_CHECK_MS } from './mock'
 
 // The mock exists to be decoded: a payload the real client would refuse is worse
 // than no mock at all, because it produces a screenshot of a screen the app can
@@ -67,6 +67,69 @@ describe('mock desktop', () => {
     if (ids.length >= 3) expect((await desktop.compareSnapshots(pk, ids[2], ids[0])).older.id).toBe(ids[2])
   })
 
+  it('reads the newest snapshot as a profile that agrees with the comparison', async () => {
+    const desktop = client()
+    const { watches } = await desktop.overview()
+    const checked = watches.find(watch => !watch.waiting_first_check)!
+    const targets = await desktop.searchTargets(checked.user)
+    const target = targets.items[0]
+    const pk = target.kind === 'target' ? target.target_pk : ''
+    const snapshots = await desktop.listSnapshots(pk)
+    const ids = snapshots.items.map(item => (item.kind === 'snapshot' ? item.snapshot.id : ''))
+    const newest = await desktop.readSnapshot(pk, ids[0])
+    expect(newest.snapshot.id).toBe(ids[0])
+    expect(newest.fields.username).toBe(checked.user)
+    expect(typeof newest.fields.follower_count).toBe('number')
+    // The single read and the comparison tell the same story about one field.
+    const older = await desktop.readSnapshot(pk, ids[1])
+    const comparison = await desktop.compareSnapshots(pk, ids[1], ids[0])
+    for (const change of comparison.changes) {
+      if (Object.hasOwn(older.fields, change.field)) expect(older.fields[change.field]).toEqual(change.old)
+      expect(newest.fields[change.field]).toEqual(change.new)
+    }
+    await expect(desktop.readSnapshot(pk, '9999')).rejects.toMatchObject({ code: 'snapshot_unavailable' })
+  })
+  it('lets a newly added account finish its first check a moment later', async () => {
+    vi.useFakeTimers()
+    try {
+      const desktop = client()
+      const added = await desktop.addWatch('quillon.works', 900)
+      expect(added.waiting_first_check).toBe(true)
+      expect((await desktop.searchTargets('quillon.works')).items).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(MOCK_FIRST_CHECK_MS)
+      const watch = (await desktop.overview()).watches.find(item => item.user === 'quillon.works')!
+      expect(watch.waiting_first_check).toBe(false)
+      expect(watch.last_ok).not.toBeNull()
+      const targets = await desktop.searchTargets('quillon.works')
+      expect(targets.items).toHaveLength(1)
+      const target = targets.items[0]
+      const pk = target.kind === 'target' ? target.target_pk : ''
+      const snapshots = await desktop.listSnapshots(pk)
+      expect(snapshots.items).toHaveLength(1)
+      const id = snapshots.items[0].kind === 'snapshot' ? snapshots.items[0].snapshot.id : ''
+      const profile = await desktop.readSnapshot(pk, id)
+      expect(profile.fields.username).toBe('quillon.works')
+      expect(profile.unknown_fields).toEqual([])
+      // The baseline joins the feed, ahead of everything older.
+      const feed = await desktop.listChanges()
+      expect(feed.items[0]).toEqual({ kind: 'baseline', snapshot: snapshots.items[0].kind === 'snapshot' ? snapshots.items[0].snapshot : null })
+      // Another mock instance never sees this account.
+      expect((await client().searchTargets('quillon.works')).items).toHaveLength(0)
+    } finally { vi.useRealTimers() }
+  })
+  it('leaves no pending check behind for a watch removed before it lands', async () => {
+    vi.useFakeTimers()
+    try {
+      const desktop = client()
+      const added = await desktop.addWatch('quillon.works', 900)
+      expect(vi.getTimerCount()).toBe(1)
+      await desktop.removeWatch(added)
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(MOCK_FIRST_CHECK_MS)
+      expect((await desktop.overview()).watches.some(item => item.user === 'quillon.works')).toBe(false)
+      expect((await desktop.searchTargets('quillon.works')).items).toHaveLength(0)
+    } finally { vi.useRealTimers() }
+  })
   it('builds a non-trivial change feed that filters by account', async () => {
     const desktop = client()
     const feed = await desktop.listChanges()

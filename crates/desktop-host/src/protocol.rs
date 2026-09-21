@@ -6,7 +6,7 @@ pub const MAX_RESPONSE: usize = 2 * 1024 * 1024;
 pub const MAX_TIME: u64 = 253_402_300_799;
 pub const MAX_SAFE: u64 = 9_007_199_254_740_991;
 pub const CORE_VERSION: &str = "0.7.22";
-pub const CAPABILITIES: [&str; 24] = [
+pub const CAPABILITIES: [&str; 25] = [
     "hello",
     "setup.inspect",
     "setup.configure",
@@ -25,6 +25,7 @@ pub const CAPABILITIES: [&str; 24] = [
     "snapshots.targets",
     "snapshots.list",
     "snapshots.compare",
+    "snapshots.read",
     "changes.list",
     "service.inspect",
     "service.migrate",
@@ -92,6 +93,10 @@ pub enum Operation {
         older_id: String,
         newer_id: String,
     },
+    SnapshotsRead {
+        target_pk: String,
+        snapshot_id: String,
+    },
     ChangesList {
         target_pk: Option<String>,
         limit: Option<u8>,
@@ -123,6 +128,7 @@ pub enum Response {
     Removed(Removed),
     HistoryPage(HistoryPage),
     Comparison(Comparison),
+    SnapshotFields(SnapshotFields),
     ServiceInspection(ServiceInspection),
     HomeInspection(HomeInspection),
     Error(SafeError),
@@ -321,6 +327,17 @@ pub struct Comparison {
     pub changes: Vec<Change>,
     pub unknown_fields: Vec<String>,
 }
+// `snapshots.read`: one saved snapshot's tracked values. The names, the value
+// typing and the `avatar`/`banner` stored-hash treatment are exactly the ones
+// `snapshots.compare` reports in its change values, so one formatter serves both.
+// A `BTreeMap` re-emits the object with sorted keys; the core's declaration order
+// survives only in `unknown_fields`, which the window renders as a list.
+#[derive(Debug, Serialize)]
+pub struct SnapshotFields {
+    pub snapshot: Snapshot,
+    pub fields: std::collections::BTreeMap<String, ChangeValue>,
+    pub unknown_fields: Vec<String>,
+}
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticCode {
@@ -458,6 +475,7 @@ impl Operation {
             Self::SnapshotsTargets { .. } => "snapshots.targets",
             Self::SnapshotsList { .. } => "snapshots.list",
             Self::SnapshotsCompare { .. } => "snapshots.compare",
+            Self::SnapshotsRead { .. } => "snapshots.read",
             Self::ChangesList { .. } => "changes.list",
             Self::ServiceInspect => "service.inspect",
             Self::ServiceMigrate => "service.migrate",
@@ -476,6 +494,7 @@ impl Operation {
             | Self::SnapshotsTargets { .. }
             | Self::SnapshotsList { .. }
             | Self::SnapshotsCompare { .. }
+            | Self::SnapshotsRead { .. }
             | Self::ChangesList { .. }
             | Self::ServiceInspect
             | Self::HomeInspect { .. } => Budget::Read,
@@ -553,6 +572,12 @@ impl Operation {
                     && snapshot_id(newer_id)
                     && older_id != newer_id
             }
+            // One side of the compare pair: the same decimal rules and bounds,
+            // so the two operations are validated identically.
+            Self::SnapshotsRead {
+                target_pk: pk,
+                snapshot_id: id,
+            } => target_pk(pk) && snapshot_id(id),
             Self::ChangesList {
                 target_pk: pk,
                 limit,
@@ -653,6 +678,13 @@ impl Operation {
                 params.insert("target_pk".into(), text(target_pk));
                 params.insert("older_id".into(), text(older_id));
                 params.insert("newer_id".into(), text(newer_id));
+            }
+            Self::SnapshotsRead {
+                target_pk,
+                snapshot_id,
+            } => {
+                params.insert("target_pk".into(), text(target_pk));
+                params.insert("snapshot_id".into(), text(snapshot_id));
             }
             Self::ChangesList {
                 target_pk,
@@ -1257,6 +1289,49 @@ fn history_page(
         scanned,
     })
 }
+// `snapshots.read`: the same bounds the comparison applies to its change values —
+// field names, value typing and a 64-entry ceiling on each of the two collections.
+fn snapshot_fields(value: &Value, pk: &str, id: &str) -> Result<SnapshotFields, HostError> {
+    let obj = exact_keys(value, &["kind", "snapshot", "fields", "unknown_fields"])?;
+    if obj["kind"].as_str() != Some("snapshot_fields") {
+        return Err(HostError::Protocol);
+    }
+    let snapshot = snapshot(&obj["snapshot"])?;
+    if snapshot.target_pk != pk || snapshot.id != id {
+        return Err(HostError::Protocol);
+    }
+    let raw = obj["fields"].as_object().ok_or(HostError::Protocol)?;
+    let mut fields = std::collections::BTreeMap::new();
+    for (name, value) in raw {
+        if !field_name(name) {
+            return Err(HostError::Protocol);
+        }
+        fields.insert(name.clone(), change_value(value)?);
+    }
+    let mut unknown_fields = Vec::new();
+    for name in obj["unknown_fields"]
+        .as_array()
+        .ok_or(HostError::Protocol)?
+    {
+        let name = name
+            .as_str()
+            .filter(|f| field_name(f))
+            .ok_or(HostError::Protocol)?;
+        // A field is either known with a value or listed as unknown, never both.
+        if fields.contains_key(name) {
+            return Err(HostError::Protocol);
+        }
+        unknown_fields.push(name.to_owned());
+    }
+    if fields.len() > 64 || unknown_fields.len() > 64 {
+        return Err(HostError::Protocol);
+    }
+    Ok(SnapshotFields {
+        snapshot,
+        fields,
+        unknown_fields,
+    })
+}
 fn compare_result(
     result: &Value,
     pk: &str,
@@ -1330,6 +1405,10 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
                 older_id,
                 newer_id,
             } => Response::Comparison(compare_result(result, target_pk, older_id, newer_id)?),
+            Operation::SnapshotsRead {
+                target_pk,
+                snapshot_id,
+            } => Response::SnapshotFields(snapshot_fields(result, target_pk, snapshot_id)?),
             Operation::ChangesList {
                 target_pk, limit, ..
             } => Response::HistoryPage(history_page(
@@ -1497,7 +1576,7 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
 #[cfg(test)]
 mod tests {
     use super::*;
-    const HELLO: &str = r#"{"core_version":"0.7.22","schema_version_supported":2,"capabilities":["hello","setup.inspect","setup.configure","settings.inspect","credentials.replace","service.start","service.stop","service.repair","overview","watches.list","watches.add","watches.update","watches.pause","watches.resume","watches.remove","snapshots.targets","snapshots.list","snapshots.compare","changes.list","service.inspect","service.migrate","service.uninstall","home.inspect","home.select"]}"#;
+    const HELLO: &str = r#"{"core_version":"0.7.22","schema_version_supported":2,"capabilities":["hello","setup.inspect","setup.configure","settings.inspect","credentials.replace","service.start","service.stop","service.repair","overview","watches.list","watches.add","watches.update","watches.pause","watches.resume","watches.remove","snapshots.targets","snapshots.list","snapshots.compare","snapshots.read","changes.list","service.inspect","service.migrate","service.uninstall","home.inspect","home.select"]}"#;
     fn envelope(result: &str) -> Vec<u8> {
         format!("{{\"protocol_version\":1,\"request_id\":\"test\",\"result\":{result}}}\n")
             .into_bytes()
@@ -1790,6 +1869,13 @@ mod tests {
                 r#""operation":"snapshots.compare","params":{"newer_id":"2","older_id":"1","target_pk":"7"}"#,
             ),
             (
+                Operation::SnapshotsRead {
+                    target_pk: "7".into(),
+                    snapshot_id: "2".into(),
+                },
+                r#""operation":"snapshots.read","params":{"snapshot_id":"2","target_pk":"7"}"#,
+            ),
+            (
                 Operation::ChangesList {
                     target_pk: None,
                     limit: None,
@@ -1927,6 +2013,18 @@ mod tests {
                 older_id: "1".into(),
                 newer_id: "9223372036854775808".into(),
             },
+            Operation::SnapshotsRead {
+                target_pk: "7".into(),
+                snapshot_id: "0".into(),
+            },
+            Operation::SnapshotsRead {
+                target_pk: "7".into(),
+                snapshot_id: "9223372036854775808".into(),
+            },
+            Operation::SnapshotsRead {
+                target_pk: "07".into(),
+                snapshot_id: "1".into(),
+            },
             Operation::SnapshotsTargets {
                 username: "alice ".into(),
                 limit: None,
@@ -1959,6 +2057,10 @@ mod tests {
                 target_pk: "1".repeat(64),
                 older_id: "1".into(),
                 newer_id: "9223372036854775807".into(),
+            },
+            Operation::SnapshotsRead {
+                target_pk: "1".repeat(64),
+                snapshot_id: "9223372036854775807".into(),
             },
             Operation::SnapshotsTargets {
                 username: "alice".into(),
@@ -2007,6 +2109,10 @@ mod tests {
                 target_pk: "1".into(),
                 older_id: "1".into(),
                 newer_id: "2".into(),
+            },
+            Operation::SnapshotsRead {
+                target_pk: "1".into(),
+                snapshot_id: "2".into(),
             },
             Operation::ChangesList {
                 target_pk: None,
@@ -2594,6 +2700,65 @@ mod tests {
                 && serialized.contains("\"kind\":\"incomplete\"")
                 && serialized.contains("\"kind\":\"baseline\"")
         );
+    }
+    #[test]
+    fn snapshot_fields_are_bounded_like_the_comparison_values() {
+        let read = Operation::SnapshotsRead {
+            target_pk: "7".into(),
+            snapshot_id: "2".into(),
+        };
+        let good = format!(
+            r#"{{"kind":"snapshot_fields","snapshot":{},"fields":{{"username":"alice","biography":"x","external_url":null,"is_verified":false,"follower_count":18507,"avatar":"{}","banner":null}},"unknown_fields":["full_name"]}}"#,
+            snap(2, "7", 2),
+            "a".repeat(64)
+        );
+        let decoded = decode(&envelope(&good), "test", &read).unwrap();
+        assert!(
+            matches!(decoded, Response::SnapshotFields(ref f) if f.snapshot.id == "2"
+                && f.fields.len() == 7
+                && matches!(f.fields["follower_count"], ChangeValue::Integer(18507))
+                && matches!(f.fields["is_verified"], ChangeValue::Bool(false))
+                && matches!(f.fields["external_url"], ChangeValue::Null)
+                && f.unknown_fields == ["full_name"])
+        );
+        // The window receives the same object shape the core sent.
+        let serialized = serde_json::to_string(&decoded).unwrap();
+        assert!(
+            serialized.contains("\"kind\":\"snapshot_fields\"")
+                && serialized.contains("\"external_url\":null")
+                && serialized.contains("\"follower_count\":18507")
+        );
+        // An empty snapshot is a legitimate answer: every tracked field unknown.
+        assert!(decode(
+            &envelope(&format!(
+                r#"{{"kind":"snapshot_fields","snapshot":{},"fields":{{}},"unknown_fields":[]}}"#,
+                snap(2, "7", 2)
+            )),
+            "test",
+            &read
+        )
+        .is_ok());
+        for bad in [
+            // The same value bounds the change values get.
+            good.replace("18507", "18507.5"),
+            good.replace("18507", "-1"),
+            good.replace("18507", "9007199254740992"),
+            good.replace("18507", "[1]"),
+            good.replace("\"username\"", "\"Username\""),
+            good.replace("\"full_name\"", "\"Full Name\""),
+            // A field cannot be both known and unknown.
+            good.replace("\"full_name\"", "\"username\""),
+            // The envelope's key set and kind are exact.
+            good.replace("\"fields\":", "\"note\":1,\"fields\":"),
+            good.replace(",\"unknown_fields\":[\"full_name\"]", ""),
+            good.replace("\"kind\":\"snapshot_fields\"", "\"kind\":\"comparison\""),
+            good.replace("\"fields\":{", "\"fields\":[{"),
+            // The answer must be the snapshot that was asked for.
+            good.replace(&snap(2, "7", 2), &snap(3, "7", 2)),
+            good.replace(&snap(2, "7", 2), &snap(2, "8", 2)),
+        ] {
+            assert!(decode(&envelope(&bad), "test", &read).is_err(), "{bad}");
+        }
     }
     #[test]
     fn change_value_null_serializes_as_json_null() {

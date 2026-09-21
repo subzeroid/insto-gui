@@ -9,6 +9,10 @@ export interface Snapshot { id: string; target_pk: string; captured_at: number }
 export type ChangeValue = null | boolean | number | string
 export interface Change { field: string; old: ChangeValue; new: ChangeValue }
 export interface Comparison { older: Snapshot; newer: Snapshot; changes: Change[]; unknown_fields: string[] }
+// `snapshots.read`: one saved snapshot's tracked values, typed exactly as the
+// comparison reports its change values. A tracked field the snapshot has no
+// data for is listed in `unknown_fields` instead of carrying a value.
+export interface SnapshotFields { snapshot: Snapshot; fields: Record<string, ChangeValue>; unknown_fields: string[] }
 export type DiagnosticCode = 'history_corrupt' | 'history_oversized' | 'history_identity_unknown'
 export type HistoryItem =
   | { kind: 'target'; target_pk: string; snapshot: Snapshot }
@@ -116,6 +120,25 @@ function comparisonBody(value: unknown, kind: 'comparison' | 'incomplete' | null
   return { older, newer, changes, unknown_fields: (v.unknown_fields as unknown[]).map(name => text(name, FIELD)) }
 }
 export const decodeComparison = (value: unknown): Comparison => comparisonBody(value, null)
+// The host re-emits the core's object as-is, so the key set is exact and every
+// value gets the change-value validation. A name may be known or unknown, never
+// both; anything else is a `protocol` failure.
+export function decodeSnapshotFields(value: unknown): SnapshotFields {
+  const v = exact(value, ['snapshot', 'fields', 'unknown_fields'])
+  if (!record(v.fields) || !Array.isArray(v.unknown_fields) || v.unknown_fields.length > 64) fail()
+  const raw = v.fields as Record<string, unknown>
+  const names = Object.keys(raw)
+  if (names.length > 64) fail()
+  // `FIELD` matches `__proto__`, and assigning it on an object that inherits
+  // `Object.prototype` is a silent no-op: the entry would vanish instead of being
+  // refused, and would also slip past the disjointness check below. A null
+  // prototype makes every accepted name an ordinary own property.
+  const fields: Record<string, ChangeValue> = Object.create(null)
+  for (const name of names) fields[text(name, FIELD)] = changeValue(raw[name])
+  const unknown = (v.unknown_fields as unknown[]).map(name => text(name, FIELD))
+  if (unknown.some(name => Object.hasOwn(fields, name))) fail()
+  return { snapshot: decodeSnapshot(v.snapshot), fields, unknown_fields: unknown }
+}
 export const itemSnapshot = (item: HistoryItem): Snapshot => (item.kind === 'comparison' || item.kind === 'incomplete' ? item.newer : item.snapshot)
 function historyItem(value: unknown, kinds: readonly HistoryKind[]): HistoryItem {
   if (!record(value) || typeof value.kind !== 'string' || !(kinds as readonly string[]).includes(value.kind)) fail()

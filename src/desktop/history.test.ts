@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DesktopClient } from './client'
 import { createHistoryState } from './history'
-import { envelope, page, snap } from './fixtures'
+import { envelope, page, profileFields, snap } from './fixtures'
+
+const fields = (id: string, pk: string, at: number) => envelope('snapshot_fields', profileFields(id, pk, at))
 
 const target = (pk: string, id: string, at: number) => ({ kind: 'target' as const, target_pk: pk, snapshot: snap(id, pk, at) })
 const snapshot = (id: string, pk: string, at: number) => ({ kind: 'snapshot' as const, snapshot: snap(id, pk, at) })
@@ -14,6 +16,7 @@ describe('history state', () => {
       .mockResolvedValueOnce(envelope('history_page', page([])))
       .mockResolvedValueOnce(envelope('history_page', page([target('7', '2', 2)])))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('2', '7', 2), snapshot('1', '7', 1)])))
+      .mockResolvedValueOnce(fields('2', '7', 2))
       .mockResolvedValueOnce(envelope('comparison', bare))
     const history = createHistoryState(new DesktopClient(invoke))
     await history.load('nobody')
@@ -21,14 +24,17 @@ describe('history state', () => {
     await history.load('alice')
     expect(history.state.targetPk).toBe('7'); expect(history.state.snapshots.items).toHaveLength(2)
     expect(history.state.pair).toEqual({ olderId: '1', newerId: '2' }); expect(history.state.comparison.value?.changes).toHaveLength(1)
-    expect(invoke.mock.calls.map(call => call[0])).toEqual(['search_targets', 'search_targets', 'list_snapshots', 'compare_snapshots'])
-    expect(invoke.mock.calls[3][1]).toEqual({ pair: { target_pk: '7', older_id: '1', newer_id: '2' } })
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['search_targets', 'search_targets', 'list_snapshots', 'read_snapshot', 'compare_snapshots'])
+    expect(invoke.mock.calls[3][1]).toEqual({ snapshot: { target_pk: '7', snapshot_id: '2' } })
+    expect(invoke.mock.calls[4][1]).toEqual({ pair: { target_pk: '7', older_id: '1', newer_id: '2' } })
+    expect(history.state.profile.value?.fields.follower_count).toBe(18507)
   })
   it('several targets or an incomplete scan require an explicit choice', async () => {
     const invoke = vi.fn()
       .mockResolvedValueOnce(envelope('history_page', page([target('8', '3', 3), target('7', '2', 2), { kind: 'diagnostic', snapshot: snap('1', '9', 1), code: 'history_identity_unknown' }], 'more', 3)))
       .mockResolvedValueOnce(envelope('history_page', page([target('6', '0', 0)].map(item => ({ ...item, snapshot: snap('1', '6', 0), target_pk: '6' })), null, 1)))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '8', 3)])))
+      .mockResolvedValueOnce(fields('3', '8', 3))
     const history = createHistoryState(new DesktopClient(invoke))
     await history.load('alice')
     expect(history.state.targets.pks).toEqual(['8', '7']); expect(history.state.targets.diagnostics).toBe(1); expect(history.state.targets.scanComplete).toBe(false); expect(history.state.targetPk).toBeNull()
@@ -43,12 +49,38 @@ describe('history state', () => {
     const invoke = vi.fn()
       .mockResolvedValueOnce(envelope('history_page', page([target('7', '2', 2)])))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('2', '7', 2), snapshot('1', '7', 1)])))
+      .mockResolvedValueOnce(fields('2', '7', 2))
       .mockResolvedValueOnce(envelope('error', { code: 'snapshot_unavailable', message: 'x', retryable: false }))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('2', '7', 2)])))
     const history = createHistoryState(new DesktopClient(invoke))
     await history.load('alice')
     expect(history.state.comparison.error?.code).toBe('snapshot_unavailable')
     expect(history.state.snapshots.items).toHaveLength(1); expect(history.state.pair).toEqual({ olderId: null, newerId: null })
+    // The newest snapshot did not change, so the card was not read a second time.
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['search_targets', 'list_snapshots', 'read_snapshot', 'compare_snapshots', 'list_snapshots'])
+    expect(history.state.profile.error).toBeNull(); expect(history.state.profile.value?.snapshot.id).toBe('2')
+  })
+  it('retries a failed profile read when the list is reloaded under the same newest snapshot', async () => {
+    // The one path where "one read per newest id" could strand an error: the
+    // retention reload keeps snapshot 3 at the head, so the skip would otherwise
+    // leave the failure on screen until a new check lands.
+    const invoke = vi.fn()
+      .mockResolvedValueOnce(envelope('history_page', page([target('7', '3', 3)])))
+      .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('1', '7', 1)])))
+      .mockResolvedValueOnce(envelope('error', { code: 'history_corrupt', message: 'x', retryable: false }))
+      .mockResolvedValueOnce(envelope('error', { code: 'snapshot_unavailable', message: 'x', retryable: false }))
+      .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('2', '7', 2)])))
+      .mockResolvedValueOnce(fields('3', '7', 3))
+      .mockResolvedValueOnce(envelope('comparison', { ...bare, older: snap('2', '7', 2), newer: snap('3', '7', 3) }))
+    const history = createHistoryState(new DesktopClient(invoke))
+    await history.load('alice')
+    expect(invoke.mock.calls.map(call => call[0])).toEqual([
+      'search_targets', 'list_snapshots', 'read_snapshot', 'compare_snapshots', 'list_snapshots', 'read_snapshot', 'compare_snapshots',
+    ])
+    expect(history.state.profile.error).toBeNull()
+    expect(history.state.profile.value?.snapshot.id).toBe('3')
+    // The card recovered without disturbing the comparison that follows it.
+    expect(history.state.comparison.value?.newer.id).toBe('3')
   })
   it('the feed keeps continuation across an empty page and supports a PK filter', async () => {
     const invoke = vi.fn()
@@ -69,6 +101,7 @@ describe('history state', () => {
       .mockResolvedValueOnce(envelope('history_page', page([target('7', '2', 2)], 'more', 1)))
       .mockResolvedValueOnce(envelope('history_page', page([], null, 3)))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('2', '7', 2)])))
+      .mockResolvedValueOnce(fields('2', '7', 2))
       .mockResolvedValueOnce(envelope('history_page', page([target('9', '5', 5), { kind: 'diagnostic', snapshot: snap('1', '3', 1), code: 'history_identity_unknown' }])))
     const history = createHistoryState(new DesktopClient(invoke))
     await history.load('alice')
@@ -91,13 +124,14 @@ describe('history state', () => {
     const invoke = vi.fn()
       .mockResolvedValueOnce(envelope('history_page', page([target('7', '3', 3)])))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('1', '7', 1)])))
+      .mockResolvedValueOnce(fields('3', '7', 3))
       .mockResolvedValueOnce(envelope('error', { code: 'snapshot_unavailable', message: 'x', retryable: false }))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('2', '7', 2)])))
       .mockResolvedValueOnce(envelope('comparison', { ...bare, older: snap('2', '7', 2), newer: snap('3', '7', 3) }))
     const history = createHistoryState(new DesktopClient(invoke))
     await history.load('alice')
     expect(history.state.pair).toEqual({ olderId: '2', newerId: '3' }); expect(history.state.comparison.value?.newer.id).toBe('3'); expect(history.state.comparison.error).toBeNull()
-    expect(invoke.mock.calls.map(call => call[0])).toEqual(['search_targets', 'list_snapshots', 'compare_snapshots', 'list_snapshots', 'compare_snapshots'])
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['search_targets', 'list_snapshots', 'read_snapshot', 'compare_snapshots', 'list_snapshots', 'compare_snapshots'])
   })
   it('reload repeats the search for the current username', async () => {
     const invoke = vi.fn().mockResolvedValue(envelope('history_page', page([])))
@@ -128,6 +162,7 @@ describe('history state', () => {
     const invoke = vi.fn()
       .mockResolvedValueOnce(envelope('history_page', page([target('7', '3', 3)])))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('1', '7', 1)])))
+      .mockResolvedValueOnce(fields('3', '7', 3))
       .mockResolvedValueOnce(unavailable)
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('2', '7', 2)])))
       .mockResolvedValueOnce(unavailable)
@@ -135,12 +170,12 @@ describe('history state', () => {
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3)])))
     const history = createHistoryState(new DesktopClient(invoke))
     await history.load('alice')
-    expect(invoke.mock.calls.map(call => call[0])).toEqual(['search_targets', 'list_snapshots', 'compare_snapshots', 'list_snapshots', 'compare_snapshots'])
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['search_targets', 'list_snapshots', 'read_snapshot', 'compare_snapshots', 'list_snapshots', 'compare_snapshots'])
     expect(history.state.comparison.error?.code).toBe('snapshot_unavailable'); expect(history.state.comparison.value).toBeNull(); expect(history.state.comparison.loading).toBe(false)
     expect(history.state.pair).toEqual({ olderId: '2', newerId: '3' }); expect(history.state.snapshots.items.map(item => item.id)).toEqual(['3', '2'])
     // A new user-initiated choice gets its own single recovery.
     await history.choosePair('2', '3')
-    expect(invoke.mock.calls.map(call => call[0]).slice(5)).toEqual(['compare_snapshots', 'list_snapshots'])
+    expect(invoke.mock.calls.map(call => call[0]).slice(6)).toEqual(['compare_snapshots', 'list_snapshots'])
     expect(history.state.snapshots.items.map(item => item.id)).toEqual(['3']); expect(history.state.pair).toEqual({ olderId: null, newerId: null }); expect(history.state.comparison.error?.code).toBe('snapshot_unavailable')
   })
   it('a stale older page is dropped after a retention reload', async () => {
@@ -148,6 +183,7 @@ describe('history state', () => {
     const invoke = vi.fn()
       .mockResolvedValueOnce(envelope('history_page', page([target('7', '3', 3)])))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('2', '7', 2)], 'older', 2)))
+      .mockResolvedValueOnce(fields('3', '7', 3))
       .mockResolvedValueOnce(envelope('comparison', { ...bare, older: snap('2', '7', 2), newer: snap('3', '7', 3) }))
       .mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
       .mockResolvedValueOnce(envelope('error', { code: 'snapshot_unavailable', message: 'x', retryable: false }))
@@ -159,14 +195,15 @@ describe('history state', () => {
     expect(history.state.snapshots.items.map(item => item.id)).toEqual(['3']); expect(history.state.pair).toEqual({ olderId: null, newerId: null })
     release(envelope('history_page', page([snapshot('1', '7', 1)]))); await older
     expect(history.state.snapshots.items.map(item => item.id)).toEqual(['3']); expect(history.state.snapshots.cursor).toBeNull(); expect(history.state.snapshots.loading).toBe(false)
-    expect(invoke.mock.calls.map(call => call[0])).toEqual(['search_targets', 'list_snapshots', 'compare_snapshots', 'list_snapshots', 'compare_snapshots', 'list_snapshots'])
-    expect(invoke.mock.calls[3][1]).toEqual({ query: { target_pk: '7', cursor: 'older' } })
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['search_targets', 'list_snapshots', 'read_snapshot', 'compare_snapshots', 'list_snapshots', 'compare_snapshots', 'list_snapshots'])
+    expect(invoke.mock.calls[4][1]).toEqual({ query: { target_pk: '7', cursor: 'older' } })
   })
   it('reset keeps the changes feed, resetHome clears it and drops a page in flight', async () => {
     let release!: (value: unknown) => void
     const invoke = vi.fn()
       .mockResolvedValueOnce(envelope('history_page', page([target('7', '2', 2)])))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('2', '7', 2), snapshot('1', '7', 1)])))
+      .mockResolvedValueOnce(fields('2', '7', 2))
       .mockResolvedValueOnce(envelope('comparison', bare))
       .mockResolvedValueOnce(envelope('history_page', page([{ kind: 'baseline' as const, snapshot: snap('1', '7', 1) }])))
       .mockImplementationOnce(() => new Promise(resolve => { release = resolve }))

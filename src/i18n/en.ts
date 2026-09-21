@@ -145,9 +145,10 @@ export const en = {
   'watches.interval_label': 'Check interval, seconds',
   'watches.adding': 'Saving…',
   'watches.add_action': 'Add account',
-  'watches.add_note': 'Every check spends HikerAPI quota. No more than three active watches; the minimum interval is {seconds} seconds. The service collects the first snapshot; registering a watch makes no trial request.',
+  'watches.add_note': 'Every check spends HikerAPI quota. No more than three active watches; the minimum interval is {seconds} seconds. The service checks a new account right away, and that first check spends quota like any other.',
   'watches.detail_paused': 'The watch is paused; its history is kept.',
   'watches.detail_waiting': 'Waiting for the first check by the service.',
+  'watches.detail_first_check': 'The first check is running; it usually takes a few seconds.',
   'watches.detail_active': 'The watch is active.',
   'watches.pause': 'Pause',
   'watches.resume': 'Resume',
@@ -189,6 +190,15 @@ export const en = {
   'changes.more': 'Show more',
   'changes.complete': 'The feed has been scanned to the end of the saved history.',
   'changes.unknown_fields': 'Fields with no data in the older snapshot (unknown): {fields}.',
+
+  // The profile as of the newest saved snapshot.
+  'profile.title': 'Profile at the last check',
+  'profile.renamed': 'Username in this snapshot:',
+  'profile.loading': 'Reading the profile…',
+  'profile.as_of': 'As of {time}',
+  'profile.badge_verified': 'Verified',
+  'profile.badge_business': 'Business',
+  'profile.badge_private': 'Private',
 
   // Saved snapshots and comparison.
   'history.title': 'Saved snapshots',
@@ -355,6 +365,9 @@ export const en = {
   'field.follower_count': 'Followers',
   'field.following_count': 'Following',
   'field.media_count': 'Posts',
+  'field.public_email': 'Public email',
+  'field.public_phone': 'Public phone',
+  'field.business_category': 'Business category',
   'field.avatar': 'Avatar (hash)',
   'field.banner': 'Banner (hash)',
 } as const

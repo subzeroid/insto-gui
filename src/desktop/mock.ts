@@ -43,12 +43,15 @@ interface DemoStep {
   /** Fields the older snapshot carried no data for — these make an `incomplete` item. */
   unknown?: string[]
 }
+type Fields = Record<string, ChangeValue>
 interface DemoAccount {
   user: string
   pk: string
   status: WatchStatus
   interval: number
   errors: number
+  /** The absolute tracked values of the first snapshot; later ones apply the steps. */
+  profile: Fields
   steps: DemoStep[]
 }
 
@@ -57,6 +60,12 @@ interface DemoAccount {
 const ACCOUNTS: DemoAccount[] = [
   {
     user: 'atlas.ferry', pk: '51884219307', status: 'active', interval: 900, errors: 0,
+    profile: {
+      username: 'atlas.ferry', full_name: 'Atlas Ferry', biography: 'Night ferries and harbour light.',
+      external_url: null, is_verified: false, is_business: false, is_private: false,
+      follower_count: 18_204, following_count: 812, media_count: 418,
+      avatar: hex('atlas-avatar-before', 16), banner: null,
+    },
     steps: [
       { ago: 6 * DAY, changes: [] },
       { ago: 4 * DAY + 3 * HOUR, changes: [
@@ -79,6 +88,12 @@ const ACCOUNTS: DemoAccount[] = [
   },
   {
     user: 'birchwood.press', pk: '42007731885', status: 'active', interval: 1800, errors: 2,
+    profile: {
+      username: 'birchwood.press', full_name: 'Birchwood Press', biography: 'A small press: zines and risographs.',
+      external_url: 'https://example.com/birchwood', is_verified: false, is_business: false, is_private: false,
+      follower_count: 5_602, following_count: 214, media_count: 138,
+      avatar: hex('birchwood-avatar', 16), banner: null,
+    },
     steps: [
       { ago: 9 * DAY, changes: [] },
       { ago: 5 * DAY + 7 * HOUR, changes: [
@@ -93,6 +108,13 @@ const ACCOUNTS: DemoAccount[] = [
   },
   {
     user: 'cobalt.harbor', pk: '73915402266', status: 'paused', interval: 3600, errors: 0,
+    profile: {
+      username: 'cobalt.harbor', full_name: 'Cobalt Harbor', biography: 'Cranes, containers, cold light.',
+      external_url: 'https://example.com/cobalt-harbor', is_verified: false, is_business: true, is_private: false,
+      follower_count: 96_310, following_count: 341, media_count: 1_204,
+      public_email: 'press@example.com', public_phone: null, business_category: 'Shipping & Freight',
+      avatar: hex('cobalt-avatar', 16), banner: hex('cobalt-banner-before', 16),
+    },
     steps: [
       { ago: 14 * DAY, changes: [] },
       { ago: 11 * DAY + 2 * HOUR, changes: [
@@ -107,6 +129,12 @@ const ACCOUNTS: DemoAccount[] = [
   },
   {
     user: 'driftwood.studio', pk: '68420117534', status: 'active', interval: 600, errors: 0,
+    profile: {
+      username: 'driftwood.studio', full_name: 'Driftwood Studio', biography: 'Driftwood joinery, small batches.',
+      external_url: null, is_verified: false, is_business: true, is_private: false,
+      follower_count: 2_418, following_count: 187, media_count: 91,
+      avatar: hex('driftwood-avatar', 16), banner: null,
+    },
     steps: [
       { ago: 3 * DAY + 6 * HOUR, changes: [] },
       { ago: 1 * DAY + 9 * HOUR, changes: [
@@ -121,6 +149,12 @@ const ACCOUNTS: DemoAccount[] = [
   },
   {
     user: 'emberline.co', pk: '30551886472', status: 'paused', interval: 7200, errors: 0,
+    profile: {
+      username: 'emberline.co', full_name: 'Emberline', biography: 'Slow ceramics from a cold studio.',
+      external_url: 'https://example.com/emberline', is_verified: true, is_business: false, is_private: false,
+      follower_count: 44_190, following_count: 1_204, media_count: 612,
+      avatar: hex('emberline-avatar', 16), banner: hex('emberline-banner', 16),
+    },
     steps: [
       { ago: 20 * DAY, changes: [] },
       { ago: 16 * DAY + 5 * HOUR, changes: [
@@ -133,7 +167,16 @@ const ACCOUNTS: DemoAccount[] = [
     ],
   },
   // Registered, never checked yet: the "waiting for the first check" row.
-  { user: 'fernwood.labs', pk: '85206643719', status: 'paused', interval: 1200, errors: 0, steps: [] },
+  {
+    user: 'fernwood.labs', pk: '85206643719', status: 'paused', interval: 1200, errors: 0,
+    profile: {
+      username: 'fernwood.labs', full_name: 'Fernwood Labs', biography: 'Field notes from a wet forest.',
+      external_url: null, is_verified: false, is_business: false, is_private: false,
+      follower_count: 806, following_count: 132, media_count: 24,
+      avatar: hex('fernwood-avatar', 16), banner: null,
+    },
+    steps: [],
+  },
 ]
 
 // Snapshot ids ascend with capture time across every account, the way a shared
@@ -172,6 +215,34 @@ const FEED: HistoryItem[] = ACCOUNTS.flatMap(account => {
 
 const TOTAL_SNAPSHOTS = ACCOUNTS.reduce((sum, account) => sum + account.steps.length, 0)
 
+// What `snapshots.read` answers for one snapshot: the baseline with every later
+// step's `new` value applied, so a single read and a comparison of the same two
+// snapshots always agree. The mock's `unknown` marks what the *older* side of a
+// comparison lacked, so it is that older snapshot's missing data.
+function fieldsAt(account: DemoAccount, index: number): { fields: Fields; unknown: string[] } {
+  const fields: Fields = { ...account.profile }
+  for (let step = 1; step <= index; step++) for (const change of account.steps[step].changes) fields[change.field] = change.new
+  const unknown = account.steps[index + 1]?.unknown ?? []
+  for (const field of unknown) delete fields[field]
+  return { fields, unknown: [...unknown] }
+}
+
+// A plausible, deterministic profile for an account added in the demo window.
+function inventedProfile(user: string): Fields {
+  const spread = (salt: string, span: number) => parseInt(hex(`${user}:${salt}`, 6), 16) % span
+  return {
+    username: user,
+    full_name: user.split('.').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' '),
+    biography: 'Added in the demo window; this is the first saved snapshot.',
+    external_url: null, is_verified: false, is_business: false, is_private: false,
+    public_email: null, public_phone: null, business_category: null,
+    follower_count: 1_200 + spread('followers', 40_000),
+    following_count: 80 + spread('following', 900),
+    media_count: 12 + spread('media', 500),
+    avatar: hex(`${user}-avatar`, 16), banner: null,
+  }
+}
+
 // A pair the user picked by hand is not always an adjacent one, so the changes
 // between two arbitrary snapshots are folded: the oldest value on one side, the
 // newest on the other, and a field that came back to where it started is dropped.
@@ -186,9 +257,14 @@ function foldChanges(account: DemoAccount, from: number, to: number): Comparison
   return [...folded.entries()].filter(([, value]) => value.old !== value.new).slice(0, 64).map(([field, value]) => ({ field, old: value.old, new: value.new }))
 }
 
-function comparisonOf(targetPk: string, olderId: string, newerId: string): Comparison {
-  const account = BY_PK.get(targetPk)
-  const snapshots = SNAPSHOTS.get(targetPk) ?? []
+function comparisonOf(
+  lookup: { account: Map<string, DemoAccount>; snapshots: Map<string, Snapshot[]> },
+  targetPk: string,
+  olderId: string,
+  newerId: string,
+): Comparison {
+  const account = lookup.account.get(targetPk)
+  const snapshots = lookup.snapshots.get(targetPk) ?? []
   const from = snapshots.findIndex(snapshot => snapshot.id === olderId)
   const to = snapshots.findIndex(snapshot => snapshot.id === newerId)
   if (account === undefined || from < 0 || to < 0 || from >= to) throw new DesktopFailure('snapshot_unavailable')
@@ -222,11 +298,30 @@ const ADOPTABLE: HomeReport = {
 
 // `setup: true` starts before a token was connected, to look at the first screen;
 // connecting any valid token then moves on to the demo data.
+// The service checks a newly added account right away, so the demo window shows
+// the waiting state and then the profile card a moment later rather than an empty
+// pane. Two seconds is long enough to see the wait and short enough to sit through.
+export const MOCK_FIRST_CHECK_MS = 2000
+
 export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
   let revisions = 0
+  // Per-instance overlays: an account added here must not leak into another mock.
+  const snapshotsByPk = new Map(SNAPSHOTS)
+  const byPk = new Map(BY_PK)
+  const byUser = new Map(BY_USER)
+  let feed: HistoryItem[] = FEED
+  let nextPk = 90_000_000_000
+  let nextSnapshotId = 100_000 + TOTAL_SNAPSHOTS
+  // Pending first checks, so a watch removed before its check lands — or one
+  // re-added — never leaves a timer running against a discarded mock.
+  const pendingChecks = new Map<string, ReturnType<typeof setTimeout>>()
+  function cancelCheck(user: string): void {
+    const timer = pendingChecks.get(user)
+    if (timer !== undefined) { clearTimeout(timer); pendingChecks.delete(user) }
+  }
   const nextRevision = (user: string) => hex(`${user}:${++revisions}`, 64)
   const watches = new Map<string, Watch>(ACCOUNTS.map(account => {
-    const snapshots = SNAPSHOTS.get(account.pk)!
+    const snapshots = snapshotsByPk.get(account.pk)!
     const lastOk = snapshots.length === 0 ? null : snapshots[snapshots.length - 1].captured_at
     return [account.user, {
       user: account.user, status: account.status, interval_seconds: account.interval,
@@ -252,6 +347,23 @@ export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
     quota_remaining: profile.quota_remaining, quota_checked_at: profile.quota_checked_at,
     watches: sorted(), next_cursor: null,
   })
+  // The first check landing: one saved snapshot, one baseline in the feed and a
+  // registration that is no longer waiting. A watch removed in the meantime, or a
+  // name that already has a demo history, gets nothing.
+  function firstCheck(user: string): void {
+    pendingChecks.delete(user)
+    const current = watches.get(user)
+    if (current === undefined || byUser.has(user)) return
+    const pk = String(nextPk++)
+    const snapshot: Snapshot = { id: String(nextSnapshotId++), target_pk: pk, captured_at: NOW }
+    const account: DemoAccount = {
+      user, pk, status: current.status, interval: current.interval_seconds, errors: 0,
+      profile: inventedProfile(user), steps: [{ ago: 0, changes: [] }],
+    }
+    byUser.set(user, account); byPk.set(pk, account); snapshotsByPk.set(pk, [snapshot])
+    feed = [{ kind: 'baseline', snapshot }, ...feed]
+    watches.set(user, { ...current, last_ok: snapshot.captured_at, waiting_first_check: false, revision: nextRevision(user) })
+  }
   function touch(user: string | null, change: (watch: Watch) => Watch): unknown {
     const current = user === null ? undefined : watches.get(user)
     if (current === undefined) throw new DesktopFailure('watch_not_found')
@@ -297,6 +409,8 @@ export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
           last_ok: null, waiting_first_check: true, has_error: false, consecutive_errors: 0, revision: nextRevision(user),
         }
         watches.set(user, watch)
+        cancelCheck(user)
+        pendingChecks.set(user, setTimeout(() => firstCheck(user), MOCK_FIRST_CHECK_MS))
         return envelope('watch', watch)
       }
       case 'update_watch': return touch(text(args, 'watch', 'user'), watch => ({ ...watch, interval_seconds: number(args, 'watch', 'interval_seconds') ?? watch.interval_seconds }))
@@ -305,25 +419,34 @@ export function createMockInvoke(options: { setup?: boolean } = {}): Invoke {
       case 'remove_watch': {
         const user = text(args, 'watch', 'user') ?? ''
         if (!watches.delete(user)) throw new DesktopFailure('watch_not_found')
+        cancelCheck(user)
         return envelope('removed', { removed_user: user })
       }
 
       case 'search_targets': {
-        const account = BY_USER.get(text(args, 'query', 'username') ?? '')
-        const snapshots = account === undefined ? [] : SNAPSHOTS.get(account.pk)!
+        const account = byUser.get(text(args, 'query', 'username') ?? '')
+        const snapshots = account === undefined ? [] : snapshotsByPk.get(account.pk)!
         if (account === undefined || snapshots.length === 0) return historyPage([], 0)
         return historyPage([{ kind: 'target', target_pk: account.pk, snapshot: snapshots[snapshots.length - 1] }], snapshots.length)
       }
       case 'list_snapshots': {
-        const snapshots = (SNAPSHOTS.get(text(args, 'query', 'target_pk') ?? '') ?? []).slice().reverse()
+        const snapshots = (snapshotsByPk.get(text(args, 'query', 'target_pk') ?? '') ?? []).slice().reverse()
         return historyPage(snapshots.map(snapshot => ({ kind: 'snapshot', snapshot })), snapshots.length)
       }
       case 'compare_snapshots':
-        return envelope('comparison', comparisonOf(text(args, 'pair', 'target_pk') ?? '', text(args, 'pair', 'older_id') ?? '', text(args, 'pair', 'newer_id') ?? ''))
+        return envelope('comparison', comparisonOf({ account: byPk, snapshots: snapshotsByPk }, text(args, 'pair', 'target_pk') ?? '', text(args, 'pair', 'older_id') ?? '', text(args, 'pair', 'newer_id') ?? ''))
+      case 'read_snapshot': {
+        const targetPk = text(args, 'snapshot', 'target_pk') ?? ''
+        const account = byPk.get(targetPk), snapshots = snapshotsByPk.get(targetPk) ?? []
+        const index = snapshots.findIndex(item => item.id === (text(args, 'snapshot', 'snapshot_id') ?? ''))
+        if (account === undefined || index < 0) throw new DesktopFailure('snapshot_unavailable')
+        const { fields, unknown } = fieldsAt(account, index)
+        return envelope('snapshot_fields', { snapshot: snapshots[index], fields, unknown_fields: unknown })
+      }
       case 'list_changes': {
         const filter = text(args, 'query', 'target_pk')
-        const items = filter === null ? FEED : FEED.filter(item => itemSnapshot(item).target_pk === filter)
-        return historyPage(items, filter === null ? TOTAL_SNAPSHOTS : (SNAPSHOTS.get(filter)?.length ?? 0))
+        const items = filter === null ? feed : feed.filter(item => itemSnapshot(item).target_pk === filter)
+        return historyPage(items, filter === null ? feed.length : (snapshotsByPk.get(filter)?.length ?? 0))
       }
 
       case 'inspect_home': {

@@ -210,6 +210,12 @@ struct PairInput {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SnapshotInput {
+    target_pk: String,
+    snapshot_id: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ChangesInput {
     target_pk: Option<String>,
     limit: Option<u8>,
@@ -366,6 +372,22 @@ pub async fn compare_snapshots(
                 target_pk: input.target_pk,
                 older_id: input.older_id,
                 newer_id: input.newer_id,
+            },
+            HISTORY,
+        )?)
+        .await
+}
+#[tauri::command]
+pub async fn read_snapshot(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let input: SnapshotInput = argument(request, "snapshot", HISTORY)?;
+    state
+        .execute(checked(
+            Operation::SnapshotsRead {
+                target_pk: input.target_pk,
+                snapshot_id: input.snapshot_id,
             },
             HISTORY,
         )?)

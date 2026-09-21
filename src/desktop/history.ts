@@ -1,11 +1,15 @@
 import { reactive } from 'vue'
 import type { DesktopClient } from './client'
-import type { Comparison, HistoryItem, HistoryPage, Snapshot } from './dto'
+import type { Comparison, HistoryItem, HistoryPage, Snapshot, SnapshotFields } from './dto'
 import { safeFailure, type DesktopFailure } from './messages'
 
 interface Loadable { loading: boolean; error: DesktopFailure | null }
 const emptySnapshots = () => ({ items: [] as Snapshot[], diagnostics: 0, cursor: null as string | null, loading: false, error: null as DesktopFailure | null, loaded: false })
 const emptyTargets = () => ({ pks: [] as string[], newest: {} as Record<string, Snapshot>, diagnostics: 0, scanned: 0, scanComplete: false, cursor: null as string | null, loading: false, error: null as DesktopFailure | null })
+// The card is keyed by the snapshot it came from, not by the load that fetched
+// it: `targetPk` + `snapshotId` say whether what is on screen is still current,
+// so a reload of the same account can leave it there while it re-reads.
+const emptyProfile = () => ({ value: null as SnapshotFields | null, targetPk: null as string | null, snapshotId: null as string | null, loading: false, error: null as DesktopFailure | null })
 const emptyFeed = () => ({ items: [] as HistoryItem[], filterPk: null as string | null, cursor: null as string | null, scanComplete: false, scanned: 0, loading: false, error: null as DesktopFailure | null, loaded: false })
 
 export function createHistoryState(client: DesktopClient) {
@@ -14,6 +18,7 @@ export function createHistoryState(client: DesktopClient) {
     targets: emptyTargets(),
     targetPk: null as string | null,
     snapshots: emptySnapshots(),
+    profile: emptyProfile(),
     pair: { olderId: null as string | null, newerId: null as string | null },
     comparison: { value: null as Comparison | null, loading: false, error: null as DesktopFailure | null },
     feed: emptyFeed(),
@@ -21,6 +26,7 @@ export function createHistoryState(client: DesktopClient) {
   let generation = 0        // username scope: targets
   let listGeneration = 0    // chosen PK's snapshot list: first page, more pages, recovery reload
   let pairGeneration = 0    // chosen pair scope: comparison
+  let profileGeneration = 0 // newest snapshot scope: the profile card
   let feedGeneration = 0
   async function guard<T>(part: Loadable, current: () => number, expected: number, work: () => Promise<T>, apply: (value: T) => void): Promise<boolean> {
     part.loading = true; part.error = null
@@ -31,10 +37,12 @@ export function createHistoryState(client: DesktopClient) {
   const selection = () => generation
   const listSelection = () => listGeneration
   const pairSelection = () => pairGeneration
+  const profileSelection = () => profileGeneration
   const feedSelection = () => feedGeneration
   function reset() {
-    generation++; listGeneration++; pairGeneration++
+    generation++; listGeneration++; pairGeneration++; profileGeneration++
     state.username = null; state.targets = emptyTargets(); state.targetPk = null; state.snapshots = emptySnapshots()
+    state.profile = emptyProfile()
     state.pair = { olderId: null, newerId: null }; state.comparison = { value: null, loading: false, error: null }
   }
   // `reset()` is the username scope — WatchesView calls it whenever the watch
@@ -66,7 +74,13 @@ export function createHistoryState(client: DesktopClient) {
     state.snapshots.cursor = result.next_cursor; state.snapshots.loaded = true
   }
   async function load(username: string) {
-    reset(); const expected = generation; state.username = username
+    // Reloading the same account keeps the card that is already on screen: a
+    // refresh must not blink the profile out and back two round trips later.
+    // A different account clears it at once — the pane must never show one
+    // account's profile under another's name.
+    const carried = state.username === username ? state.profile : emptyProfile()
+    reset(); state.profile = carried
+    const expected = generation; state.username = username
     if (await guard(state.targets, selection, expected, () => client.searchTargets(username), absorbTargets)) await settleSelection(expected)
   }
   async function reload() { if (state.username !== null) await load(state.username) }
@@ -78,11 +92,35 @@ export function createHistoryState(client: DesktopClient) {
   async function defaultPair(recovered = false) {
     if (state.snapshots.items.length >= 2) await attemptPair(state.snapshots.items[1].id, state.snapshots.items[0].id, recovered)
   }
+  // The newest snapshot's tracked fields — the profile as it stood at the last
+  // successful check. Exactly one read per newest snapshot id: an older page, or
+  // a reload that brought nothing new, re-reads nothing. The failure is its own,
+  // so the snapshot list and the comparison stay usable when this read fails.
+  async function refreshProfile() {
+    const pk = state.targetPk, newest = state.snapshots.items[0] ?? null
+    if (pk === null || newest === null) { profileGeneration++; state.profile = emptyProfile(); return }
+    const current = state.profile
+    // One read per newest snapshot id — but a failed one is not sticky: the next
+    // reload retries it rather than leaving the message until a new check lands.
+    if (current.targetPk === pk && current.snapshotId === newest.id && current.error === null) return
+    profileGeneration++
+    const expected = profileGeneration
+    // A newer snapshot of the same account replaces the card only once its own
+    // read lands; until then the previous one stays readable.
+    state.profile = { ...emptyProfile(), value: current.targetPk === pk ? current.value : null, targetPk: pk, snapshotId: newest.id }
+    await guard(state.profile, profileSelection, expected, () => client.readSnapshot(pk, newest.id), value => { state.profile.value = value })
+  }
+  // Everything the freshly loaded first page of snapshots feeds: the card above
+  // the list, then the default comparison below it.
+  async function afterSnapshots(recovered = false) { await refreshProfile(); await defaultPair(recovered) }
   async function chooseTarget(pk: string) {
-    listGeneration++; pairGeneration++
+    listGeneration++; pairGeneration++; profileGeneration++
     const expected = listGeneration
+    // Only a different account's history blanks the card; the same one keeps it
+    // until `refreshProfile` decides whether it is still current.
+    if (state.profile.targetPk !== pk) state.profile = emptyProfile()
     state.targetPk = pk; state.snapshots = emptySnapshots(); state.pair = { olderId: null, newerId: null }; state.comparison = { value: null, loading: false, error: null }
-    if (await guard(state.snapshots, listSelection, expected, () => client.listSnapshots(pk), result => absorbSnapshots(result, true))) await defaultPair()
+    if (await guard(state.snapshots, listSelection, expected, () => client.listSnapshots(pk), result => absorbSnapshots(result, true))) await afterSnapshots()
   }
   async function moreSnapshots() {
     const pk = state.targetPk, cursor = state.snapshots.cursor
@@ -103,7 +141,7 @@ export function createHistoryState(client: DesktopClient) {
     // the newest pair. Bumping the list generation drops any page still in flight.
     state.pair = { olderId: null, newerId: null }
     listGeneration++
-    if (await guard(state.snapshots, listSelection, listGeneration, () => client.listSnapshots(pk), result => absorbSnapshots(result, true))) await defaultPair(true)
+    if (await guard(state.snapshots, listSelection, listGeneration, () => client.listSnapshots(pk), result => absorbSnapshots(result, true))) await afterSnapshots(true)
   }
   async function choosePair(olderId: string, newerId: string) { await attemptPair(olderId, newerId, false) }
   function absorbFeed(result: HistoryPage) {

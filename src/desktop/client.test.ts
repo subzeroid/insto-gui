@@ -56,6 +56,8 @@ describe('desktop boundary', () => {
     await expect(client.addWatch('alice', 299)).rejects.toMatchObject({ code: 'invalid_watch_input' })
     await expect(client.searchTargets('@alice')).rejects.toMatchObject({ code: 'invalid_history_input' })
     await expect(client.compareSnapshots('7', '1', '1')).rejects.toMatchObject({ code: 'invalid_history_input' })
+    await expect(client.readSnapshot('7', '0')).rejects.toMatchObject({ code: 'invalid_history_input' })
+    await expect(client.readSnapshot('07', '1')).rejects.toMatchObject({ code: 'invalid_history_input' })
     expect(invoke).not.toHaveBeenCalled()
   })
   it('sends exact C2 arguments and decodes kinds', async () => {
@@ -75,6 +77,26 @@ describe('desktop boundary', () => {
       ['remove_watch', { watch: { user: 'alice', revision: 'a'.repeat(64) } }],
       ['list_changes', { query: { target_pk: '7', limit: 10 } }],
       ['read_overview'],
+    ])
+  })
+  it('asks for one snapshot by id and refuses an answer about another', async () => {
+    const data = {
+      snapshot: { id: '2', target_pk: '7', captured_at: 2 },
+      fields: { username: 'alice', follower_count: 5 },
+      unknown_fields: ['full_name'],
+    }
+    const invoke = vi.fn()
+      .mockResolvedValueOnce({ kind: 'snapshot_fields', data })
+      .mockResolvedValueOnce({ kind: 'snapshot_fields', data: { ...data, snapshot: { id: '3', target_pk: '7', captured_at: 3 } } })
+      .mockResolvedValueOnce({ kind: 'comparison', data })
+    const client = new DesktopClient(invoke)
+    expect((await client.readSnapshot('7', '2')).fields.follower_count).toBe(5)
+    await expect(client.readSnapshot('7', '2')).rejects.toMatchObject({ code: 'protocol' })
+    await expect(client.readSnapshot('7', '2')).rejects.toMatchObject({ code: 'protocol' })
+    expect(invoke.mock.calls).toEqual([
+      ['read_snapshot', { snapshot: { target_pk: '7', snapshot_id: '2' } }],
+      ['read_snapshot', { snapshot: { target_pk: '7', snapshot_id: '2' } }],
+      ['read_snapshot', { snapshot: { target_pk: '7', snapshot_id: '2' } }],
     ])
   })
   it('queues reads beyond two slots and hands a released slot to the next waiter', async () => {

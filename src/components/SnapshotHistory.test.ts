@@ -3,11 +3,12 @@ import { describe, expect, it, vi } from 'vitest'
 import SnapshotHistory from './SnapshotHistory.vue'
 import { DesktopClient } from '../desktop/client'
 import { createHistoryState } from '../desktop/history'
-import { envelope, page, snap } from '../desktop/fixtures'
+import { envelope, page, profileFields, snap } from '../desktop/fixtures'
 import { formatCount } from '../desktop/format'
 
 const target = (pk: string, id: string, at: number) => ({ kind: 'target' as const, target_pk: pk, snapshot: snap(id, pk, at) })
 const snapshot = (id: string, pk: string, at: number) => ({ kind: 'snapshot' as const, snapshot: snap(id, pk, at) })
+const fields = (id: string, pk: string, at: number) => envelope('snapshot_fields', profileFields(id, pk, at))
 
 describe('snapshot history', () => {
   it('explains no history, first snapshot and an incomplete search', async () => {
@@ -16,7 +17,7 @@ describe('snapshot history', () => {
     const wrapper = mount(SnapshotHistory, { props: { history } })
     await history.load('alice'); await flushPromises()
     expect(wrapper.text()).toContain('No history yet')
-    invoke.mockResolvedValueOnce(envelope('history_page', page([target('7', '2', 2)]))).mockResolvedValueOnce(envelope('history_page', page([snapshot('2', '7', 2)])))
+    invoke.mockResolvedValueOnce(envelope('history_page', page([target('7', '2', 2)]))).mockResolvedValueOnce(envelope('history_page', page([snapshot('2', '7', 2)]))).mockResolvedValueOnce(fields('2', '7', 2))
     await history.load('alice'); await flushPromises()
     expect(wrapper.text()).toContain('First snapshot')
     expect(wrapper.text()).not.toContain('did not change')
@@ -35,6 +36,7 @@ describe('snapshot history', () => {
     const invoke = vi.fn()
       .mockResolvedValueOnce(envelope('history_page', page([target('7', '3', 3)])))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('2', '7', 2), snapshot('1', '7', 1)])))
+      .mockResolvedValueOnce(fields('3', '7', 3))
       .mockResolvedValueOnce(envelope('comparison', { older: snap('2', '7', 2), newer: snap('3', '7', 3), changes: [], unknown_fields: ['biography'] }))
     const history = createHistoryState(new DesktopClient(invoke))
     const wrapper = mount(SnapshotHistory, { props: { history } })
@@ -49,6 +51,7 @@ describe('snapshot history', () => {
     const invoke = vi.fn()
       .mockResolvedValueOnce(envelope('history_page', page([target('7', '3', 3)])))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('2', '7', 2), snapshot('1', '7', 1)])))
+      .mockResolvedValueOnce(fields('3', '7', 3))
       .mockResolvedValueOnce(envelope('comparison', { ...comparison, older: snap('2', '7', 2) }))
       .mockResolvedValueOnce(envelope('comparison', comparison))
     const history = createHistoryState(new DesktopClient(invoke))
@@ -56,7 +59,7 @@ describe('snapshot history', () => {
     await history.load('alice'); await flushPromises()
     expect(wrapper.text()).toContain('Followers'); expect(wrapper.text()).toContain('unknown')
     await wrapper.get('select[name="older"]').setValue('1'); await flushPromises()
-    expect(invoke.mock.calls[3]).toEqual(['compare_snapshots', { pair: { target_pk: '7', older_id: '1', newer_id: '3' } }])
+    expect(invoke.mock.calls[4]).toEqual(['compare_snapshots', { pair: { target_pk: '7', older_id: '1', newer_id: '3' } }])
     expect(wrapper.text()).toContain('between two times')
   })
 })

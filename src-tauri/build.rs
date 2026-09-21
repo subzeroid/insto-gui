@@ -19,6 +19,7 @@ fn main() {
             "search_targets",
             "list_snapshots",
             "compare_snapshots",
+            "read_snapshot",
             "list_changes",
             "inspect_service",
             "migrate_service",

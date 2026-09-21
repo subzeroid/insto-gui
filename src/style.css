@@ -65,6 +65,20 @@ footer { display: flex; gap: 8px; align-items: center; padding: 17px 28px; color
 .pair-pickers { display: flex; gap: 14px; flex-wrap: wrap; margin: 12px 0; }
 .changes div { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid #252d37; font-size: 12px; }
 .changes .old { color: #8c97a5; text-decoration: line-through; } .changes .new { color: #d3dde9; }
+.profile-card { border: 1px solid #28313b; border-radius: 9px; padding: 16px 18px; margin: 22px 0 26px; }
+.profile-card .notice, .profile-card .loading { margin: 0; }
+.profile-user { font-size: 14px; font-weight: 600; margin: 0 0 2px; overflow-wrap: anywhere; }
+.profile-user .label { display: block; font-size: 10px; font-weight: 400; letter-spacing: .4px; color: #929fae; }
+.profile-name { color: #b5c7d7; font-size: 13px; margin: 4px 0 0; overflow-wrap: anywhere; }
+.profile-badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+.profile-badges .badge { border: 1px solid #3b4651; border-radius: 999px; padding: 2px 9px; font-size: 10px; color: #9db0c2; }
+.profile-counts { display: flex; flex-wrap: wrap; gap: 22px; margin: 14px 0 0; }
+.profile-counts div { display: flex; flex-direction: column; gap: 2px; }
+.profile-counts dt { font-size: 10px; letter-spacing: .4px; }
+.profile-counts dd { text-align: left; font-size: 16px; font-weight: 550; }
+.profile-text { margin: 14px 0 0; }
+.profile-text div { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-top: 1px solid #252d37; font-size: 12px; }
+.profile-text dd { overflow-wrap: anywhere; }
 .target-choice button { display: block; margin: 6px 0; }
 .target-choice button.selected { border-color: #87bbc9; }
 .app-nav { display: flex; gap: 6px; padding: 0 34px; border-bottom: 1px solid #202630; }
