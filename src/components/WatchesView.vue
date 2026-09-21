@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch as observe } from 'vue'
+import { computed, onUnmounted, watch as observe } from 'vue'
 import type { createHistoryState } from '../desktop/history'
 import type { createMonitoringState } from '../desktop/monitoring'
 import { localTime } from '../desktop/format'
@@ -24,6 +24,35 @@ function select(user: string) {
   if (user === state.value.selectedUser) void props.history.reload()
   else props.monitoring.select(user)
 }
+// The service checks a newly added account right away, so the window watches for
+// that first snapshot instead of leaving an empty pane until the next interval.
+// Both reads are local — reading the overview and the saved history makes no
+// HikerAPI request.
+const FIRST_CHECK_POLL_MS = 5000
+const awaitingFirstCheck = computed(() => {
+  const selected = props.monitoring.selected.value
+  return selected !== null && selected.status === 'active' && (selected.waiting_first_check || selected.last_ok === null)
+    && props.history.state.snapshots.items.length === 0
+})
+let firstCheckTimer: ReturnType<typeof setInterval> | null = null
+function stopFirstCheckPoll() { if (firstCheckTimer !== null) { clearInterval(firstCheckTimer); firstCheckTimer = null } }
+async function pollFirstCheck() {
+  const before = props.monitoring.selected.value
+  if (before === null) return
+  const { user, last_ok: lastOk } = before
+  await props.monitoring.reconcile()
+  const after = props.monitoring.selected.value
+  // A check that landed changes `last_ok`, and the selection watcher above already
+  // reloads the history for that; only an unchanged overview needs this read.
+  if (after !== null && after.user === user && after.last_ok === lastOk) await props.history.reload()
+}
+// The timer exists exactly while the condition holds: a paused, removed, checked
+// or deselected watch clears it, and so does unmounting.
+observe(awaitingFirstCheck, waiting => {
+  stopFirstCheckPoll()
+  if (waiting) firstCheckTimer = setInterval(() => { void pollFirstCheck() }, FIRST_CHECK_POLL_MS)
+}, { immediate: true })
+onUnmounted(stopFirstCheckPoll)
 </script>
 <template>
   <section class="watches-view">

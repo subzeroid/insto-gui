@@ -7,6 +7,11 @@ describe('add watch form', () => {
     const add = vi.fn().mockResolvedValue(true)
     const wrapper = mount(AddWatchForm, { props: { busy: false, add } })
     expect(wrapper.text()).toContain('HikerAPI quota')
+    // The service checks a new account at once, and the note must not promise
+    // that registering makes no request.
+    expect(wrapper.text()).toContain('checks a new account right away')
+    expect(wrapper.text()).toContain('spends quota like any other')
+    expect(wrapper.text()).not.toContain('no trial request')
     await wrapper.get('input[name="user"]').setValue('@Alice ')
     await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(add).toHaveBeenCalledWith('alice', 300)

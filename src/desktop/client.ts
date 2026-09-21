@@ -1,5 +1,5 @@
 import { DesktopFailure, safeFailure } from './messages'
-import { CHANGE_KINDS, HISTORY_CURSOR, SNAPSHOT_KINDS, TARGET_KINDS, TARGET_PK, REVISION, USERNAME, WATCH_CURSOR, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeOverview, decodeRemoved, decodeServiceFacts, decodeWatch, decodeWatchPage, record, validSnapshotId, type Binding, type Comparison, type HistoryPage, type HomeReport, type Overview, type ServiceFacts, type Watch, type WatchPage } from './dto'
+import { CHANGE_KINDS, HISTORY_CURSOR, SNAPSHOT_KINDS, TARGET_KINDS, TARGET_PK, REVISION, USERNAME, WATCH_CURSOR, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeOverview, decodeRemoved, decodeServiceFacts, decodeSnapshotFields, decodeWatch, decodeWatchPage, record, validSnapshotId, type Binding, type Comparison, type HistoryPage, type HomeReport, type Overview, type ServiceFacts, type SnapshotFields, type Watch, type WatchPage } from './dto'
 export const CORE_VERSION = '0.7.22'
 export type { Binding, HomeReport, ServiceFacts } from './dto'
 export { RESPONSE_PATH_LIMIT } from './dto'
@@ -53,7 +53,7 @@ export interface Page { limit?: number; cursor?: string }
 // The host admits two concurrent reads; a third would fail with `busy`. Queue
 // reads in the client so polling, history and service reads never collide.
 export const READ_SLOTS = 2
-const READ_COMMANDS = new Set(['inspect_setup', 'read_overview', 'list_watches', 'search_targets', 'list_snapshots', 'compare_snapshots', 'list_changes', 'inspect_service', 'inspect_home'])
+const READ_COMMANDS = new Set(['inspect_setup', 'read_overview', 'list_watches', 'search_targets', 'list_snapshots', 'compare_snapshots', 'read_snapshot', 'list_changes', 'inspect_service', 'inspect_home'])
 class ReadGate {
   private active = 0
   private readonly waiting: (() => void)[] = []
@@ -137,6 +137,12 @@ export class DesktopClient {
     const comparison = await this.read('compare_snapshots', 'comparison', decodeComparison, { pair: { target_pk: pk(targetPk), older_id: olderId, newer_id: newerId } })
     if (comparison.older.id !== olderId || comparison.newer.id !== newerId || comparison.older.target_pk !== targetPk) throw new DesktopFailure('protocol')
     return comparison
+  }
+  async readSnapshot(targetPk: string, snapshotId: string): Promise<SnapshotFields> {
+    if (!validSnapshotId(snapshotId)) throw new DesktopFailure('invalid_history_input')
+    const result = await this.read('read_snapshot', 'snapshot_fields', decodeSnapshotFields, { snapshot: { target_pk: pk(targetPk), snapshot_id: snapshotId } })
+    if (result.snapshot.id !== snapshotId || result.snapshot.target_pk !== targetPk) throw new DesktopFailure('protocol')
+    return result
   }
   async listChanges(query: Page & { target_pk?: string } = {}): Promise<HistoryPage> {
     const filter = query.target_pk === undefined ? null : pk(query.target_pk)

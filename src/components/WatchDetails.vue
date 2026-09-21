@@ -5,6 +5,7 @@ import type { createHistoryState } from '../desktop/history'
 import { MIN_INTERVAL, validInterval } from '../desktop/client'
 import { t } from '../i18n'
 import ConfirmBlock from './ConfirmBlock.vue'
+import ProfileCard from './ProfileCard.vue'
 import SnapshotHistory from './SnapshotHistory.vue'
 const props = defineProps<{ watch: Watch; busy: boolean; stale: boolean; history: ReturnType<typeof createHistoryState>; pause: (w: Watch) => Promise<boolean>; resume: (w: Watch) => Promise<boolean>; update: (w: Watch, interval: number) => Promise<boolean>; remove: (w: Watch) => Promise<boolean> }>()
 const emit = defineEmits<{ 'show-changes': [pk: string] }>()
@@ -20,7 +21,9 @@ async function confirmRemove() { confirming.value = false; await props.remove(pr
 <template>
   <section class="watch-details">
     <h2>@{{ watch.user }}</h2>
-    <p class="intro">{{ watch.status === 'paused' ? t('watches.detail_paused') : watch.waiting_first_check ? t('watches.detail_waiting') : t('watches.detail_active') }}</p>
+    <!-- A registration that has never been checked and already carries an error
+         keeps its old wording: the app does not claim a check is running. -->
+    <p class="intro">{{ watch.status === 'paused' ? t('watches.detail_paused') : !watch.waiting_first_check ? t('watches.detail_active') : watch.has_error ? t('watches.detail_waiting') : t('watches.detail_first_check') }}</p>
     <div class="actions">
       <button v-if="watch.status === 'active'" data-action="pause" :disabled="disabled" @click="pause(watch)">{{ t('watches.pause') }}</button>
       <button v-else data-action="resume" :disabled="disabled" @click="resume(watch)">{{ t('watches.resume') }}</button>
@@ -35,6 +38,7 @@ async function confirmRemove() { confirming.value = false; await props.remove(pr
       <button type="submit" data-action="interval" :disabled="disabled || !intervalValid || Number(interval) === watch.interval_seconds">{{ t('watches.save_interval') }}</button>
     </form>
     <p class="fine-print">{{ t('watches.interval_note') }}</p>
+    <ProfileCard :profile="history.state.profile" />
     <SnapshotHistory :history="history" />
   </section>
 </template>

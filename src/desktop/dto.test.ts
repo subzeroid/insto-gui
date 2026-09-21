@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HOME_REASONS, RESPONSE_PATH_LIMIT, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeOverview, decodeServiceFacts, decodeWatch, decodeWatchPage, CHANGE_KINDS, SNAPSHOT_KINDS, TARGET_KINDS } from './dto'
+import { HOME_REASONS, RESPONSE_PATH_LIMIT, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeOverview, decodeServiceFacts, decodeSnapshotFields, decodeWatch, decodeWatchPage, CHANGE_KINDS, SNAPSHOT_KINDS, TARGET_KINDS } from './dto'
 import { ERROR_CODES } from './messages'
 import { adoptedBinding, current, expandedPath, facts, foreign, homeAdoptable, homeCliOwned, homeInvalidConfig, homeMissing, homeNotPrivate, homeRejected, homeSchemaMismatch, homeUnsupportedBackend, ownBinding, serviceForeign, serviceNone, serviceNoneStopped, serviceOwnedCurrent, serviceOwnedOther, serviceRejected, unknownBinding, unregistered, wire } from './fixtures'
 
@@ -37,6 +37,42 @@ describe('bridge decoders', () => {
     expect(() => decodeHistoryPage(list, SNAPSHOT_KINDS, '8')).toThrow()
     expect(() => decodeHistoryPage(list, SNAPSHOT_KINDS, '7', 0)).toThrow()
     expect(() => decodeHistoryPage(page([{ kind: 'snapshot', snapshot: snap('9223372036854775808', '7', 2) }]), SNAPSHOT_KINDS)).toThrow()
+  })
+  it('accepts one snapshot\'s fields and refuses anything else', () => {
+    // The example from the core's own documentation of `snapshots.read`.
+    const example = {
+      snapshot: { id: '4102', target_pk: '51884219307', captured_at: 1770000000 },
+      fields: {
+        username: 'atlas.ferry', full_name: 'Atlas Ferry', biography: 'Night ferries and harbour light.',
+        external_url: null, is_verified: false, is_business: false, is_private: false,
+        follower_count: 18507, following_count: 809, media_count: 423, avatar: 'a'.repeat(64), banner: null,
+      },
+      unknown_fields: [],
+    }
+    const decoded = decodeSnapshotFields(example)
+    expect(decoded.fields.follower_count).toBe(18507)
+    expect(decoded.fields.external_url).toBeNull()
+    expect(decoded.snapshot.id).toBe('4102')
+    // A tracked field with no data is named instead of carrying a value.
+    const { username, ...rest } = example.fields
+    expect(username).toBe('atlas.ferry')
+    expect(decodeSnapshotFields({ ...example, fields: rest, unknown_fields: ['username'] }).unknown_fields).toEqual(['username'])
+    expect(decodeSnapshotFields({ ...example, fields: {} , unknown_fields: [] }).fields).toEqual({})
+    for (const bad of [
+      { ...example, note: 'RAW' },                                             // an extra key
+      { snapshot: example.snapshot, fields: example.fields },                   // a missing key
+      { ...example, kind: 'snapshot_fields' },                                  // the envelope's kind is not in the data
+      { ...example, fields: { ...example.fields, follower_count: 1.5 } },
+      { ...example, fields: { ...example.fields, follower_count: -1 } },
+      { ...example, fields: { ...example.fields, follower_count: 2 ** 53 } },
+      { ...example, fields: { ...example.fields, follower_count: {} } },
+      { ...example, fields: { ...example.fields, 'Follower Count': 1 } },
+      { ...example, fields: [] },
+      { ...example, unknown_fields: ['Full Name'] },
+      { ...example, unknown_fields: ['username'] },                             // known and unknown at once
+      { ...example, unknown_fields: {} },
+      { ...example, snapshot: { id: '0', target_pk: '7', captured_at: 1 } },
+    ]) expect(() => decodeSnapshotFields(bad)).toThrow()
   })
   it('bounds change values and comparison identity', () => {
     // compare_snapshots data has no inner kind (the IPC envelope carries it); feed items do.

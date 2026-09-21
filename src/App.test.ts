@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import App from './App.vue'
 import { CORE_VERSION, type Profile } from './desktop/client'
-import { current, envelope, facts, foreign, homeAdoptable, overview, page, snap, wire } from './desktop/fixtures'
+import { current, envelope, facts, foreign, homeAdoptable, overview, page, profileFields, snap, wire } from './desktop/fixtures'
 import type { ServiceFacts } from './desktop/client'
 import { t } from './i18n'
 
@@ -79,6 +79,7 @@ describe('application integration', () => {
       .mockResolvedValueOnce(ownBinding).mockResolvedValueOnce(inspection(current)).mockResolvedValueOnce(envelope('overview', overview))
       .mockResolvedValueOnce(envelope('history_page', page([{ kind: 'target', target_pk: '7', snapshot: snap('1', '7', 1) }])))
       .mockResolvedValueOnce(envelope('history_page', page([{ kind: 'snapshot', snapshot: snap('1', '7', 1) }])))
+      .mockResolvedValueOnce(envelope('snapshot_fields', profileFields('1', '7', 1)))
       .mockResolvedValueOnce(envelope('history_page', page([]))).mockResolvedValueOnce(envelope('history_page', page([])))
       .mockResolvedValue(envelope('overview', overview))
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
@@ -89,12 +90,12 @@ describe('application integration', () => {
     expect(invoke.mock.calls.at(-1)).toEqual(['list_changes', { query: { target_pk: '7' } }])
     await wrapper.get('button[data-action="clear-filter"]').trigger('click'); await flushPromises()
     expect(wrapper.find('button[data-action="clear-filter"]').exists()).toBe(false)
-    expect(invoke.mock.calls.map(call => call[0])).toEqual(['prepare_desktop', 'inspect_setup', 'inspect_binding', 'inspect_service', 'read_overview', 'search_targets', 'list_snapshots', 'list_changes', 'list_changes'])
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['prepare_desktop', 'inspect_setup', 'inspect_binding', 'inspect_service', 'read_overview', 'search_targets', 'list_snapshots', 'read_snapshot', 'list_changes', 'list_changes'])
     expect(invoke.mock.calls.at(-1)).toEqual(['list_changes', { query: {} }])
     // Returning to the watches section keeps the selection and its loaded history without a reload.
     await wrapper.findAll('.app-nav button')[0].trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('Account PK 7')
-    expect(invoke).toHaveBeenCalledTimes(9)
+    expect(invoke).toHaveBeenCalledTimes(10)
   })
   it('a stale setup refresh shows the global banner and blocks service and settings changes, not navigation', async () => {
     const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(stopped))
