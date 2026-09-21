@@ -6,7 +6,7 @@ pub const MAX_RESPONSE: usize = 2 * 1024 * 1024;
 pub const MAX_TIME: u64 = 253_402_300_799;
 pub const MAX_SAFE: u64 = 9_007_199_254_740_991;
 pub const CORE_VERSION: &str = "0.7.22";
-pub const CAPABILITIES: [&str; 25] = [
+pub const CAPABILITIES: [&str; 27] = [
     "hello",
     "setup.inspect",
     "setup.configure",
@@ -32,6 +32,8 @@ pub const CAPABILITIES: [&str; 25] = [
     "service.uninstall",
     "home.inspect",
     "home.select",
+    "lookup.profile",
+    "lookup.activity",
 ];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Budget {
@@ -1576,7 +1578,7 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
 #[cfg(test)]
 mod tests {
     use super::*;
-    const HELLO: &str = r#"{"core_version":"0.7.22","schema_version_supported":2,"capabilities":["hello","setup.inspect","setup.configure","settings.inspect","credentials.replace","service.start","service.stop","service.repair","overview","watches.list","watches.add","watches.update","watches.pause","watches.resume","watches.remove","snapshots.targets","snapshots.list","snapshots.compare","snapshots.read","changes.list","service.inspect","service.migrate","service.uninstall","home.inspect","home.select"]}"#;
+    const HELLO: &str = r#"{"core_version":"0.7.22","schema_version_supported":2,"capabilities":["hello","setup.inspect","setup.configure","settings.inspect","credentials.replace","service.start","service.stop","service.repair","overview","watches.list","watches.add","watches.update","watches.pause","watches.resume","watches.remove","snapshots.targets","snapshots.list","snapshots.compare","snapshots.read","changes.list","service.inspect","service.migrate","service.uninstall","home.inspect","home.select","lookup.profile","lookup.activity"]}"#;
     fn envelope(result: &str) -> Vec<u8> {
         format!("{{\"protocol_version\":1,\"request_id\":\"test\",\"result\":{result}}}\n")
             .into_bytes()

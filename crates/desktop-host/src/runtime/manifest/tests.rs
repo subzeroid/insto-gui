@@ -46,7 +46,7 @@ fn valid_pinned_v1_manifest() {
     // separators=(",", ":"), ensure_ascii=True), then hashlib.sha256.
     assert_eq!(
         manifest.build_id,
-        "387791f4d7672c8215f594a850ac29f8745b5c3ecc5763d2798b750c26bc9060"
+        "ec20510414de9e67b245e581ce312b0c4bc3b0986cb0706f2ce8a9168a30d8ef"
     );
 }
 

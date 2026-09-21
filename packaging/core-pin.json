@@ -1,5 +1,5 @@
 {
-  "core_commit": "2dc187a905a0620bfc322a08bb66d380a5c07df7",
+  "core_commit": "e871ea3e207cb78891b812480aa0a092d02d8402",
   "core_version": "0.7.22",
   "schema_version_supported": 2,
   "capabilities": [
@@ -27,6 +27,8 @@
     "service.migrate",
     "service.uninstall",
     "home.inspect",
-    "home.select"
+    "home.select",
+    "lookup.profile",
+    "lookup.activity"
   ]
 }
