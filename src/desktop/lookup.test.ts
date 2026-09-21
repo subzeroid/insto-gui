@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createLookupState, DEFAULT_WINDOW } from './lookup'
-import type { DesktopClient } from './client'
+import { DesktopClient } from './client'
+import { createMockInvoke } from './mock'
 import { DesktopFailure } from './messages'
 import type { LookupActivity, LookupProfile } from './dto'
 
@@ -52,22 +53,79 @@ describe('lookup state', () => {
     expect(lookupProfile.mock.calls).toEqual([['alice']])
   })
 
-  it('canonicalizes the typed name and refuses one the core would reject', async () => {
+  it('canonicalizes the typed name, whatever a paste brought with it', async () => {
     const lookupProfile = vi.fn().mockResolvedValue(profile('7'))
     const lookup = createLookupState(fake({ lookupProfile }))
     expect(await lookup.lookUp('@@Alice ')).toBe(true)
-    expect(lookupProfile.mock.calls).toEqual([['alice']])
+    expect(await lookup.lookUp(' @Alice ')).toBe(true)
+    expect(lookupProfile.mock.calls).toEqual([['alice'], ['alice']])
     expect(lookup.state.username).toBe('alice')
-    // A name no canonicalization can rescue never reaches the bridge, so it
-    // cannot be charged for. The rule is the client's, which is the core's:
-    // a leading `@` and trailing space go, a leading space does not.
+    expect(lookup.state.inputError).toBeNull()
+  })
+
+  it('refuses a name it cannot rescue without throwing away the answer already paid for', async () => {
+    const lookupProfile = vi.fn().mockResolvedValue(profile('7'))
+    const lookupActivity = vi.fn().mockResolvedValue(activity('7', 30))
+    const lookup = createLookupState(fake({ lookupProfile, lookupActivity }))
+    expect(await lookup.lookUp('alice')).toBe(true)
+    expect(await lookup.analyze(30)).toBe(true)
+    // A typo costs nothing, and it must not cost the user what they bought: the
+    // refusal belongs to the field, not to the account on screen.
     expect(await lookup.lookUp('a b')).toBe(false)
-    expect(lookup.state.username).toBe('a b')
-    expect(await lookup.lookUp(' @alice')).toBe(false)
-    expect(lookup.state.profile.error?.code).toBe('invalid_lookup_input')
-    expect(lookup.state.profile.spent).toBe(false)
-    expect(lookup.state.profile.value).toBeNull()
+    expect(lookup.state.inputError?.code).toBe('invalid_lookup_input')
+    expect(lookup.state.username).toBe('alice')
+    expect(lookup.state.profile.value?.target_pk).toBe('7')
+    expect(lookup.state.profile.error).toBeNull()
+    expect(lookup.state.activity.value?.target_pk).toBe('7')
+    // Nothing reached the bridge, so nothing could have been charged.
     expect(lookupProfile).toHaveBeenCalledTimes(1)
+    // The next name that can be looked up takes the refusal with it.
+    expect(await lookup.lookUp('bob')).toBe(true)
+    expect(lookup.state.inputError).toBeNull()
+    lookup.clear()
+    expect(await lookup.lookUp('')).toBe(false)
+    expect(lookup.state.inputError?.code).toBe('invalid_lookup_input')
+    lookup.clear()
+    expect(lookup.state.inputError).toBeNull()
+  })
+
+  it('decides from the failure itself whether a lookup can have been charged', async () => {
+    // A code that proves the request never left this Mac clears `spent`; every
+    // other one leaves it set, which is the safe side of the question.
+    const free = ['not_configured', 'invalid_lookup_input', 'busy', 'closed', 'launcher',
+      'runtime_manifest', 'runtime_handshake', 'home_invalid', 'home_backend_unsupported',
+      'profile_ownership', 'invalid_params', 'unsupported_platform'] as const
+    const charged = ['transport', 'operation_timeout', 'protocol', 'outcome_unknown', 'invalid_token',
+      'quota_exhausted', 'rate_limited', 'network_error', 'access_unconfirmed', 'target_not_found',
+      'target_unavailable', 'provider_response_invalid'] as const
+    for (const code of [...free, ...charged]) {
+      const expected = !(free as readonly string[]).includes(code)
+      const lookup = createLookupState(fake({
+        lookupProfile: vi.fn().mockRejectedValue(new DesktopFailure(code)),
+        lookupActivity: vi.fn().mockRejectedValue(new DesktopFailure(code)),
+      }))
+      expect(await lookup.lookUp('alice')).toBe(false)
+      expect(lookup.state.profile.error?.code, code).toBe(code)
+      expect(lookup.state.profile.spent, code).toBe(expected)
+
+      const analysing = createLookupState(fake({
+        lookupProfile: vi.fn().mockResolvedValue(profile('7')),
+        lookupActivity: vi.fn().mockRejectedValue(new DesktopFailure(code)),
+      }))
+      await analysing.lookUp('alice')
+      expect(await analysing.analyze(12)).toBe(false)
+      expect(analysing.state.activity.spent, code).toBe(expected)
+    }
+  })
+
+  it('does not claim a charge for the mock bridge refusing an unconfigured profile', async () => {
+    // The end-to-end shape of a free failure: no token connected, so the core
+    // refuses before it builds a provider client.
+    const client = new DesktopClient(createMockInvoke({ setup: true, lookupDelayMs: 0 }))
+    const lookup = createLookupState(client)
+    expect(await lookup.lookUp('atlas.ferry')).toBe(false)
+    expect(lookup.state.profile.error?.code).toBe('not_configured')
+    expect(lookup.state.profile.spent).toBe(false)
   })
 
   it('records the failure of each kind separately and never retries', async () => {

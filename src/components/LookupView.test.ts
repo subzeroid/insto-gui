@@ -139,36 +139,59 @@ describe('lookup section', () => {
   })
 
   it('shows every failure where the click was, and says when it may already have been charged', async () => {
-    const codes = ['target_not_found', 'target_private', 'target_unavailable', 'provider_response_invalid',
-      'rate_limited', 'quota_exhausted', 'network_error', 'operation_timeout', 'invalid_token', 'not_configured'] as const
-    for (const code of codes) {
+    const charged = ['target_not_found', 'target_private', 'target_unavailable', 'provider_response_invalid',
+      'rate_limited', 'quota_exhausted', 'network_error', 'operation_timeout', 'invalid_token', 'transport'] as const
+    // These prove the request never left this Mac, so the warning would be a
+    // lie in the expensive direction.
+    const free = ['not_configured', 'busy', 'closed', 'launcher', 'runtime_handshake', 'unsupported_platform'] as const
+    for (const code of [...charged, ...free]) {
       const harness = setup({ lookupProfile: () => Promise.reject(new DesktopFailure(code)) })
       await look(harness)
       const alert = harness.wrapper.get('[role="alert"]')
-      expect(alert.text()).toBe(new DesktopFailure(code).message)
+      expect(alert.text(), code).toBe(new DesktopFailure(code).message)
       // In place, inside the card: the section renders no banner of its own.
-      expect(alert.element.closest('.profile-card')).not.toBeNull()
-      // The request left, so the money may already be gone.
-      expect(harness.wrapper.text()).toContain(t('lookup.may_be_charged'))
+      expect(alert.element.closest('.profile-card'), code).not.toBeNull()
+      const paid = (charged as readonly string[]).includes(code)
+      expect(harness.wrapper.text().includes(t('lookup.may_be_charged')), code).toBe(paid)
       // A failure offers nothing to analyse and nothing to watch.
       expect(harness.wrapper.find('[data-action="analyse"]').exists()).toBe(false)
       expect(harness.wrapper.find('[data-action="watch"]').exists()).toBe(false)
       harness.wrapper.unmount()
     }
-    // A name refused before any request is made is not charged for, and says so
-    // by not claiming otherwise.
-    const refused = setup()
-    await look(refused, '@@')
-    expect(refused.lookupProfile).not.toHaveBeenCalled()
-    expect(refused.wrapper.get('[role="alert"]').text()).toBe(new DesktopFailure('invalid_lookup_input').message)
-    expect(refused.wrapper.text()).not.toContain(t('lookup.may_be_charged'))
 
-    // A failed analysis carries the same warning, beside its own message.
+    // A failed analysis carries the same warning, beside its own message, and
+    // drops it for a failure that cost nothing.
     const failed = setup({ lookupActivity: () => Promise.reject(new DesktopFailure('operation_timeout')) })
     await look(failed)
     await analyse(failed)
     expect(failed.wrapper.get('.lookup-analysis [role="alert"]').text()).toBe(new DesktopFailure('operation_timeout').message)
     expect(failed.wrapper.text()).toContain(t('lookup.may_be_charged'))
+    const refusedAnalysis = setup({ lookupActivity: () => Promise.reject(new DesktopFailure('not_configured')) })
+    await look(refusedAnalysis)
+    await analyse(refusedAnalysis)
+    expect(refusedAnalysis.wrapper.get('.lookup-analysis [role="alert"]').text()).toBe(new DesktopFailure('not_configured').message)
+    expect(refusedAnalysis.wrapper.text()).not.toContain(t('lookup.may_be_charged'))
+  })
+
+  it('refuses a mistyped name beside the field and keeps what was paid for', async () => {
+    const harness = setup()
+    await look(harness)
+    await analyse(harness)
+    await look(harness, 'a b')
+    expect(harness.lookupProfile).toHaveBeenCalledTimes(1)
+    const refusal = harness.wrapper.get('[data-note="input-refused"]')
+    expect(refusal.text()).toBe(new DesktopFailure('invalid_lookup_input').message)
+    expect(refusal.attributes('role')).toBe('alert')
+    // Nothing was charged for it, and the answer that was charged for is intact.
+    expect(harness.wrapper.text()).not.toContain(t('lookup.may_be_charged'))
+    expect(harness.wrapper.get('h2').text()).toBe('@alice')
+    expect(harness.wrapper.text()).toContain('Alice Harbour')
+    expect(harness.wrapper.find('[data-block="where"]').exists()).toBe(true)
+    // Editing the field takes the refusal away; so does a name that works.
+    await harness.wrapper.get('#lookup-user').setValue('bo')
+    expect(harness.wrapper.find('[data-note="input-refused"]').exists()).toBe(false)
+    await look(harness, 'bob')
+    expect(harness.lookupProfile.mock.calls).toEqual([['alice'], ['bob']])
   })
 
   it('does not offer to analyse a private account', async () => {

@@ -1,7 +1,7 @@
 import { reactive } from 'vue'
 import { canonicalUsername, type DesktopClient } from './client'
 import type { LookupActivity, LookupProfile, LookupWindow } from './dto'
-import { DesktopFailure, safeFailure } from './messages'
+import { DesktopFailure, mayHaveBeenCharged, safeFailure } from './messages'
 
 // The middle window: enough posts for a rhythm to be visible, and — at the page
 // sizes the provider actually serves — usually still one paid page request. The
@@ -25,13 +25,18 @@ const emptyActivity = (window: LookupWindow) => ({ value: null as LookupActivity
  * polls, and persists nothing. Results live in memory until `clear()` or a new
  * username, so re-opening the tab costs nothing.
  *
- * `lookUp` canonicalizes the name it is given (leading `@`, surrounding
- * whitespace, case), because this is the only entry point for a name a person
- * typed; a form need not do it first.
+ * `lookUp` canonicalizes the name it is given (surrounding whitespace, a
+ * leading `@`, case), because this is the only entry point for a name a person
+ * typed; a form need not do it first. A name it cannot rescue is refused into
+ * `state.inputError` and changes nothing else — a typo is free, and it must not
+ * throw away an answer that was paid for.
  */
 export function createLookupState(client: DesktopClient) {
   const state = reactive({
     username: null as string | null,
+    // A name that cannot be looked up at all. It is not a result and never
+    // replaces one: it belongs to the field, not to the account on screen.
+    inputError: null as DesktopFailure | null,
     profile: emptyProfile(),
     activity: emptyActivity(DEFAULT_WINDOW),
   })
@@ -47,17 +52,22 @@ export function createLookupState(client: DesktopClient) {
 
   async function lookUp(raw: string): Promise<boolean> {
     if (!idle()) return false
+    // The name is judged before anything on screen is touched. A typo costs
+    // nothing and must not cost the user the answer they already paid for: it
+    // is reported in `inputError`, beside the field it was typed in, and the
+    // previous profile and analysis stay exactly as they were.
+    const username = canonicalUsername(raw)
+    if (username === null) {
+      state.inputError = new DesktopFailure('invalid_lookup_input')
+      return false
+    }
+    state.inputError = null
     generation++
     const expected = generation
-    const username = canonicalUsername(raw)
-    state.username = username ?? raw
+    state.username = username
     // A new account never leaves the previous one's analysis on screen, and the
     // chosen window survives, because it is a preference and not a result.
     state.activity = emptyActivity(state.activity.window)
-    if (username === null) {
-      state.profile = { ...emptyProfile(), error: new DesktopFailure('invalid_lookup_input') }
-      return false
-    }
     state.profile = { ...emptyProfile(), loading: true, spent: true }
     try {
       const value = await client.lookupProfile(username)
@@ -66,7 +76,13 @@ export function createLookupState(client: DesktopClient) {
       state.profile.at = Math.floor(Date.now() / 1000)
       return true
     } catch (error) {
-      if (generation === expected) state.profile.error = safeFailure(error)
+      if (generation === expected) {
+        const failure = safeFailure(error)
+        state.profile.error = failure
+        // `spent` was set when the request was dispatched; a code that proves
+        // nothing ever left this Mac takes it back.
+        state.profile.spent = mayHaveBeenCharged(failure.code)
+      }
       return false
     } finally {
       if (generation === expected) state.profile.loading = false
@@ -93,7 +109,11 @@ export function createLookupState(client: DesktopClient) {
       state.activity.value = value
       return true
     } catch (error) {
-      if (generation === expected) state.activity.error = safeFailure(error)
+      if (generation === expected) {
+        const failure = safeFailure(error)
+        state.activity.error = failure
+        state.activity.spent = mayHaveBeenCharged(failure.code)
+      }
       return false
     } finally {
       if (generation === expected) state.activity.loading = false
@@ -106,6 +126,7 @@ export function createLookupState(client: DesktopClient) {
   function clear(): void {
     generation++
     state.username = null
+    state.inputError = null
     state.profile = emptyProfile()
     state.activity = emptyActivity(state.activity.window)
   }

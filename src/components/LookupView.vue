@@ -97,7 +97,12 @@ async function watchAccount() {
       <input
         id="lookup-user" v-model="typed" name="user" autocomplete="off" autocapitalize="off" autocorrect="off"
         :spellcheck="false" :disabled="busy" maxlength="257" placeholder="@username"
+        @input="state.inputError = null"
       />
+      <!-- A name that cannot be looked up is refused here, beside the field it
+           was typed in: it costs nothing, and it leaves the paid answer below
+           exactly where it was. -->
+      <p v-if="state.inputError" role="alert" class="notice danger" data-note="input-refused">{{ state.inputError.message }}</p>
       <div class="lookup-buttons">
         <button type="submit" class="primary" :disabled="busy">{{ state.profile.loading ? t('lookup.looking') : t('lookup.action') }}</button>
         <button v-if="state.username !== null" type="button" class="text-button" data-action="clear-lookup" :disabled="busy" @click="clear">{{ t('lookup.clear') }}</button>

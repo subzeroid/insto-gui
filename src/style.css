@@ -97,6 +97,7 @@ footer { display: flex; gap: 8px; align-items: center; padding: 17px 28px; color
 .lookup-view h2 { font-size: 20px; margin: 0; overflow-wrap: anywhere; }
 .lookup-form { display: flex; flex-direction: column; gap: 8px; margin: 0 0 30px; }
 .lookup-form input, .lookup-analysis select { background: #131a23; border: 1px solid #343e4c; border-radius: 9px; padding: 10px 12px; color: #e5edf7; }
+.lookup-form .notice { margin: 0; }
 .lookup-buttons { display: flex; align-items: center; gap: 16px; margin-top: 6px; }
 .lookup-watch { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0 0 4px; font-size: 12px; color: #b5c7d7; }
 .lookup-analysis { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 26px; padding-top: 22px; border-top: 1px solid #232d37; }
