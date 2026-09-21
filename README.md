@@ -14,6 +14,10 @@ Paste your HikerAPI token once, add a few accounts, and a background service che
 
 ![insto-gui watching six accounts, with the saved snapshots of one of them compared side by side](docs/screenshot.png)
 
+Or look an account up on demand — where its posts are tagged, when it posts, which hashtags and accounts it mentions:
+
+![The Lookup section: places, posting rhythm by hour and weekday, and top hashtags of one account](docs/screenshot-lookup.png)
+
 > The interface is in English; Russian can be chosen in **Settings**.
 
 ## Features
