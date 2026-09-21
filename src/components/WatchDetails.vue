@@ -3,6 +3,7 @@ import { computed, ref, watch as observe } from 'vue'
 import type { ServiceState, Watch } from '../desktop/dto'
 import type { createHistoryState } from '../desktop/history'
 import { MIN_INTERVAL, validInterval } from '../desktop/client'
+import { localTime } from '../desktop/format'
 import { t } from '../i18n'
 import ConfirmBlock from './ConfirmBlock.vue'
 import ProfileCard from './ProfileCard.vue'
@@ -19,6 +20,12 @@ const intro = computed(() => {
   if (props.watch.has_error || props.serviceState !== 'running') return t('watches.detail_waiting')
   return t('watches.detail_first_check')
 })
+// The card is shared with the Lookup section, so the line that dates it belongs
+// to whoever knows where the fields came from: here, the saved snapshot.
+const profileCaption = computed(() => {
+  const value = props.history.state.profile.value
+  return value === null ? '' : t('profile.as_of', { time: localTime(value.snapshot.captured_at) })
+})
 const interval = ref(String(props.watch.interval_seconds))
 const confirming = ref(false)
 observe(() => props.watch.user, () => { confirming.value = false; interval.value = String(props.watch.interval_seconds) })
@@ -33,7 +40,7 @@ async function confirmRemove() { confirming.value = false; await props.remove(pr
     <p class="intro">{{ intro }}</p>
     <!-- The profile is what the user came for: it sits directly under the status
          line, above the controls and the saved snapshots. -->
-    <ProfileCard :profile="history.state.profile" :watch-user="watch.user" />
+    <ProfileCard :profile="history.state.profile" :watch-user="watch.user" :caption="profileCaption" />
     <div class="actions">
       <button v-if="watch.status === 'active'" data-action="pause" :disabled="disabled" @click="pause(watch)">{{ t('watches.pause') }}</button>
       <button v-else data-action="resume" :disabled="disabled" @click="resume(watch)">{{ t('watches.resume') }}</button>
