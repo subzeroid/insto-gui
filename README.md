@@ -65,7 +65,7 @@ The app is ad-hoc signed and not notarized, so macOS refuses it once:
 2. Copy the token from your [HikerAPI dashboard](https://hikerapi.com/p/uk064a1b).
 3. Paste it into the app on first launch.
 
-Every check of a watched account spends HikerAPI requests, so the check interval — not the number of times you open the window — decides how fast the balance goes down. The remaining balance is shown in the **Service** section together with the moment it was last read; it is a reading, not a live counter. You can replace the token later in **Settings** without losing history.
+Every check of a watched account spends HikerAPI requests, so the check interval — not the number of times you open the window — decides how fast the balance goes down, together with any lookups you run (see *What a lookup costs* below). The remaining balance is shown in the **Service** section together with the moment it was last read; it is a reading, not a live counter. You can replace the token later in **Settings** without losing history.
 
 ## How monitoring works
 
@@ -75,9 +75,9 @@ If you already run the insto CLI, the app can work with that existing `~/.insto`
 
 ## What a lookup costs
 
-The **Lookup** section is the one place where the window itself spends HikerAPI requests, and it does so only when you press a button — the price is written under each one beforehand. A profile costs about 2 requests. The analysis of the recent posts costs one request per page of posts: usually between 1 and 5 for the windows offered (the last 12, 30 or 50 posts), and never more than 6 — reading stops there, the app analyses what it already paid for and says how many posts it actually read.
+The **Lookup** section is the one section that spends HikerAPI requests on the accounts you ask about, and it does so only when you press a button — the price is written under each one beforehand. A profile costs 2 requests, or up to 4 if one of them has to be tried again. The analysis of the recent posts costs one request per page of posts: usually between 1 and 5 for the windows offered (the last 12, 30 or 50 posts). Reading stops after 6 pages, and a page that fails is tried once more, so one analysis costs at most 12 requests — then the app analyses what it already paid for and says how many posts it actually read.
 
-A result stays in memory while the window is open, so leaving the section and coming back shows the same answer without paying for it again; nothing about a lookup is written to disk, and no snapshot or history entry is created. A private account shows its profile, but its posts are not public and cannot be analysed. Anything a lookup found can be turned into a watch with one button.
+A result stays in memory while the window is open, so leaving the section and coming back shows the same answer without paying for it again; nothing about a lookup is written to disk, and no snapshot or history entry is created. A private account shows its profile, but its posts are not public and cannot be analysed. The account you looked up can be turned into a watch with one button, if you have a free watch slot.
 
 ## Building from source
 
