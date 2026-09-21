@@ -57,6 +57,7 @@ impl Owner {
         let deadline = Instant::now()
             + match operation.budget() {
                 crate::protocol::Budget::Read => self.policy.read,
+                crate::protocol::Budget::NetworkRead => self.policy.network_read,
                 crate::protocol::Budget::LocalMutation => self.policy.local_mutation,
                 crate::protocol::Budget::ServiceMutation => self.policy.mutation,
             };
@@ -149,6 +150,7 @@ mod tests {
             fixture.launcher.clone(),
             Policy {
                 read: Duration::from_secs(10),
+                network_read: Duration::from_secs(10),
                 local_mutation: Duration::from_secs(10),
                 mutation: Duration::from_secs(10),
             },
@@ -292,6 +294,7 @@ mod tests {
             f.launcher.clone(),
             Policy {
                 read: Duration::from_secs(2),
+                network_read: Duration::from_secs(2),
                 local_mutation: MUTATION,
                 mutation: MUTATION,
             },
@@ -361,6 +364,7 @@ mod tests {
             f.launcher.clone(),
             Policy {
                 read: Duration::from_secs(120),
+                network_read: Duration::from_secs(120),
                 local_mutation: Duration::from_millis(400),
                 mutation: Duration::from_secs(120),
             },

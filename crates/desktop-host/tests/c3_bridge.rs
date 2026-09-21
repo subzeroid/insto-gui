@@ -11,7 +11,7 @@ use insto_desktop_host::{
     owner::Owner,
     process::TrustedLauncher,
     protocol::{
-        Backend, ChangeValue, ConfigState, DatabaseState, DesiredService, HistoryItem,
+        Backend, Budget, ChangeValue, ConfigState, DatabaseState, DesiredService, HistoryItem,
         ProcessState, Reason, Registration, ServiceState, Status, CAPABILITIES, CORE_VERSION,
     },
     Operation, Response,
@@ -268,6 +268,74 @@ async fn snapshots_read_returns_the_seeded_fields() {
         "snapshot_identity_mismatch"
     );
     owner.shutdown().await;
+}
+
+/// The two on-demand lookups against the live bridge. An unconfigured root has
+/// no token, so the core answers `not_configured` before it builds a provider:
+/// this test therefore proves the wiring — the pinned capability list and the
+/// two operations reaching the core — without a single provider request and
+/// without a credential of any kind.
+#[tokio::test]
+async fn the_lookups_reach_the_core_and_refuse_an_unconfigured_profile() {
+    let Some(runtime) = std::env::var_os("INSTO_GUI_RUNTIME") else {
+        eprintln!("skipped: INSTO_GUI_RUNTIME is not set");
+        return;
+    };
+    let python = PathBuf::from(runtime)
+        .join("python/bin/python3")
+        .canonicalize()
+        .expect("INSTO_GUI_RUNTIME must contain python/bin/python3");
+    let dir = tempfile::Builder::new()
+        .prefix("insto-gui-lookup-")
+        .tempdir()
+        .unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let root = private_dir(&base.join("root"));
+    let owner = Owner::new(TrustedLauncher::new(&root, &python, &root).unwrap());
+
+    let Response::Hello(hello) = call(&owner, Operation::Hello).await else {
+        panic!("hello")
+    };
+    assert_eq!(hello.capabilities.len(), 27);
+    assert_eq!(hello.capabilities.len(), CAPABILITIES.len());
+    // The pinned names in the pinned order, the two lookups appended last.
+    assert!(hello
+        .capabilities
+        .iter()
+        .zip(CAPABILITIES)
+        .all(|(reported, pinned)| reported == pinned));
+    assert_eq!(
+        &hello.capabilities[25..],
+        ["lookup.profile", "lookup.activity"]
+    );
+
+    for operation in [
+        Operation::LookupProfile {
+            username: "alice".into(),
+        },
+        Operation::LookupActivity {
+            target_pk: "17841400000000001".into(),
+            window: 12,
+        },
+    ] {
+        assert_eq!(operation.budget(), Budget::NetworkRead);
+        assert!(!operation.is_mutation());
+        let started = std::time::Instant::now();
+        assert_eq!(error_code(&call(&owner, operation).await), "not_configured");
+        // A refusal that needed no network: it cannot have waited on one.
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    }
+    owner.shutdown().await;
+
+    // A lookup reads `config.toml` and nothing else: no state file, no database,
+    // no output directory and no lock were created by the two calls above.
+    let mut names: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert!(names.is_empty(), "a lookup wrote {names:?}");
 }
 
 #[tokio::test]

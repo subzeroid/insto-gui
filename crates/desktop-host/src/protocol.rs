@@ -38,9 +38,18 @@ pub const CAPABILITIES: [&str; 27] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Budget {
     Read,
+    /// The core's "network read": one provider request paid for on an explicit
+    /// click. It is still a read — cancellable, never outcome-unknown — but it
+    /// owns a budget of its own, because a local read's ten seconds cannot hold
+    /// a provider round trip and stretching that class would let every storage
+    /// read hang for a minute.
+    NetworkRead,
     LocalMutation,
     ServiceMutation,
 }
+/// The three window sizes `lookup.activity` offers, so the request cost the
+/// window quotes before the click is the cost the core really pays.
+pub const WINDOWS: [u8; 3] = [12, 30, 50];
 pub enum Operation {
     Hello,
     SetupInspect,
@@ -113,6 +122,13 @@ pub enum Operation {
     HomeSelect {
         path: Option<String>,
     },
+    LookupProfile {
+        username: String,
+    },
+    LookupActivity {
+        target_pk: String,
+        window: u8,
+    },
 }
 impl std::fmt::Debug for Operation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -133,6 +149,10 @@ pub enum Response {
     SnapshotFields(SnapshotFields),
     ServiceInspection(ServiceInspection),
     HomeInspection(HomeInspection),
+    LookupProfile(LookupProfile),
+    // Boxed: the activity result is by far the largest thing the bridge can
+    // answer, and every other response would otherwise pay for its size.
+    LookupActivity(Box<LookupActivity>),
     Error(SafeError),
 }
 #[derive(Debug, Deserialize, Serialize)]
@@ -384,6 +404,86 @@ pub struct HistoryPage {
     pub scan_complete: bool,
     pub scanned: u64,
 }
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Access {
+    Public,
+    Private,
+}
+// `lookup.profile`: the tracked profile vocabulary `snapshots.read` reports,
+// with the same value typing, read live instead of out of a saved snapshot. It
+// never carries the `avatar`/`banner` hashes, which only a stored snapshot has,
+// so a shared renderer must treat those two names as optional.
+#[derive(Debug, Serialize)]
+pub struct LookupProfile {
+    pub target_pk: String,
+    pub access: Access,
+    pub fields: std::collections::BTreeMap<String, ChangeValue>,
+    pub unknown_fields: Vec<String>,
+    pub quota_remaining: Option<u64>,
+}
+#[derive(Debug, Serialize, Clone, Copy, PartialEq)]
+pub struct Coordinates {
+    pub lat: f64,
+    pub lng: f64,
+}
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct Place {
+    pub name: String,
+    pub lat: f64,
+    pub lng: f64,
+    pub count: u64,
+}
+#[derive(Debug, Serialize)]
+pub struct Geo {
+    pub geotagged: u64,
+    pub anchor: Option<Place>,
+    pub centroid: Option<Coordinates>,
+    pub radius_km: Option<f64>,
+    pub places: Vec<Place>,
+}
+#[derive(Debug, Serialize)]
+pub struct Timeline {
+    /// Exactly 24 UTC hour buckets.
+    pub hour_of_day: Vec<u64>,
+    /// Exactly 7 day buckets, Monday first.
+    pub day_of_week: Vec<u64>,
+    pub first_post_at: Option<u64>,
+    pub last_post_at: Option<u64>,
+}
+#[derive(Debug, Serialize)]
+pub struct Term {
+    pub key: String,
+    pub count: u64,
+}
+#[derive(Debug, Serialize)]
+pub struct TopPost {
+    pub code: String,
+    pub like_count: u64,
+}
+#[derive(Debug, Serialize)]
+pub struct Likes {
+    pub total: u64,
+    pub average: f64,
+    pub top_posts: Vec<TopPost>,
+}
+// `lookup.activity`: everything computed from one window of recent posts, and
+// nothing from a per-post request. `analyzed` is the true number inspected,
+// which is smaller than `window` both for a short account and for one whose
+// cursor hit the core's paid-page ceiling.
+#[derive(Debug, Serialize)]
+pub struct LookupActivity {
+    pub target_pk: String,
+    pub window: u8,
+    pub analyzed: u64,
+    pub geo: Geo,
+    pub timeline: Timeline,
+    pub hashtags: Vec<Term>,
+    pub mentions: Vec<Term>,
+    pub locations: Vec<Term>,
+    pub likes: Likes,
+    pub quota_remaining: Option<u64>,
+}
 #[derive(Debug, Serialize)]
 pub struct SafeError {
     pub code: &'static str,
@@ -484,6 +584,8 @@ impl Operation {
             Self::ServiceUninstall => "service.uninstall",
             Self::HomeInspect { .. } => "home.inspect",
             Self::HomeSelect { .. } => "home.select",
+            Self::LookupProfile { .. } => "lookup.profile",
+            Self::LookupActivity { .. } => "lookup.activity",
         }
     }
     pub fn budget(&self) -> Budget {
@@ -500,6 +602,7 @@ impl Operation {
             | Self::ChangesList { .. }
             | Self::ServiceInspect
             | Self::HomeInspect { .. } => Budget::Read,
+            Self::LookupProfile { .. } | Self::LookupActivity { .. } => Budget::NetworkRead,
             Self::WatchesAdd { .. }
             | Self::WatchesUpdate { .. }
             | Self::WatchesPause { .. }
@@ -515,8 +618,13 @@ impl Operation {
             | Self::HomeSelect { .. } => Budget::ServiceMutation,
         }
     }
+    /// A network read changes nothing, so it is cancelled on close and its
+    /// failure is a transport failure, not an unknown outcome.
     pub fn is_mutation(&self) -> bool {
-        self.budget() != Budget::Read
+        matches!(
+            self.budget(),
+            Budget::LocalMutation | Budget::ServiceMutation
+        )
     }
     pub fn validate(&self) -> Result<(), HostError> {
         let ok = match self {
@@ -591,6 +699,14 @@ impl Operation {
             }
             Self::HomeInspect { path } => home_path_ok(path),
             Self::HomeSelect { path } => path.as_deref().is_none_or(home_path_ok),
+            // One rule per field across the whole bridge: the username form is
+            // `watches.add`'s and the pk form is the history operations'. The
+            // window must be one of the three sizes the core offers.
+            Self::LookupProfile { username } => canonical_user(username),
+            Self::LookupActivity {
+                target_pk: pk,
+                window,
+            } => target_pk(pk) && WINDOWS.contains(window),
         };
         if ok {
             Ok(())
@@ -710,6 +826,13 @@ impl Operation {
                 // The core requires exactly `{"path": …}`; `null` is the own profile
                 // and is only accepted for `home.select`.
                 params.insert("path".into(), path.as_deref().map_or(Value::Null, text));
+            }
+            Self::LookupProfile { username } => {
+                params.insert("username".into(), text(username));
+            }
+            Self::LookupActivity { target_pk, window } => {
+                params.insert("target_pk".into(), text(target_pk));
+                params.insert("window".into(), (*window).into());
             }
             _ => {}
         }
@@ -1334,6 +1457,379 @@ fn snapshot_fields(value: &Value, pk: &str, id: &str) -> Result<SnapshotFields, 
         unknown_fields,
     })
 }
+// The bounds `insto/desktop/lookup.py` applies on the way out, mirrored here so
+// the host refuses what the core could not have produced. Python slices strings
+// by code point, so every character bound below is measured in characters.
+const LOOKUP_TERM_CHARACTERS: usize = 120;
+const LOOKUP_CODE_CHARACTERS: usize = 64;
+const LOOKUP_TOP_PLACES: usize = 10;
+const LOOKUP_TOP_TERMS: usize = 20;
+const LOOKUP_TOP_POSTS: usize = 5;
+#[derive(Clone, Copy)]
+enum Tracked {
+    /// A string or JSON null, at most this many characters.
+    Text(usize),
+    Flag,
+    Count,
+}
+// `insto/service/history.py:_PROFILE_TRACKED_FIELDS` in its declaration order,
+// each with the bound `lookup.py:_TEXT_CHARACTERS` applies to it.
+const PROFILE_FIELDS: [(&str, Tracked); 13] = [
+    ("username", Tracked::Text(255)),
+    ("full_name", Tracked::Text(255)),
+    ("biography", Tracked::Text(2048)),
+    ("external_url", Tracked::Text(2048)),
+    ("is_verified", Tracked::Flag),
+    ("is_business", Tracked::Flag),
+    ("is_private", Tracked::Flag),
+    ("follower_count", Tracked::Count),
+    ("following_count", Tracked::Count),
+    ("media_count", Tracked::Count),
+    ("public_email", Tracked::Text(320)),
+    ("public_phone", Tracked::Text(64)),
+    ("business_category", Tracked::Text(255)),
+];
+fn characters_within(value: &str, max: usize) -> bool {
+    value.chars().count() <= max
+}
+fn counted(value: &Value) -> Result<u64, HostError> {
+    value
+        .as_u64()
+        .filter(|n| *n <= MAX_SAFE)
+        .ok_or(HostError::Protocol)
+}
+fn quota(value: &Value) -> Result<Option<u64>, HostError> {
+    match value {
+        Value::Null => Ok(None),
+        number => counted(number).map(Some),
+    }
+}
+fn tracked_value(value: &Value, kind: Tracked) -> Result<ChangeValue, HostError> {
+    Ok(match (kind, value) {
+        // Only an optional text field can be absent; the core always supplies a
+        // real bool and a real integer for the other two kinds.
+        (Tracked::Text(_), Value::Null) => ChangeValue::Null,
+        (Tracked::Text(max), Value::String(text)) if characters_within(text, max) => {
+            ChangeValue::Text(text.clone())
+        }
+        (Tracked::Flag, Value::Bool(flag)) => ChangeValue::Bool(*flag),
+        (Tracked::Count, number) => ChangeValue::Integer(counted(number)?),
+        _ => return Err(HostError::Protocol),
+    })
+}
+const LOOKUP_PROFILE_KEYS: [&str; 6] = [
+    "kind",
+    "target_pk",
+    "access",
+    "fields",
+    "unknown_fields",
+    "quota_remaining",
+];
+fn lookup_profile(result: &Value) -> Result<LookupProfile, HostError> {
+    let obj = exact_keys(result, &LOOKUP_PROFILE_KEYS)?;
+    if obj["kind"].as_str() != Some("lookup_profile") {
+        return Err(HostError::Protocol);
+    }
+    let pk = obj["target_pk"]
+        .as_str()
+        .filter(|pk| target_pk(pk))
+        .ok_or(HostError::Protocol)?;
+    let access: Access =
+        serde_json::from_value(obj["access"].clone()).map_err(|_| HostError::Protocol)?;
+    let raw = obj["fields"].as_object().ok_or(HostError::Protocol)?;
+    let mut unknown_fields: Vec<String> = Vec::new();
+    for name in obj["unknown_fields"]
+        .as_array()
+        .ok_or(HostError::Protocol)?
+    {
+        let name = name.as_str().ok_or(HostError::Protocol)?;
+        if unknown_fields.iter().any(|seen| seen == name) {
+            return Err(HostError::Protocol);
+        }
+        unknown_fields.push(name.to_owned());
+    }
+    // The core walks its own declaration list to build the pair, so every
+    // tracked name is either a value or an unknown — never both, never neither.
+    let mut fields = std::collections::BTreeMap::new();
+    for (name, kind) in PROFILE_FIELDS {
+        match (raw.get(name), unknown_fields.iter().any(|it| it == name)) {
+            (Some(value), false) => {
+                fields.insert(name.to_owned(), tracked_value(value, kind)?);
+            }
+            (None, true) => {}
+            _ => return Err(HostError::Protocol),
+        }
+    }
+    // A name outside the tracked vocabulary would survive the loop above on
+    // either side; these two counts are what refuse it.
+    if raw.len() != fields.len() || fields.len() + unknown_fields.len() != PROFILE_FIELDS.len() {
+        return Err(HostError::Protocol);
+    }
+    Ok(LookupProfile {
+        target_pk: pk.to_owned(),
+        access,
+        fields,
+        unknown_fields,
+        quota_remaining: quota(&obj["quota_remaining"])?,
+    })
+}
+fn coordinate(value: &Value, limit: f64) -> Result<f64, HostError> {
+    value
+        .as_f64()
+        .filter(|number| number.is_finite() && number.abs() <= limit)
+        .ok_or(HostError::Protocol)
+}
+fn point(value: &Value) -> Result<Coordinates, HostError> {
+    let obj = exact_keys(value, &["lat", "lng"])?;
+    Ok(Coordinates {
+        lat: coordinate(&obj["lat"], 90.0)?,
+        lng: coordinate(&obj["lng"], 180.0)?,
+    })
+}
+fn place(value: &Value) -> Result<Place, HostError> {
+    let obj = exact_keys(value, &["name", "lat", "lng", "count"])?;
+    let name = obj["name"]
+        .as_str()
+        .filter(|name| characters_within(name, LOOKUP_TERM_CHARACTERS))
+        .ok_or(HostError::Protocol)?;
+    let count = counted(&obj["count"])?;
+    // A place exists because at least one post was tagged there.
+    if count == 0 {
+        return Err(HostError::Protocol);
+    }
+    Ok(Place {
+        name: name.to_owned(),
+        lat: coordinate(&obj["lat"], 90.0)?,
+        lng: coordinate(&obj["lng"], 180.0)?,
+        count,
+    })
+}
+const GEO_KEYS: [&str; 5] = ["geotagged", "anchor", "centroid", "radius_km", "places"];
+fn geo(value: &Value, analyzed: u64) -> Result<Geo, HostError> {
+    let obj = exact_keys(value, &GEO_KEYS)?;
+    let geotagged = counted(&obj["geotagged"])?;
+    let raw = obj["places"].as_array().ok_or(HostError::Protocol)?;
+    if geotagged > analyzed || raw.len() > LOOKUP_TOP_PLACES {
+        return Err(HostError::Protocol);
+    }
+    let mut places: Vec<Place> = Vec::with_capacity(raw.len());
+    let mut tagged = 0u64;
+    for item in raw {
+        let place = place(item)?;
+        // `Counter.most_common` orders by count descending, and the listed
+        // places are a part of the geotagged posts, never more than all of them.
+        if places.last().is_some_and(|last| last.count < place.count) {
+            return Err(HostError::Protocol);
+        }
+        tagged = tagged.checked_add(place.count).ok_or(HostError::Protocol)?;
+        places.push(place);
+    }
+    if tagged > geotagged {
+        return Err(HostError::Protocol);
+    }
+    let anchor = match &obj["anchor"] {
+        Value::Null => None,
+        item => Some(place(item)?),
+    };
+    let centroid = match &obj["centroid"] {
+        Value::Null => None,
+        item => Some(point(item)?),
+    };
+    let radius_km = match &obj["radius_km"] {
+        Value::Null => None,
+        // A distance, not a coordinate: finite and never negative.
+        item => Some(
+            item.as_f64()
+                .filter(|number| number.is_finite() && *number >= 0.0)
+                .ok_or(HostError::Protocol)?,
+        ),
+    };
+    // One geotagged post produces all of these at once: the anchor is the first
+    // listed place and the centroid and radius are computed from the same
+    // points. Without one, every one of them is empty.
+    let located = geotagged > 0;
+    if located != anchor.is_some()
+        || located != centroid.is_some()
+        || located != radius_km.is_some()
+        || located == places.is_empty()
+        || anchor.as_ref() != places.first()
+    {
+        return Err(HostError::Protocol);
+    }
+    Ok(Geo {
+        geotagged,
+        anchor,
+        centroid,
+        radius_km,
+        places,
+    })
+}
+/// One histogram: exactly `buckets` non-negative counts, and their total, which
+/// cannot exceed the posts that were inspected.
+fn histogram(value: &Value, buckets: usize, analyzed: u64) -> Result<(Vec<u64>, u64), HostError> {
+    let raw = value.as_array().ok_or(HostError::Protocol)?;
+    if raw.len() != buckets {
+        return Err(HostError::Protocol);
+    }
+    let mut counts = Vec::with_capacity(buckets);
+    let mut total = 0u64;
+    for item in raw {
+        let count = counted(item)?;
+        total = total.checked_add(count).ok_or(HostError::Protocol)?;
+        counts.push(count);
+    }
+    if total > analyzed {
+        return Err(HostError::Protocol);
+    }
+    Ok((counts, total))
+}
+const TIMELINE_KEYS: [&str; 4] = [
+    "hour_of_day",
+    "day_of_week",
+    "first_post_at",
+    "last_post_at",
+];
+fn timeline(value: &Value, analyzed: u64) -> Result<Timeline, HostError> {
+    let obj = exact_keys(value, &TIMELINE_KEYS)?;
+    let (hour_of_day, hours) = histogram(&obj["hour_of_day"], 24, analyzed)?;
+    let (day_of_week, days) = histogram(&obj["day_of_week"], 7, analyzed)?;
+    let moment = |value: &Value| match value {
+        Value::Null => Ok(None),
+        item => item
+            .as_u64()
+            .filter(|time| *time <= MAX_TIME)
+            .map(Some)
+            .ok_or(HostError::Protocol),
+    };
+    let first_post_at = moment(&obj["first_post_at"])?;
+    let last_post_at = moment(&obj["last_post_at"])?;
+    // Both histograms count the same posts — the ones carrying a usable
+    // timestamp — and those are exactly the posts the first/last pair spans.
+    if hours != days
+        || (hours > 0) != first_post_at.is_some()
+        || first_post_at.is_some() != last_post_at.is_some()
+        || first_post_at > last_post_at
+    {
+        return Err(HostError::Protocol);
+    }
+    Ok(Timeline {
+        hour_of_day,
+        day_of_week,
+        first_post_at,
+        last_post_at,
+    })
+}
+fn terms(value: &Value) -> Result<Vec<Term>, HostError> {
+    let raw = value.as_array().ok_or(HostError::Protocol)?;
+    if raw.len() > LOOKUP_TOP_TERMS {
+        return Err(HostError::Protocol);
+    }
+    let mut items: Vec<Term> = Vec::with_capacity(raw.len());
+    for item in raw {
+        let obj = exact_keys(item, &["key", "count"])?;
+        // A counted term was read off a post, so it is never empty.
+        let key = obj["key"]
+            .as_str()
+            .filter(|key| !key.is_empty() && characters_within(key, LOOKUP_TERM_CHARACTERS))
+            .ok_or(HostError::Protocol)?;
+        let count = counted(&obj["count"])?;
+        // `_top_from_counter` sorts by count descending, ties by key ascending;
+        // truncating a key to its first characters preserves that order.
+        let ordered = items.last().is_none_or(|last| {
+            last.count > count || (last.count == count && last.key.as_str() <= key)
+        });
+        if count == 0 || !ordered {
+            return Err(HostError::Protocol);
+        }
+        items.push(Term {
+            key: key.to_owned(),
+            count,
+        });
+    }
+    Ok(items)
+}
+fn likes(value: &Value, analyzed: u64) -> Result<Likes, HostError> {
+    let obj = exact_keys(value, &["total", "average", "top_posts"])?;
+    let total = counted(&obj["total"])?;
+    let average = obj["average"]
+        .as_f64()
+        .filter(|number| number.is_finite() && *number >= 0.0)
+        .ok_or(HostError::Protocol)?;
+    let raw = obj["top_posts"].as_array().ok_or(HostError::Protocol)?;
+    // `aggregate_likes` returns the five most liked posts of the window it was
+    // given, so the list is as long as the window, up to five.
+    let expected = usize::try_from(analyzed)
+        .unwrap_or(usize::MAX)
+        .min(LOOKUP_TOP_POSTS);
+    // Nothing inspected means nothing liked.
+    if raw.len() != expected || (analyzed == 0 && (total > 0 || average > 0.0)) {
+        return Err(HostError::Protocol);
+    }
+    let mut top_posts: Vec<TopPost> = Vec::with_capacity(raw.len());
+    for item in raw {
+        let obj = exact_keys(item, &["code", "like_count"])?;
+        let code = obj["code"]
+            .as_str()
+            .filter(|code| characters_within(code, LOOKUP_CODE_CHARACTERS))
+            .ok_or(HostError::Protocol)?;
+        let like_count = counted(&obj["like_count"])?;
+        if top_posts
+            .last()
+            .is_some_and(|last| last.like_count < like_count)
+        {
+            return Err(HostError::Protocol);
+        }
+        top_posts.push(TopPost {
+            code: code.to_owned(),
+            like_count,
+        });
+    }
+    Ok(Likes {
+        total,
+        average,
+        top_posts,
+    })
+}
+const LOOKUP_ACTIVITY_KEYS: [&str; 11] = [
+    "kind",
+    "target_pk",
+    "window",
+    "analyzed",
+    "geo",
+    "timeline",
+    "hashtags",
+    "mentions",
+    "locations",
+    "likes",
+    "quota_remaining",
+];
+fn lookup_activity(result: &Value, pk: &str, window: u8) -> Result<LookupActivity, HostError> {
+    let obj = exact_keys(result, &LOOKUP_ACTIVITY_KEYS)?;
+    // The pk and the window are echoed, never re-derived: the core takes both
+    // from the request it already validated.
+    if obj["kind"].as_str() != Some("lookup_activity")
+        || obj["target_pk"].as_str() != Some(pk)
+        || obj["window"].as_u64() != Some(u64::from(window))
+    {
+        return Err(HostError::Protocol);
+    }
+    let analyzed = counted(&obj["analyzed"])?;
+    if analyzed > u64::from(window) {
+        return Err(HostError::Protocol);
+    }
+    Ok(LookupActivity {
+        target_pk: pk.to_owned(),
+        window,
+        analyzed,
+        geo: geo(&obj["geo"], analyzed)?,
+        timeline: timeline(&obj["timeline"], analyzed)?,
+        hashtags: terms(&obj["hashtags"])?,
+        mentions: terms(&obj["mentions"])?,
+        locations: terms(&obj["locations"])?,
+        likes: likes(&obj["likes"], analyzed)?,
+        quota_remaining: quota(&obj["quota_remaining"])?,
+    })
+}
 fn compare_result(
     result: &Value,
     pk: &str,
@@ -1421,6 +1917,10 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
             )?),
             Operation::ServiceInspect => Response::ServiceInspection(service_inspection(result)?),
             Operation::HomeInspect { .. } => Response::HomeInspection(home_inspection(result)?),
+            Operation::LookupProfile { .. } => Response::LookupProfile(lookup_profile(result)?),
+            Operation::LookupActivity { target_pk, window } => {
+                Response::LookupActivity(Box::new(lookup_activity(result, target_pk, *window)?))
+            }
         });
     }
     #[derive(Deserialize)]
@@ -1564,6 +2064,24 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
         "snapshot_identity_mismatch" => (
             "snapshot_identity_mismatch",
             "Select snapshots from the same saved account history.",
+            false,
+        ),
+        "target_not_found" => ("target_not_found", "That account does not exist.", false),
+        "target_private" => (
+            "target_private",
+            "That account does not share this data publicly.",
+            false,
+        ),
+        // Cause-neutral on purpose: a bare provider 403 says nothing about
+        // whether the target or this account's own access is the reason.
+        "target_unavailable" => (
+            "target_unavailable",
+            "The provider refused to answer about that account.",
+            false,
+        ),
+        "provider_response_invalid" => (
+            "provider_response_invalid",
+            "The provider's answer could not be read safely.",
             false,
         ),
         _ => return Err(bad()),
@@ -2165,15 +2683,33 @@ mod tests {
             assert_eq!(op.budget(), Budget::ServiceMutation);
             assert!(op.is_mutation());
         }
+        // A network read is a read: cancelled on close, never outcome-unknown,
+        // and it takes one of the two read slots rather than the mutation slot.
+        for op in [
+            Operation::LookupProfile {
+                username: "alice".into(),
+            },
+            Operation::LookupActivity {
+                target_pk: "7".into(),
+                window: 50,
+            },
+        ] {
+            assert_eq!(op.budget(), Budget::NetworkRead);
+            assert!(!op.is_mutation());
+        }
         let policy = crate::process::Policy::default();
         assert_eq!(
             (
                 policy.read.as_secs(),
+                policy.network_read.as_secs(),
                 policy.local_mutation.as_secs(),
                 policy.mutation.as_secs()
             ),
-            (10, 15, 120)
+            (10, 70, 15, 120)
         );
+        // The core's own network-read budget, and the host's margin on top of it
+        // for interpreter start and drain.
+        assert!(policy.network_read.as_secs() > 60 && policy.network_read < policy.mutation);
     }
     const WATCH: &str = r#"{"user":"alice","status":"active","interval_seconds":300,"last_ok":null,"waiting_first_check":true,"has_error":false,"consecutive_errors":0,"revision":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#;
     fn overview_json(watches: &str) -> String {
@@ -3173,6 +3709,430 @@ mod tests {
                 HostError::Protocol,
                 "{rejected}"
             );
+        }
+    }
+    // The two documented examples from the core's own fake-backend tests.
+    const LOOKUP_PROFILE: &str = r#"{"kind":"lookup_profile","target_pk":"17841400000000001","access":"public","fields":{"username":"alice","full_name":"Alice Example","biography":"bio line","external_url":"https://example.test/alice","is_verified":true,"is_business":false,"is_private":false,"follower_count":1200,"following_count":300,"media_count":87,"public_email":"alice@example.test","public_phone":null,"business_category":null},"unknown_fields":[],"quota_remaining":4211}"#;
+    const LOOKUP_ACTIVITY: &str = r#"{"kind":"lookup_activity","target_pk":"17841400000000001","window":50,"analyzed":4,"geo":{"geotagged":3,"anchor":{"name":"Cafe Zero","lat":52.37,"lng":4.89,"count":2},"centroid":{"lat":52.36666666666667,"lng":4.886666666666667},"radius_km":0.869,"places":[{"name":"Cafe Zero","lat":52.37,"lng":4.89,"count":2},{"name":"Museum","lat":52.36,"lng":4.88,"count":1}]},"timeline":{"hour_of_day":[0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0],"day_of_week":[0,1,1,1,1,0,0],"first_post_at":1789468200,"last_post_at":1789727400},"hashtags":[{"key":"ams","count":2},{"key":"coffee","count":2}],"mentions":[{"key":"bob","count":2}],"locations":[{"key":"Cafe Zero","count":2},{"key":"Museum","count":1}],"likes":{"total":100,"average":25.0,"top_posts":[{"code":"code3","like_count":40},{"code":"code1","like_count":30},{"code":"code2","like_count":20},{"code":"code0","like_count":10}]},"quota_remaining":4208}"#;
+    // The same shape for an account with no posts: zeros, nulls, empty lists.
+    const EMPTY_ACTIVITY: &str = r#"{"kind":"lookup_activity","target_pk":"7","window":12,"analyzed":0,"geo":{"geotagged":0,"anchor":null,"centroid":null,"radius_km":null,"places":[]},"timeline":{"hour_of_day":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"day_of_week":[0,0,0,0,0,0,0],"first_post_at":null,"last_post_at":null},"hashtags":[],"mentions":[],"locations":[],"likes":{"total":0,"average":0.0,"top_posts":[]},"quota_remaining":null}"#;
+    fn profile_lookup() -> Operation {
+        Operation::LookupProfile {
+            username: "alice".into(),
+        }
+    }
+    fn activity_lookup() -> Operation {
+        Operation::LookupActivity {
+            target_pk: "17841400000000001".into(),
+            window: 50,
+        }
+    }
+    #[test]
+    fn lookup_requests_carry_exactly_the_core_params() {
+        for (operation, expected) in [
+            (
+                profile_lookup(),
+                r#""operation":"lookup.profile","params":{"username":"alice"}"#,
+            ),
+            (
+                activity_lookup(),
+                r#""operation":"lookup.activity","params":{"target_pk":"17841400000000001","window":50}"#,
+            ),
+        ] {
+            let request = String::from_utf8(operation.request("test").unwrap()).unwrap();
+            assert!(request.contains(expected), "{request}");
+        }
+    }
+    #[test]
+    fn lookup_parameter_bounds_match_the_core() {
+        for invalid in [
+            // The username rule is `watches.add`'s, applied before the spawn.
+            Operation::LookupProfile {
+                username: "Alice".into(),
+            },
+            Operation::LookupProfile {
+                username: "@alice".into(),
+            },
+            Operation::LookupProfile {
+                username: " alice".into(),
+            },
+            Operation::LookupProfile {
+                username: ".".into(),
+            },
+            Operation::LookupProfile {
+                username: "..".into(),
+            },
+            Operation::LookupProfile {
+                username: String::new(),
+            },
+            Operation::LookupProfile {
+                username: "a".repeat(256),
+            },
+            Operation::LookupProfile {
+                username: "ali ce".into(),
+            },
+            // The pk rule is the history operations'.
+            Operation::LookupActivity {
+                target_pk: "0".into(),
+                window: 50,
+            },
+            Operation::LookupActivity {
+                target_pk: "07".into(),
+                window: 50,
+            },
+            Operation::LookupActivity {
+                target_pk: String::new(),
+                window: 50,
+            },
+            Operation::LookupActivity {
+                target_pk: "1".repeat(65),
+                window: 50,
+            },
+            // Only the three offered windows, whose cost the window can quote.
+            Operation::LookupActivity {
+                target_pk: "7".into(),
+                window: 0,
+            },
+            Operation::LookupActivity {
+                target_pk: "7".into(),
+                window: 1,
+            },
+            Operation::LookupActivity {
+                target_pk: "7".into(),
+                window: 13,
+            },
+            Operation::LookupActivity {
+                target_pk: "7".into(),
+                window: 49,
+            },
+            Operation::LookupActivity {
+                target_pk: "7".into(),
+                window: 51,
+            },
+        ] {
+            assert_eq!(invalid.validate(), Err(HostError::InvalidParams));
+            assert_eq!(invalid.request("test"), Err(HostError::InvalidParams));
+        }
+        for window in WINDOWS {
+            assert!(Operation::LookupActivity {
+                target_pk: "7".into(),
+                window,
+            }
+            .validate()
+            .is_ok());
+        }
+    }
+    #[test]
+    fn lookup_profile_decodes_the_documented_example() {
+        let Response::LookupProfile(found) =
+            decode(&envelope(LOOKUP_PROFILE), "test", &profile_lookup()).unwrap()
+        else {
+            panic!("lookup.profile")
+        };
+        assert_eq!(found.target_pk, "17841400000000001");
+        assert_eq!(found.access, Access::Public);
+        assert_eq!(found.quota_remaining, Some(4211));
+        assert!(found.unknown_fields.is_empty());
+        // The thirteen tracked names and nothing else: no avatar, no banner.
+        assert_eq!(found.fields.len(), 13);
+        assert!(!found.fields.contains_key("avatar") && !found.fields.contains_key("banner"));
+        assert!(matches!(&found.fields["username"], ChangeValue::Text(u) if u == "alice"));
+        assert!(matches!(
+            found.fields["is_verified"],
+            ChangeValue::Bool(true)
+        ));
+        assert!(matches!(
+            found.fields["follower_count"],
+            ChangeValue::Integer(1200)
+        ));
+        assert!(matches!(found.fields["public_phone"], ChangeValue::Null));
+        // A tracked field the provider cannot supply is named, never invented.
+        let partial = LOOKUP_PROFILE
+            .replace(",\"business_category\":null", "")
+            .replace(
+                "\"unknown_fields\":[]",
+                "\"unknown_fields\":[\"business_category\"]",
+            );
+        let Response::LookupProfile(sparse) =
+            decode(&envelope(&partial), "test", &profile_lookup()).unwrap()
+        else {
+            panic!("lookup.profile")
+        };
+        assert_eq!(sparse.fields.len(), 12);
+        assert_eq!(sparse.unknown_fields, ["business_category"]);
+        assert!(!sparse.fields.contains_key("business_category"));
+        let private = LOOKUP_PROFILE.replace("\"access\":\"public\"", "\"access\":\"private\"");
+        let Response::LookupProfile(closed) =
+            decode(&envelope(&private), "test", &profile_lookup()).unwrap()
+        else {
+            panic!("lookup.profile")
+        };
+        assert_eq!(closed.access, Access::Private);
+    }
+    #[test]
+    fn lookup_profile_rejects_everything_else() {
+        let long_bio = format!("\"biography\":\"{}\"", "b".repeat(2049));
+        let long_mail = format!("\"public_email\":\"{}@example.test\"", "m".repeat(320));
+        for rejected in [
+            LOOKUP_PROFILE.replace("lookup_profile", "snapshot_fields"),
+            // The identity the app would hand to `lookup.activity`.
+            LOOKUP_PROFILE.replace("\"17841400000000001\"", "\"017841400000000001\""),
+            LOOKUP_PROFILE.replace("\"17841400000000001\"", "\"0\""),
+            LOOKUP_PROFILE.replace("\"17841400000000001\"", "17841400000000001"),
+            LOOKUP_PROFILE.replace("\"17841400000000001\"", &format!("\"{}\"", "1".repeat(65))),
+            // Two words, and only two.
+            LOOKUP_PROFILE.replace("\"public\"", "\"followed\""),
+            LOOKUP_PROFILE.replace("\"public\"", "null"),
+            // A name is a value or an unknown, never both and never neither.
+            LOOKUP_PROFILE.replace("\"unknown_fields\":[]", "\"unknown_fields\":[\"username\"]"),
+            LOOKUP_PROFILE.replace("\"unknown_fields\":[]", "\"unknown_fields\":[\"pronouns\"]"),
+            LOOKUP_PROFILE.replace(",\"media_count\":87", ""),
+            LOOKUP_PROFILE
+                .replace(",\"public_phone\":null", "")
+                .replace(
+                    "\"unknown_fields\":[]",
+                    "\"unknown_fields\":[\"public_phone\",\"public_phone\"]",
+                ),
+            LOOKUP_PROFILE.replace("\"unknown_fields\":[]", "\"unknown_fields\":[7]"),
+            // The stored-snapshot names a live lookup can never carry.
+            LOOKUP_PROFILE.replace(
+                "\"username\":\"alice\"",
+                "\"avatar\":null,\"username\":\"alice\"",
+            ),
+            // Value typing per name: a text field may be absent, a flag and a
+            // count never are.
+            LOOKUP_PROFILE.replace("\"username\":\"alice\"", "\"username\":7"),
+            LOOKUP_PROFILE.replace("\"is_verified\":true", "\"is_verified\":\"true\""),
+            LOOKUP_PROFILE.replace("\"is_verified\":true", "\"is_verified\":null"),
+            LOOKUP_PROFILE.replace("\"follower_count\":1200", "\"follower_count\":-1"),
+            LOOKUP_PROFILE.replace("\"follower_count\":1200", "\"follower_count\":1200.5"),
+            LOOKUP_PROFILE.replace("\"follower_count\":1200", "\"follower_count\":null"),
+            LOOKUP_PROFILE.replace(
+                "\"follower_count\":1200",
+                "\"follower_count\":9007199254740992",
+            ),
+            LOOKUP_PROFILE.replace("\"biography\":\"bio line\"", &long_bio),
+            LOOKUP_PROFILE.replace("\"public_email\":\"alice@example.test\"", &long_mail),
+            // The envelope itself.
+            LOOKUP_PROFILE.replace("\"quota_remaining\":4211", "\"quota_remaining\":-1"),
+            LOOKUP_PROFILE.replace("\"quota_remaining\":4211", "\"quota_remaining\":\"4211\""),
+            LOOKUP_PROFILE.replace(",\"quota_remaining\":4211", ""),
+            LOOKUP_PROFILE.replace("{\"kind\"", "{\"extra\":0,\"kind\""),
+        ] {
+            assert_eq!(
+                decode(&envelope(&rejected), "test", &profile_lookup()).unwrap_err(),
+                HostError::Protocol,
+                "{rejected}"
+            );
+        }
+        // A bound that is exactly the core's is accepted.
+        let exact = LOOKUP_PROFILE.replace(
+            "\"biography\":\"bio line\"",
+            &format!("\"biography\":\"{}\"", "b".repeat(2048)),
+        );
+        assert!(decode(&envelope(&exact), "test", &profile_lookup()).is_ok());
+    }
+    #[test]
+    fn lookup_activity_decodes_the_documented_example() {
+        let Response::LookupActivity(activity) =
+            decode(&envelope(LOOKUP_ACTIVITY), "test", &activity_lookup()).unwrap()
+        else {
+            panic!("lookup.activity")
+        };
+        assert_eq!((activity.window, activity.analyzed), (50, 4));
+        assert_eq!(activity.geo.geotagged, 3);
+        assert_eq!(activity.geo.places.len(), 2);
+        assert_eq!(activity.geo.anchor.as_ref(), activity.geo.places.first());
+        assert_eq!(activity.geo.radius_km, Some(0.869));
+        assert_eq!(activity.timeline.hour_of_day.len(), 24);
+        assert_eq!(activity.timeline.day_of_week.len(), 7);
+        assert_eq!(activity.timeline.hour_of_day[10], 4);
+        assert_eq!(activity.timeline.first_post_at, Some(1_789_468_200));
+        assert_eq!(activity.hashtags.len(), 2);
+        assert_eq!(activity.mentions[0].key, "bob");
+        assert_eq!(activity.locations[0].count, 2);
+        assert_eq!(activity.likes.total, 100);
+        assert_eq!(activity.likes.top_posts.len(), 4);
+        assert_eq!(activity.likes.top_posts[0].code, "code3");
+        assert_eq!(activity.quota_remaining, Some(4208));
+        let empty = Operation::LookupActivity {
+            target_pk: "7".into(),
+            window: 12,
+        };
+        let Response::LookupActivity(nothing) =
+            decode(&envelope(EMPTY_ACTIVITY), "test", &empty).unwrap()
+        else {
+            panic!("lookup.activity")
+        };
+        assert_eq!(nothing.analyzed, 0);
+        assert!(nothing.geo.anchor.is_none() && nothing.geo.places.is_empty());
+        assert!(nothing.geo.centroid.is_none() && nothing.geo.radius_km.is_none());
+        assert!(nothing.timeline.first_post_at.is_none() && nothing.likes.top_posts.is_empty());
+        assert!(nothing.quota_remaining.is_none());
+        assert_eq!(nothing.timeline.hour_of_day.iter().sum::<u64>(), 0);
+    }
+    #[test]
+    fn lookup_activity_rejects_everything_else() {
+        let long_place = format!("\"name\":\"{}\"", "p".repeat(121));
+        let long_key = format!("\"key\":\"{}\"", "k".repeat(121));
+        let long_code = format!("\"code\":\"{}\"", "c".repeat(65));
+        let eleven_places: String = (0..11)
+            .map(|index| format!("{{\"name\":\"p{index}\",\"lat\":1.0,\"lng\":1.0,\"count\":1}}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let twenty_one_terms: String = (0..21)
+            .map(|index| format!("{{\"key\":\"t{index:02}\",\"count\":1}}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        for rejected in [
+            LOOKUP_ACTIVITY.replace("lookup_activity", "lookup_profile"),
+            // The pk and the window are echoed, so a different answer is refused.
+            LOOKUP_ACTIVITY.replace("\"target_pk\":\"17841400000000001\"", "\"target_pk\":\"7\""),
+            LOOKUP_ACTIVITY.replace("\"window\":50", "\"window\":30"),
+            LOOKUP_ACTIVITY.replace("\"window\":50", "\"window\":\"50\""),
+            LOOKUP_ACTIVITY.replace("\"analyzed\":4", "\"analyzed\":51"),
+            LOOKUP_ACTIVITY.replace("\"analyzed\":4", "\"analyzed\":-1"),
+            // Geotagged posts are a part of the posts inspected, and the places
+            // listed are a part of the geotagged ones.
+            LOOKUP_ACTIVITY.replace("\"geotagged\":3", "\"geotagged\":5"),
+            LOOKUP_ACTIVITY.replace("\"geotagged\":3", "\"geotagged\":2"),
+            // Without a geotag there is no anchor, centroid or radius; with one,
+            // the anchor is the first listed place.
+            LOOKUP_ACTIVITY.replace(
+                "\"anchor\":{\"name\":\"Cafe Zero\",\"lat\":52.37,\"lng\":4.89,\"count\":2}",
+                "\"anchor\":null",
+            ),
+            LOOKUP_ACTIVITY.replace(
+                "\"anchor\":{\"name\":\"Cafe Zero\",\"lat\":52.37,\"lng\":4.89,\"count\":2}",
+                "\"anchor\":{\"name\":\"Museum\",\"lat\":52.36,\"lng\":4.88,\"count\":1}",
+            ),
+            LOOKUP_ACTIVITY.replace(
+                "\"centroid\":{\"lat\":52.36666666666667,\"lng\":4.886666666666667}",
+                "\"centroid\":null",
+            ),
+            LOOKUP_ACTIVITY.replace("\"radius_km\":0.869", "\"radius_km\":null"),
+            LOOKUP_ACTIVITY.replace("\"radius_km\":0.869", "\"radius_km\":-0.5"),
+            LOOKUP_ACTIVITY.replace("\"radius_km\":0.869", "\"radius_km\":\"0.869\""),
+            // Coordinates a map can hold.
+            LOOKUP_ACTIVITY.replace("\"lat\":52.37", "\"lat\":92.0"),
+            LOOKUP_ACTIVITY.replace("\"lng\":4.89", "\"lng\":-181.0"),
+            LOOKUP_ACTIVITY.replace("\"lat\":52.37", "\"lat\":\"52.37\""),
+            LOOKUP_ACTIVITY.replace("\"lat\":52.37,\"lng\":4.89,\"count\":2}", "\"lat\":52.37,\"lng\":4.89,\"count\":0}"),
+            // `most_common` order, and the ten-place ceiling.
+            LOOKUP_ACTIVITY.replace(
+                "\"places\":[{\"name\":\"Cafe Zero\",\"lat\":52.37,\"lng\":4.89,\"count\":2},{\"name\":\"Museum\",\"lat\":52.36,\"lng\":4.88,\"count\":1}]",
+                "\"places\":[{\"name\":\"Museum\",\"lat\":52.36,\"lng\":4.88,\"count\":1},{\"name\":\"Cafe Zero\",\"lat\":52.37,\"lng\":4.89,\"count\":2}]",
+            ),
+            LOOKUP_ACTIVITY.replace(
+                "\"places\":[{\"name\":\"Cafe Zero\",\"lat\":52.37,\"lng\":4.89,\"count\":2},{\"name\":\"Museum\",\"lat\":52.36,\"lng\":4.88,\"count\":1}]",
+                &format!("\"places\":[{eleven_places}]"),
+            ),
+            LOOKUP_ACTIVITY.replace("\"name\":\"Museum\"", &long_place),
+            // Exactly 24 and exactly 7 buckets, counting the same posts.
+            LOOKUP_ACTIVITY.replace("[0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0]", "[0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0]"),
+            LOOKUP_ACTIVITY.replace("\"day_of_week\":[0,1,1,1,1,0,0]", "\"day_of_week\":[0,1,1,1,1,0,0,0]"),
+            LOOKUP_ACTIVITY.replace("\"day_of_week\":[0,1,1,1,1,0,0]", "\"day_of_week\":[0,1,1,1,0,0,0]"),
+            LOOKUP_ACTIVITY.replace("[0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0]", "[0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0]"),
+            LOOKUP_ACTIVITY.replace("\"first_post_at\":1789468200", "\"first_post_at\":null"),
+            LOOKUP_ACTIVITY.replace("\"last_post_at\":1789727400", "\"last_post_at\":null"),
+            LOOKUP_ACTIVITY.replace("\"first_post_at\":1789468200", "\"first_post_at\":1789727401"),
+            LOOKUP_ACTIVITY.replace("\"last_post_at\":1789727400", "\"last_post_at\":253402300800"),
+            // Counted terms: descending, ties by key ascending, never empty.
+            LOOKUP_ACTIVITY.replace(
+                "\"hashtags\":[{\"key\":\"ams\",\"count\":2},{\"key\":\"coffee\",\"count\":2}]",
+                "\"hashtags\":[{\"key\":\"coffee\",\"count\":2},{\"key\":\"ams\",\"count\":2}]",
+            ),
+            LOOKUP_ACTIVITY.replace(
+                "\"mentions\":[{\"key\":\"bob\",\"count\":2}]",
+                "\"mentions\":[{\"key\":\"bob\",\"count\":0}]",
+            ),
+            LOOKUP_ACTIVITY.replace(
+                "\"mentions\":[{\"key\":\"bob\",\"count\":2}]",
+                "\"mentions\":[{\"key\":\"\",\"count\":2}]",
+            ),
+            LOOKUP_ACTIVITY.replace("\"key\":\"bob\"", &long_key),
+            LOOKUP_ACTIVITY.replace(
+                "\"mentions\":[{\"key\":\"bob\",\"count\":2}]",
+                &format!("\"mentions\":[{twenty_one_terms}]"),
+            ),
+            // The top-liked list is as long as the window, up to five.
+            LOOKUP_ACTIVITY.replace(",{\"code\":\"code0\",\"like_count\":10}", ""),
+            LOOKUP_ACTIVITY.replace("\"like_count\":40", "\"like_count\":25"),
+            LOOKUP_ACTIVITY.replace("\"code\":\"code0\"", &long_code),
+            LOOKUP_ACTIVITY.replace("\"average\":25.0", "\"average\":-1.0"),
+            LOOKUP_ACTIVITY.replace("\"average\":25.0", "\"average\":\"25\""),
+            LOOKUP_ACTIVITY.replace("\"total\":100", "\"total\":-100"),
+            // Exact key sets at every level.
+            LOOKUP_ACTIVITY.replace("{\"kind\"", "{\"extra\":0,\"kind\""),
+            LOOKUP_ACTIVITY.replace("\"geotagged\":3", "\"geotagged\":3,\"empty\":false"),
+            LOOKUP_ACTIVITY.replace(",\"quota_remaining\":4208", ""),
+            LOOKUP_ACTIVITY.replace("\"centroid\":{\"lat\":52.36666666666667,", "\"centroid\":{\"pk\":null,\"lat\":52.36666666666667,"),
+        ] {
+            assert_eq!(
+                decode(&envelope(&rejected), "test", &activity_lookup()).unwrap_err(),
+                HostError::Protocol,
+                "{rejected}"
+            );
+        }
+        // An empty account that claims a like is refused too.
+        let empty = Operation::LookupActivity {
+            target_pk: "7".into(),
+            window: 12,
+        };
+        for rejected in [
+            EMPTY_ACTIVITY.replace("\"total\":0", "\"total\":1"),
+            EMPTY_ACTIVITY.replace("\"average\":0.0", "\"average\":1.0"),
+            EMPTY_ACTIVITY.replace(
+                "\"top_posts\":[]",
+                "\"top_posts\":[{\"code\":\"c\",\"like_count\":0}]",
+            ),
+            EMPTY_ACTIVITY.replace(
+                "\"anchor\":null",
+                "\"anchor\":{\"name\":\"p\",\"lat\":1.0,\"lng\":1.0,\"count\":1}",
+            ),
+            EMPTY_ACTIVITY.replace(
+                "\"places\":[]",
+                "\"places\":[{\"name\":\"p\",\"lat\":1.0,\"lng\":1.0,\"count\":1}]",
+            ),
+            EMPTY_ACTIVITY.replace("\"radius_km\":null", "\"radius_km\":0.0"),
+            EMPTY_ACTIVITY.replace("\"first_post_at\":null", "\"first_post_at\":1"),
+        ] {
+            assert_eq!(
+                decode(&envelope(&rejected), "test", &empty).unwrap_err(),
+                HostError::Protocol,
+                "{rejected}"
+            );
+        }
+    }
+    #[test]
+    fn lookup_error_codes_are_static() {
+        for (code, retryable) in [
+            ("target_not_found", false),
+            ("target_private", false),
+            ("target_unavailable", false),
+            ("provider_response_invalid", false),
+            ("not_configured", false),
+            ("invalid_token", false),
+            ("quota_exhausted", false),
+            ("rate_limited", true),
+            ("network_error", true),
+            ("access_unconfirmed", true),
+            ("operation_timeout", false),
+        ] {
+            let raw = format!(
+                "{{\"protocol_version\":1,\"request_id\":\"test\",\"error\":{{\"code\":\"{code}\",\"message\":\"TOKEN_SENTINEL @alice\",\"retryable\":{}}}}}\n",
+                !retryable
+            );
+            let Response::Error(error) = decode(raw.as_bytes(), "test", &profile_lookup()).unwrap()
+            else {
+                panic!("{code}")
+            };
+            // The code is ours, the sentence is ours, and the core's own
+            // `retryable` flag never overrides the host's table.
+            assert_eq!(error.code, code);
+            assert_eq!(error.retryable, retryable);
+            assert!(!error.message.contains("TOKEN_SENTINEL"));
+            assert!(!error.message.contains("alice"));
         }
     }
 }
