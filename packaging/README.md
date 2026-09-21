@@ -33,11 +33,13 @@ failed. Anything that file cannot be fully trusted to say is reported as an
 unknown binding, and an unknown binding makes every service control read-only.
 
 Use the clean revision (insto 0.7.22) in `packaging/core-pin.json` as the read-only
-build input. The pin is `51103f275ea1ac1881f7aacef76f9ba685334890`, which adds
-`snapshots.read` as the twenty-fifth capability. `.build/runtime-first-check` was
-prepared from a plain clone of that exact commit in `.build-core-first-check/` and
+build input. The pin is `2dc187a905a0620bfc322a08bb66d380a5c07df7`: it carries
+`snapshots.read` as the twenty-fifth capability, checks a new account right away,
+and identifies a profile picture by its file name instead of the signed CDN URL,
+so a check no longer looks like a picture change. `.build/runtime-media-hash` was
+prepared from a plain clone of that exact commit in `.build-core-media-hash/` and
 staged into `.build/app-resources/runtime`; its build id is
-`58ca1fffd821adc9dba294922fe2c2b22be5732f31cba5d6198143e15f1ae94d`, and its bridge
+`efcf80e3ebefc505404824e9793ca439627066dff1f88cd5293ede748af532f0`, and its bridge
 advertises the twenty-five pinned capabilities in the pinned order. A runtime
 prepared from an earlier pin cannot be used: the host's `hello` check demands
 exactly the pinned list, so a 24-capability bridge fails to prepare the desktop.
@@ -45,7 +47,7 @@ exactly the pinned list, so a 24-capability bridge fails to prepare the desktop.
 Build from the staged runtime with:
 
 ```sh
-python3 -B -m scripts.stage_app_runtime .build/runtime-first-check
+python3 -B -m scripts.stage_app_runtime .build/runtime-media-hash
 npm ci --ignore-scripts
 npm test
 npm run build
@@ -88,11 +90,11 @@ G2 adds the five C3 operations on the 0.7.22 bridge: `service.inspect`,
 against the pin of the day, and its bridge advertised the twenty-four capabilities
 that pin listed. It was the staged runtime for G2 — build id
 `4df54faceb61d38bd33ba2498d021384c5236d82a2431dbd932db4bee5ba7d60` — and has since
-been superseded by `.build/runtime-first-check` (see above), which is what
+been superseded by `.build/runtime-media-hash` (see above), which is what
 `.build/app-resources/runtime` now holds. The retained 0.7.21 runtime
 `.build/runtime-c2-01` in the app-shell worktree is the "previous version" the
 native migration proof starts from; it is kept, never deleted. Gated bridge tests
-need `INSTO_GUI_RUNTIME=$PWD/.build/runtime-first-check` — the host rejects both a
+need `INSTO_GUI_RUNTIME=$PWD/.build/runtime-media-hash` — the host rejects both a
 0.7.21 handshake and a 24-capability 0.7.22 one. Developer evidence only, not a
 release artifact.
 

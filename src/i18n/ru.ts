@@ -174,6 +174,9 @@ export const ru: Dictionary = {
   'changes.more': 'Показать дальше',
   'changes.complete': 'Лента просмотрена до конца сохранённой истории.',
   'changes.unknown_fields': 'Поля без данных в старом снимке (неизвестно): {fields}.',
+  'changes.media_added': 'Добавлено',
+  'changes.media_removed': 'Удалено',
+  'changes.media_replaced': 'Заменено на новое',
 
   'profile.title': 'Профиль на момент последней проверки',
   'profile.renamed': 'Имя пользователя в этом снимке:',
@@ -346,6 +349,6 @@ export const ru: Dictionary = {
   'field.public_email': 'Публичная почта',
   'field.public_phone': 'Публичный телефон',
   'field.business_category': 'Категория бизнеса',
-  'field.avatar': 'Аватар (хеш)',
-  'field.banner': 'Обложка (хеш)',
+  'field.avatar': 'Аватар',
+  'field.banner': 'Обложка',
 }
