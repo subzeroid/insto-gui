@@ -132,6 +132,8 @@ describe('lookup section', () => {
     expect(second.wrapper.get('#lookup-user').attributes('disabled')).toBeDefined()
     expect(second.wrapper.get('[data-action="analyse"]').attributes('disabled')).toBeDefined()
     expect(second.wrapper.get('#lookup-window').attributes('disabled')).toBeDefined()
+    // Every control on the screen says the same thing while a request is out.
+    expect(second.wrapper.get('[data-action="watch"]').attributes('disabled')).toBeDefined()
     expect(second.wrapper.get('[role="status"]').text()).toBe(t('lookup.analysing'))
     finish(activity())
     await flushPromises()
@@ -233,7 +235,17 @@ describe('lookup section', () => {
     expect(harness.wrapper.text()).toContain('52.3696, 4.8842')
     expect(harness.wrapper.findAll('[data-list="places"] dt').map(node => node.text()))
       .toEqual(['Ferry Terminal52.3739, 4.8903', 'Birch Yard52.3612, 4.8721'])
+    // The disclaimer stands above the numbers it qualifies, not after them.
+    const where = harness.wrapper.get('[data-block="where"]')
+    expect(where.get('p').text()).toBe(t('lookup.geo_note'))
+    // Both lists carry the heading their dictionary key names.
+    expect(where.findAll('h5').map(node => node.text())).toEqual([t('lookup.places_title')])
+    expect(harness.wrapper.get('[data-block="likes"]').findAll('h5').map(node => node.text())).toEqual([t('lookup.top_posts_title')])
     expect(harness.wrapper.findAll('.bar-chart').length).toBe(2)
+    // An hour reads as a time, and the day chart says which zone it counts in.
+    expect(harness.wrapper.text()).toContain(t('lookup.chart_item', { label: t('lookup.hour_label', { hour: '09' }), count: '2' }))
+    expect(harness.wrapper.text()).toContain(t('lookup.days_title'))
+    expect(harness.wrapper.text()).toContain(t('lookup.times_note'))
     expect(harness.wrapper.text()).toContain(t('lookup.first_post', { time: localTime(1_769_000_000) }))
     expect(harness.wrapper.text()).toContain('#harbour')
     expect(harness.wrapper.text()).toContain('@atlas.ferry')
@@ -256,6 +268,33 @@ describe('lookup section', () => {
     await analyse(quiet)
     expect(quiet.wrapper.findAll('[data-block]').map(node => node.attributes('data-block'))).toEqual(['when', 'likes'])
     expect(quiet.wrapper.get('[data-note="analyzed"]').text()).toBe(t('lookup.analyzed', { count: '30' }))
+  })
+
+  it('shows a balance only when the last paid answer vouches for it', async () => {
+    // A failed analysis that may already have been charged leaves the profile's
+    // number out of date, so it is not shown as the balance "after this lookup".
+    const failed = setup({ lookupActivity: () => Promise.reject(new DesktopFailure('operation_timeout')) })
+    await look(failed)
+    expect(failed.wrapper.get('[data-note="quota"]').text()).toBe(t('lookup.quota_after', { count: formatCount(4211) }))
+    await analyse(failed)
+    expect(failed.wrapper.find('[data-note="quota"]').exists()).toBe(false)
+
+    // A refusal that cost nothing leaves the profile's number true.
+    const free = setup({ lookupActivity: () => Promise.reject(new DesktopFailure('not_configured')) })
+    await look(free)
+    await analyse(free)
+    expect(free.wrapper.get('[data-note="quota"]').text()).toBe(t('lookup.quota_after', { count: formatCount(4211) }))
+
+    // An analysis that answered without a balance cannot vouch for one either.
+    const silent = setup({ lookupActivity: () => Promise.resolve(activity({ quota_remaining: null })) })
+    await look(silent)
+    await analyse(silent)
+    expect(silent.wrapper.find('[data-note="quota"]').exists()).toBe(false)
+
+    // A profile the provider answered without a balance shows no line at all.
+    const unknown = setup({ lookupProfile: () => Promise.resolve(profile({ quota_remaining: null })) })
+    await look(unknown)
+    expect(unknown.wrapper.find('[data-note="quota"]').exists()).toBe(false)
   })
 
   it('has one honest empty state when no posts could be read', async () => {

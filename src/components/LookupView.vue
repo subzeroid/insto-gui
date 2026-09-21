@@ -34,8 +34,16 @@ const found = computed(() => state.value.profile.value)
 // the button for it is not offered at all.
 const isPrivate = computed(() => found.value?.access === 'private')
 const caption = computed(() => (state.value.profile.at === null ? '' : t('lookup.as_of', { time: localTime(state.value.profile.at) })))
-// Whichever paid answer landed last is the one that knows the balance.
-const quota = computed(() => state.value.activity.value?.quota_remaining ?? found.value?.quota_remaining ?? null)
+// Only the last paid answer can speak for the balance, and only if it came back
+// carrying one. An analysis that failed after it may have been charged, and one
+// that answered without a balance, both leave the profile's number out of date —
+// so the line is not shown at all rather than shown as "after this lookup".
+const quota = computed(() => {
+  const activity = state.value.activity
+  if (activity.error !== null && activity.spent) return null
+  if (activity.value !== null) return activity.value.quota_remaining
+  return found.value?.quota_remaining ?? null
+})
 const watched = computed(() => state.value.username !== null && (props.monitoring.state.overview?.watches.some(item => item.user === state.value.username) ?? false))
 // Adding a watch is a mutation of the local database, with the same guards the
 // Watches section applies to one.
@@ -123,7 +131,7 @@ async function watchAccount() {
           <span>{{ t('lookup.already_watched') }}</span>
           <button type="button" class="text-button" data-action="open-watch" @click="emit('open-watch', state.username!)">{{ t('lookup.open_watch') }}</button>
         </template>
-        <button v-else type="button" data-action="watch" :disabled="!canWatch" @click="watchAccount">{{ adding ? t('lookup.watch_adding') : t('lookup.watch_action') }}</button>
+        <button v-else type="button" data-action="watch" :disabled="!canWatch || busy" @click="watchAccount">{{ adding ? t('lookup.watch_adding') : t('lookup.watch_action') }}</button>
       </div>
       <p v-if="addError" role="alert" class="notice danger">{{ addError }}</p>
       <p v-if="!watched" class="fine-print">{{ t('lookup.watch_note', { seconds: MIN_INTERVAL }) }}</p>

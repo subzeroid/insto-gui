@@ -108,6 +108,9 @@ footer { display: flex; gap: 8px; align-items: center; padding: 17px 28px; color
 .lookup-activity { align-self: stretch; margin-top: 10px; }
 .result-block { border: 1px solid #28313b; border-radius: 9px; padding: 15px 17px; margin-bottom: 14px; }
 .result-block h4 { font-size: 13px; font-weight: 600; letter-spacing: .2px; margin: 0 0 10px; }
+.result-block h5 { font-size: 11px; font-weight: 550; letter-spacing: .3px; color: #929fae; margin: 16px 0 0; }
+.result-block h5 + .term-list { margin-top: 4px; }
+.result-block .block-note { margin: 0 0 12px; }
 .result-block p { font-size: 12px; color: #b5c7d7; line-height: 1.65; margin: 0 0 5px; }
 .result-block .fine-print { margin: 12px 0 0; }
 .result-block .profile-counts { margin: 4px 0 0; }
