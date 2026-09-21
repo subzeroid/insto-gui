@@ -18,6 +18,15 @@ export function localTime(seconds: number): string {
   return Number.isNaN(date.getTime()) ? t('format.no_date') : date.toLocaleString(localeTag(), { dateStyle: 'medium', timeStyle: 'short' })
 }
 export const formatCount = (value: number) => value.toLocaleString(localeTag())
+// A radius in kilometres and a coordinate are the only fractional numbers the
+// window shows, and both follow the decimal separator of the chosen language.
+export const formatDecimal = (value: number, digits: number) =>
+  value.toLocaleString(localeTag(), { minimumFractionDigits: digits, maximumFractionDigits: digits })
+// Monday first, in the language of the window: the core counts weekdays the way
+// `datetime.weekday()` does, and 5 February 2024 was a Monday.
+export const weekdayNames = (style: 'long' | 'short') =>
+  Array.from({ length: 7 }, (_, index) =>
+    new Date(Date.UTC(2024, 1, 5 + index)).toLocaleDateString(localeTag(), { weekday: style, timeZone: 'UTC' }))
 export const fieldLabel = (field: string) => KNOWN.has(field) ? t(`field.${field as Field}`) : field
 export function describeValue(value: ChangeValue): string {
   if (value === null) return t('format.no_value')

@@ -3,15 +3,19 @@ import { canonicalUsername, type DesktopClient } from './client'
 import type { LookupActivity, LookupProfile, LookupWindow } from './dto'
 import { DesktopFailure, safeFailure } from './messages'
 
-// The largest window the core offers, and the one the design quotes first: the
-// analysis costs one page request either way for a provider page of fifty.
-export const DEFAULT_WINDOW: LookupWindow = 50
+// The middle window: enough posts for a rhythm to be visible, and — at the page
+// sizes the provider actually serves — usually still one paid page request. The
+// largest window is one click away for anyone who wants it.
+export const DEFAULT_WINDOW: LookupWindow = 30
 
 // `spent` says whether a provider request was actually dispatched, so a failure
 // can be labelled honestly: a refusal this module made itself costs nothing,
 // while a cancelled or timed-out one may already have been charged. L3 renders
 // `lookup.may_be_charged` beside a failure whose part has it set.
-const emptyProfile = () => ({ value: null as LookupProfile | null, loading: false, spent: false, error: null as DesktopFailure | null })
+// `at` is when the answer landed, in seconds. A result survives leaving the tab
+// and coming back, so the card has to date itself honestly rather than say the
+// lookup just happened.
+const emptyProfile = () => ({ value: null as LookupProfile | null, at: null as number | null, loading: false, spent: false, error: null as DesktopFailure | null })
 const emptyActivity = (window: LookupWindow) => ({ value: null as LookupActivity | null, window, loading: false, spent: false, error: null as DesktopFailure | null })
 
 /**
@@ -59,6 +63,7 @@ export function createLookupState(client: DesktopClient) {
       const value = await client.lookupProfile(username)
       if (generation !== expected) return false
       state.profile.value = value
+      state.profile.at = Math.floor(Date.now() / 1000)
       return true
     } catch (error) {
       if (generation === expected) state.profile.error = safeFailure(error)

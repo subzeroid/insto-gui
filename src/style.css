@@ -93,3 +93,34 @@ footer { display: flex; gap: 8px; align-items: center; padding: 17px 28px; color
 .features li::before { content: '✓'; color: #86b3c2; margin-right: 10px; }
 .cli-toggle { max-width: 616px; margin: 26px auto 0; }
 .onboarding-view .home-adoption { max-width: 616px; margin-left: auto; margin-right: auto; }
+.lookup-view { max-width: 760px; margin: 0 auto; }
+.lookup-view h2 { font-size: 20px; margin: 0; overflow-wrap: anywhere; }
+.lookup-form { display: flex; flex-direction: column; gap: 8px; margin: 0 0 30px; }
+.lookup-form input, .lookup-analysis select { background: #131a23; border: 1px solid #343e4c; border-radius: 9px; padding: 10px 12px; color: #e5edf7; }
+.lookup-buttons { display: flex; align-items: center; gap: 16px; margin-top: 6px; }
+.lookup-watch { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0 0 4px; font-size: 12px; color: #b5c7d7; }
+.lookup-analysis { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 26px; padding-top: 22px; border-top: 1px solid #232d37; }
+.lookup-analysis h3 { font-size: 17px; font-weight: 550; letter-spacing: -.3px; margin: 0; }
+.lookup-analysis label { margin: 0; }
+.lookup-analysis select { min-width: 210px; }
+.lookup-analysis > .fine-print, .lookup-analysis > .notice, .lookup-analysis > .loading { margin-top: 4px; align-self: stretch; }
+.lookup-activity { align-self: stretch; margin-top: 10px; }
+.result-block { border: 1px solid #28313b; border-radius: 9px; padding: 15px 17px; margin-bottom: 14px; }
+.result-block h4 { font-size: 13px; font-weight: 600; letter-spacing: .2px; margin: 0 0 10px; }
+.result-block p { font-size: 12px; color: #b5c7d7; line-height: 1.65; margin: 0 0 5px; }
+.result-block .fine-print { margin: 12px 0 0; }
+.result-block .profile-counts { margin: 4px 0 0; }
+.term-list { margin: 12px 0 0; }
+.term-list div { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0; border-top: 1px solid #252d37; font-size: 12px; }
+.term-list dt { color: #d3dde9; overflow-wrap: anywhere; }
+.term-list dd { color: #929fae; }
+.term-note { display: block; color: #75838f; font-size: 10px; letter-spacing: .3px; }
+.bar-chart { margin: 16px 0 0; }
+.bar-chart figcaption { font-size: 11px; color: #929fae; margin-bottom: 9px; }
+.bars { display: flex; align-items: flex-end; gap: 3px; height: 92px; }
+.bar-slot { flex: 1; min-width: 0; height: 100%; display: flex; align-items: flex-end; background: #161d26; border-radius: 3px; }
+.bar { width: 100%; background: #6f9dad; border-radius: 3px; }
+.bar-ticks { display: flex; gap: 3px; margin-top: 6px; font-size: 9px; color: #75838f; }
+.bar-ticks span { flex: 1; min-width: 0; text-align: center; overflow: hidden; }
+.chart-alt { margin-top: 9px; }
+@media (max-width: 560px) { .bars { height: 70px; } .lookup-analysis select { min-width: 0; width: 100%; } }

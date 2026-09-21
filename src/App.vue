@@ -5,6 +5,7 @@ import { DesktopClient, type Invoke } from './desktop/client'
 import { createDesktopState } from './desktop/state'
 import { createMonitoringState } from './desktop/monitoring'
 import { createHistoryState } from './desktop/history'
+import { createLookupState } from './desktop/lookup'
 import { createServiceState, type ServiceNotice } from './desktop/service'
 import { createHomeState, type SelectOutcome } from './desktop/home'
 import { t, type Key } from './i18n'
@@ -12,6 +13,7 @@ import AppNav, { type Section } from './components/AppNav.vue'
 import OnboardingView from './components/OnboardingView.vue'
 import WatchesView from './components/WatchesView.vue'
 import ChangesView from './components/ChangesView.vue'
+import LookupView from './components/LookupView.vue'
 import ServiceView from './components/ServiceView.vue'
 import SettingsView from './components/SettingsView.vue'
 const props = defineProps<{ invokeCommand?: Invoke }>()
@@ -20,6 +22,9 @@ const client = new DesktopClient(props.invokeCommand ?? invoke)
 const ui = createDesktopState(client)
 const monitoring = createMonitoringState(client)
 const history = createHistoryState(client)
+// One lookup state for the window: the section is unmounted whenever another tab
+// is open, and a paid answer must survive that rather than be bought again.
+const lookup = createLookupState(client)
 // One service state and one home state for the window: onboarding, the service
 // section and Settings must agree on the same binding, the same facts and the same
 // checked report.
@@ -60,6 +65,9 @@ function invalidate() {
   monitoring.reset()
   history.resetHome()
   feedFilter.value = null
+  // A lookup was paid for out of the quota of the profile the app is leaving,
+  // and so was the balance it reports: neither belongs to the next one.
+  lookup.clear()
   service.clear()
 }
 async function afterSelection(outcome: SelectOutcome) {
@@ -101,6 +109,8 @@ observe(attention, needed => { if (needed) section.value = 'service' })
 // can be acted on.
 observe(() => service.state.notice, notice => { if (notice !== null && notice !== 'migrated') section.value = 'service' })
 function showChanges(pk: string) { feedFilter.value = pk; section.value = 'changes' }
+// A watch added from Lookup opens where it now lives, already selected.
+function openWatch(user: string) { monitoring.select(user); section.value = 'watches' }
 // R7: every profile mutation re-reads the registration facts. Reconcile (not
 // refresh) for the overview: a service action must not acknowledge an uncertain
 // watch outcome on the user's behalf.
@@ -141,6 +151,9 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
           </div>
           <div v-else-if="section === 'changes'" id="panel-changes" role="tabpanel" aria-labelledby="tab-changes">
             <ChangesView :history="history" :filter-pk="feedFilter" @clear-filter="feedFilter = null" />
+          </div>
+          <div v-else-if="section === 'lookup'" id="panel-lookup" role="tabpanel" aria-labelledby="tab-lookup">
+            <LookupView :lookup="lookup" :monitoring="monitoring" @open-watch="openWatch" />
           </div>
           <div v-else-if="section === 'service'" id="panel-service" role="tabpanel" aria-labelledby="tab-service">
             <ServiceView :profile="state.profile" :overview="monitoring.state.overview" :last-read-at="monitoring.state.lastReadAt" :stale="state.stale" :monitoring-stale="monitoring.state.stale" :read-error="monitoring.state.readError" :busy="state.busy" :service="service" :refresh-overview="monitoring.refresh" :refresh-facts="service.refreshFacts" :start="() => serviceAction(ui.start)" :stop="() => serviceAction(ui.stop)" :repair="() => serviceAction(ui.repair)" />
