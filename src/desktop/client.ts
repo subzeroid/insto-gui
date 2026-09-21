@@ -43,8 +43,17 @@ function profile(value: unknown): Profile {
 }
 export const MIN_INTERVAL = 300
 export const MAX_INTERVAL = 2147483647
+// The one place a name a person typed becomes a name the bridge accepts. The
+// core's own normalizer (`watch_params._user`) strips the leading `@` before the
+// whitespace, so it refuses " @alice"; a pasted name arrives with whitespace on
+// either side of the `@` often enough that refusing it here would only read as a
+// bug, so surrounding whitespace goes first and the `@` after it. Nothing is
+// sent in this form: every caller checks `canonicalUsername(x) === x` before it
+// crosses the bridge, and the result of this function always satisfies that, so
+// the host and the core still see exactly the strict form they demand. Inner
+// whitespace is still not a name.
 export function canonicalUsername(raw: string): string | null {
-  const user = raw.replace(/^@+/, '').trim().toLowerCase()
+  const user = raw.trim().replace(/^@+/, '').trim().toLowerCase()
   return USERNAME.test(user) && user !== '.' && user !== '..' ? user : null
 }
 export const validInterval = (value: number) => Number.isSafeInteger(value) && value >= MIN_INTERVAL && value <= MAX_INTERVAL

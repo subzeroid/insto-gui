@@ -46,10 +46,17 @@ describe('desktop boundary', () => {
     await client.openTokenPage()
     expect(invoke.mock.calls).toEqual([['prepare_desktop'], ['open_token_page']])
   })
-  it('canonicalizes usernames like the CLI and rejects the rest before IPC', async () => {
+  it('canonicalizes usernames and rejects the rest before IPC', async () => {
     const { canonicalUsername } = await import('./client')
     expect(canonicalUsername('@@Alice ')).toBe('alice')
-    for (const raw of [' @alice', '.', '..', 'a b', 'ñ', 'a'.repeat(256), '']) expect(canonicalUsername(raw)).toBeNull()
+    // Whatever a paste brings with it: whitespace on either side of the `@`, a
+    // tab, a newline. The core's own normalizer strips the `@` first and so
+    // refuses these, but nothing is ever sent in this form — the result below
+    // is what crosses the bridge, and it is already the strict form.
+    for (const raw of [' @alice', '  alice  ', '\t@alice\n', '@ alice', '@@ Alice ']) expect(canonicalUsername(raw)).toBe('alice')
+    expect(canonicalUsername(canonicalUsername(' @Alice ')!)).toBe('alice')
+    // Inner whitespace is not a name, and neither is anything else below.
+    for (const raw of ['a b', 'a\tb', '.', '..', ' . ', 'ñ', 'a'.repeat(256), '', '   ', '@']) expect(canonicalUsername(raw)).toBeNull()
     const invoke = vi.fn()
     const client = new DesktopClient(invoke)
     await expect(client.addWatch('Alice')).rejects.toMatchObject({ code: 'invalid_watch_input' })

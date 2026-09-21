@@ -23,7 +23,7 @@ describe('add watch form', () => {
     await wrapper.get('input[name="user"]').setValue('a b')
     await wrapper.get('form').trigger('submit')
     expect(add).not.toHaveBeenCalled(); expect(wrapper.find('[role="alert"]').text()).toContain('Account name')
-    await wrapper.get('input[name="user"]').setValue(' @alice') // the CLI order strips "@" before whitespace: this stays invalid
+    await wrapper.get('input[name="user"]').setValue('a\tb') // inner whitespace is not a name
     await wrapper.get('form').trigger('submit')
     expect(add).not.toHaveBeenCalled()
     await wrapper.get('input[name="user"]').setValue('alice')
@@ -34,6 +34,15 @@ describe('add watch form', () => {
     await wrapper.get('input[name="interval"]').setValue('300')
     await wrapper.get('form').trigger('submit')
     expect(add).not.toHaveBeenCalled()
+  })
+  it('accepts a name pasted with whitespace around it', async () => {
+    const add = vi.fn().mockResolvedValue(true)
+    const wrapper = mount(AddWatchForm, { props: { busy: false, add } })
+    await wrapper.get('input[name="user"]').setValue(' @Alice ')
+    await wrapper.get('form').trigger('submit')
+    // The canonical form is what leaves the form, so the bridge and the core
+    // still see the only shape they accept.
+    expect(add.mock.calls).toEqual([['alice', 300]])
   })
   it('keeps the add label while disabled by the parent and clears the local error on input', async () => {
     const wrapper = mount(AddWatchForm, { props: { busy: true, add: vi.fn() } })
