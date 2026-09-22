@@ -28,7 +28,7 @@ jobs:
       version: ${{ steps.read.outputs.version }}
       upload: ${{ steps.read.outputs.upload }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -75,7 +75,7 @@ jobs:
       RUNTIME_ARCH: ${{ matrix.runtime_arch }}
       EVIDENCE: ${{ github.workspace }}/.build/evidence-${{ matrix.target }}.jsonl
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Preflight gates (runner properties, before any build)
@@ -83,7 +83,7 @@ jobs:
           set -euo pipefail
           mkdir -m 700 .build
           packaging/release-gates.sh --stage preflight --target "$TARGET" --evidence "$EVIDENCE" --workspace "$PWD"
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -160,8 +160,10 @@ jobs:
             cp -cRp "$proof" "$dir/insto.app"
             "$probe_python" -B -m scripts.app_native_probe "$dir/insto.app" "$dir/insto-app-proof-r1-$mode" \
               --mode "$mode" --previous-runtime "$PWD/.build/runtime-previous" | tee "$PWD/.build/native-$mode.json"
-            jq -e '.passed == true and .cleanup_confirmed == true and .app_group_cleaned == true' "$PWD/.build/native-$mode.json"
-            jq -c --arg mode "$mode" --arg target "$TARGET" '{gate:("native_" + $mode),result:"pass",target:$target} + .' "$PWD/.build/native-$mode.json" >>"$EVIDENCE"
+            # The probe prints one JSON document per milestone and a final summary; only
+            # the summary carries the verdict and becomes the evidence line.
+            jq -es 'map(select(has("passed"))) | length == 1 and .[0].passed == true and .[0].cleanup_confirmed == true and .[0].app_group_cleaned == true' "$PWD/.build/native-$mode.json"
+            jq -c --arg mode "$mode" --arg target "$TARGET" 'select(has("passed")) | {gate:("native_" + $mode),result:"pass",target:$target} + .' "$PWD/.build/native-$mode.json" >>"$EVIDENCE"
           done
           shopt -s nullglob; matches=("$HOME/Library/LaunchAgents"/*insto*); shopt -u nullglob
           [ ${#matches[@]} -eq 0 ] || { echo "insto LaunchAgent left behind" >&2; exit 1; }
@@ -200,12 +202,12 @@ jobs:
             done
           done
           cp .build/native-*.json .build/evidence-out/ 2>/dev/null || true
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: evidence-${{ matrix.target }}
           path: .build/evidence-out/
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dmg-${{ matrix.target }}
           path: |
@@ -224,11 +226,11 @@ jobs:
       TAG: v${{ needs.version.outputs.version }}
       REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: .github
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: dmg-*
           merge-multiple: true
