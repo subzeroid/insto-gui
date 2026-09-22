@@ -1,0 +1,99 @@
+name: cask
+
+# Keeps the Homebrew cask in subzeroid/homebrew-tap in step with a published
+# release: read the release's SHA256SUMS, rewrite Casks/insto.rb, let brew audit
+# it, push. Runs when a release is published (a draft does not count) or by hand
+# for a tag. Writes to the tap through a deploy key that can reach nothing else.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish the cask for (vX.Y.Z)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cask-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    if: github.repository == 'subzeroid/insto-gui' && (github.event_name == 'workflow_dispatch' || (!github.event.release.draft && !github.event.release.prerelease))
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Version from the tag
+        id: version
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || { echo "not a release tag: $TAG" >&2; exit 1; }
+          echo "version=${BASH_REMATCH[1]}" >>"$GITHUB_OUTPUT"
+
+      - name: Fetch the published checksums
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' | grep -qx false \
+            || { echo "$TAG is still a draft" >&2; exit 1; }
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir "$RUNNER_TEMP"
+
+      - name: Check out the tap with its deploy key
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$DEPLOY_KEY" ] || { echo "HOMEBREW_TAP_DEPLOY_KEY is not set" >&2; exit 1; }
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" >"$HOME/.ssh/homebrew_tap"
+          ssh-keyscan -t ed25519 github.com >>"$HOME/.ssh/known_hosts" 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/homebrew_tap -o IdentitiesOnly=yes"
+          tap="$(brew --repository)/Library/Taps/subzeroid/homebrew-tap"
+          mkdir -p "$(dirname "$tap")"
+          git clone --quiet --depth 1 git@github.com:subzeroid/homebrew-tap.git "$tap"
+          echo "TAP=$tap" >>"$GITHUB_ENV"
+
+      - name: Rewrite the cask
+        id: rewrite
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          status=0
+          python3 -B -m scripts.bump_cask --version "$VERSION" --sums "$RUNNER_TEMP/SHA256SUMS" --cask "$TAP/Casks/insto.rb" || status=$?
+          case "$status" in
+            0) echo "changed=true" >>"$GITHUB_OUTPUT" ;;
+            3) echo "changed=false" >>"$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+
+      - name: Audit the cask
+        if: steps.rewrite.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          brew style "$TAP/Casks/insto.rb"
+          brew audit --cask --strict --online subzeroid/tap/insto
+
+      - name: Push to the tap
+        if: steps.rewrite.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/homebrew_tap -o IdentitiesOnly=yes"
+          cd "$TAP"
+          git config user.name "subzeroid"
+          git config user.email "143403577+subzeroid@users.noreply.github.com"
+          git add Casks/insto.rb
+          git commit --quiet -m "insto $VERSION"
+          git push --quiet origin HEAD:main
+          echo "cask insto $VERSION pushed to subzeroid/homebrew-tap"
