@@ -376,3 +376,17 @@ Signing order remains the rule for any future Developer ID work: sign nested
 binaries, generate the manifest and build id, sign the outer application, notarize.
 With ad-hoc signing Tauri leaves the runtime untouched, and the manifest gate
 enforces that on every build.
+
+## Homebrew cask after a release
+
+`.github/workflows/cask.yml` runs when a release is **published** (a draft does
+not count) or by hand for a tag. On a macOS runner it downloads the release's
+`SHA256SUMS`, rewrites `version` and the two `sha256` values of `Casks/insto.rb`
+in `subzeroid/homebrew-tap` with `scripts/bump_cask.py` (nothing else in the
+cask changes; an already-current cask ends the run without a push), runs
+`brew style` and `brew audit --cask --strict --online`, and pushes the commit
+`insto X.Y.Z` to the tap's `main`. The push uses a deploy key that can write to
+the tap and nothing else; its private half is the repository secret
+`HOMEBREW_TAP_DEPLOY_KEY`. The publishing step itself stays manual:
+`gh release edit vX.Y.Z --draft=false --latest` after reading the run's evidence,
+and that publication is what starts the cask run.
