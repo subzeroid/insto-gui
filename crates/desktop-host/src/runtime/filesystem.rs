@@ -209,7 +209,11 @@ impl Dir {
         let stream = Stream(pointer);
         loop {
             unsafe {
-                *libc::__error() = 0;
+                #[cfg(target_os = "macos")]
+                let errno = libc::__error();
+                #[cfg(target_os = "linux")]
+                let errno = libc::__errno_location();
+                *errno = 0;
             }
             let entry = unsafe { libc::readdir(stream.0) };
             if entry.is_null() {
@@ -301,6 +305,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn absolute_walk_accepts_the_real_applications_directory() {
         // macOS installs /Applications as root:admin 0775. When this machine matches
         // that layout the walk must accept it; when it does not, the test cannot

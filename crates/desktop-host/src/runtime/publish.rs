@@ -304,8 +304,10 @@ fn finish(candidate: Candidate) -> Result<PublishedRuntime> {
         let from = CString::new(candidate.name.as_str()).map_err(|_| RuntimeError::Storage)?;
         let to = CString::new(candidate.manifest.build_id.as_str())
             .map_err(|_| RuntimeError::Storage)?;
-        // RENAME_EXCL is atomic even for an empty existing destination directory.
-        if unsafe {
+        // RENAME_EXCL (RENAME_NOREPLACE on Linux) is atomic even for an empty
+        // existing destination directory.
+        #[cfg(target_os = "macos")]
+        let renamed = unsafe {
             libc::renameatx_np(
                 candidate.runtimes.0.as_raw_fd(),
                 from.as_ptr(),
@@ -313,8 +315,18 @@ fn finish(candidate: Candidate) -> Result<PublishedRuntime> {
                 to.as_ptr(),
                 libc::RENAME_EXCL,
             )
-        } != 0
-        {
+        };
+        #[cfg(target_os = "linux")]
+        let renamed = unsafe {
+            libc::renameat2(
+                candidate.runtimes.0.as_raw_fd(),
+                from.as_ptr(),
+                candidate.runtimes.0.as_raw_fd(),
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if renamed != 0 {
             return Err(RuntimeError::Storage);
         }
         candidate.runtimes.sync()?;
