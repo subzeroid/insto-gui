@@ -10,7 +10,7 @@
  * from a real profile, a real credential or a real filesystem.
  */
 import { CORE_VERSION, type Invoke, type Profile } from './client'
-import { LOOKUP_FIELDS, LOOKUP_WINDOWS, itemSnapshot, type Change, type ChangeValue, type Comparison, type HistoryItem, type HomeReport, type LookupWindow, type Overview, type Snapshot, type Watch, type WatchStatus } from './dto'
+import { LOOKUP_FIELDS, LOOKUP_WINDOWS, itemSnapshot, type Change, type ChangeValue, type Comparison, type HistoryItem, type HomeReport, type LookupWindow, type Overview, type PostDelta, type Snapshot, type Watch, type WatchStatus } from './dto'
 import { DesktopFailure } from './messages'
 
 const envelope = (kind: string, data: unknown) => ({ kind, data })
@@ -42,6 +42,12 @@ interface DemoStep {
   changes: Change[]
   /** Fields the older snapshot carried no data for — these make an `incomplete` item. */
   unknown?: string[]
+  /**
+   * Posts published since the previous snapshot (absent: none). `null` marks a
+   * snapshot whose recent-post window came back empty, the way a private
+   * account's does, so no pair with it can say anything about posts.
+   */
+  published?: number | null
 }
 type Fields = Record<string, ChangeValue>
 interface DemoAccount {
@@ -79,7 +85,7 @@ const ACCOUNTS: DemoAccount[] = [
       { ago: 4 * DAY + 3 * HOUR, changes: [
         { field: 'follower_count', old: 18_204, new: 18_431 },
         { field: 'media_count', old: 418, new: 420 },
-      ] },
+      ], published: 2 },
       { ago: 2 * DAY + 5 * HOUR, changes: [
         { field: 'follower_count', old: 18_431, new: 18_392 },
         { field: 'following_count', old: 812, new: 806 },
@@ -91,7 +97,7 @@ const ACCOUNTS: DemoAccount[] = [
         { field: 'media_count', old: 420, new: 423 },
         { field: 'avatar', old: hex('atlas-avatar-before', 16), new: hex('atlas-avatar-after', 16) },
         { field: 'external_url', old: null, new: 'https://example.com/atlas-ferry' },
-      ] },
+      ], published: 3 },
     ],
   },
   {
@@ -148,7 +154,7 @@ const ACCOUNTS: DemoAccount[] = [
       { ago: 1 * DAY + 9 * HOUR, changes: [
         { field: 'follower_count', old: 2_418, new: 2_455 },
         { field: 'media_count', old: 91, new: 93 },
-      ] },
+      ], published: 2 },
       { ago: 3 * HOUR + 40 * 60, changes: [
         { field: 'follower_count', old: 2_455, new: 2_471 },
         { field: 'biography', old: 'Driftwood joinery, small batches.', new: 'Driftwood joinery. Commissions open.' },
@@ -171,7 +177,7 @@ const ACCOUNTS: DemoAccount[] = [
       { ago: 12 * DAY + 11 * HOUR, changes: [
         { field: 'follower_count', old: 44_190, new: 43_905 },
         { field: 'is_private', old: false, new: true },
-      ] },
+      ], published: null },
     ],
   },
   // Registered, never checked yet: the "waiting for the first check" row.
@@ -221,6 +227,23 @@ const SNAPSHOTS = new Map<string, Snapshot[]>(EVERY_ACCOUNT.map(account => [acco
 const BY_PK = new Map<string, DemoAccount>(EVERY_ACCOUNT.map(account => [account.pk, account]))
 const BY_USER = new Map<string, DemoAccount>(EVERY_ACCOUNT.map(account => [account.user, account]))
 
+// The core stores the pks of the 12 most recent posts with every snapshot. Post
+// pks grow with publication time, so the demo numbers each account's posts in
+// order and a pair's new posts are simply the newest ones published between the
+// two snapshots, as many as fit in the newer window.
+const POST_WINDOW = 12
+const postPk = (account: DemoAccount, ordinal: number) =>
+  String(3_100_000_000_000_000_000n + BigInt(EVERY_ACCOUNT.indexOf(account)) * 10_000_000n + BigInt(ordinal))
+function postsBetween(account: DemoAccount, from: number, to: number): PostDelta | null {
+  if (account.steps[from].published === null || account.steps[to].published === null) return null
+  const publishedIn = (first: number, last: number) =>
+    account.steps.slice(first, last + 1).reduce((sum, step) => sum + (step.published ?? 0), 0)
+  const before = publishedIn(1, from), count = publishedIn(from + 1, to)
+  const shown = Math.min(count, POST_WINDOW)
+  const added = Array.from({ length: shown }, (_, offset) => postPk(account, before + count - offset))
+  return { added, window_full: count >= POST_WINDOW }
+}
+
 // The history page order: newest first, ties broken by the ascending id, which is
 // exactly the key `decodeHistoryPage` checks.
 const newestFirst = (a: Snapshot, b: Snapshot) => b.captured_at - a.captured_at || Number(b.id) - Number(a.id)
@@ -231,7 +254,7 @@ const FEED: HistoryItem[] = ACCOUNTS.flatMap(account => {
   const items: HistoryItem[] = [{ kind: 'baseline', snapshot: snapshots[0] }]
   for (let index = 1; index < snapshots.length; index++) {
     const step = account.steps[index]
-    const body: Comparison = { older: snapshots[index - 1], newer: snapshots[index], changes: step.changes, unknown_fields: step.unknown ?? [] }
+    const body: Comparison = { older: snapshots[index - 1], newer: snapshots[index], changes: step.changes, unknown_fields: step.unknown ?? [], posts: postsBetween(account, index - 1, index) }
     // An `incomplete` item is exactly a comparison whose older snapshot lacked
     // some fields; a plain `comparison` never carries unknown fields.
     items.push(body.unknown_fields.length > 0 ? { kind: 'incomplete', ...body } : { kind: 'comparison', ...body })
@@ -296,7 +319,7 @@ function comparisonOf(
   if (account === undefined || from < 0 || to < 0 || from >= to) throw new DesktopFailure('snapshot_unavailable')
   const unknown = new Set<string>()
   for (let index = from + 1; index <= to; index++) for (const field of account.steps[index].unknown ?? []) unknown.add(field)
-  return { older: snapshots[from], newer: snapshots[to], changes: foldChanges(account, from, to), unknown_fields: [...unknown].slice(0, 64) }
+  return { older: snapshots[from], newer: snapshots[to], changes: foldChanges(account, from, to), unknown_fields: [...unknown].slice(0, 64), posts: postsBetween(account, from, to) }
 }
 
 const historyPage = (items: HistoryItem[], scanned: number) => envelope('history_page', { items, next_cursor: null, scan_complete: true, scanned })

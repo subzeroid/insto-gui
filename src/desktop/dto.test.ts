@@ -92,7 +92,7 @@ describe('bridge decoders', () => {
   })
   it('bounds change values and comparison identity', () => {
     // compare_snapshots data has no inner kind (the IPC envelope carries it); feed items do.
-    const bare = { older: snap('1', '7', 1), newer: snap('2', '7', 2), changes: [{ field: 'follower_count', old: 1, new: 2 }, { field: 'biography', old: null, new: 'x' }], unknown_fields: [] }
+    const bare = { older: snap('1', '7', 1), newer: snap('2', '7', 2), changes: [{ field: 'follower_count', old: 1, new: 2 }, { field: 'biography', old: null, new: 'x' }], unknown_fields: [], posts: null }
     const comparison = { kind: 'comparison', ...bare }
     expect(decodeComparison(bare).changes).toHaveLength(2)
     expect(decodeComparison({ ...bare, changes: [], unknown_fields: ['full_name'] }).unknown_fields).toEqual(['full_name'])
@@ -105,10 +105,35 @@ describe('bridge decoders', () => {
       { ...bare, changes: [{ field: 'Follower Count', old: 1, new: 2 }] },
       { ...bare, newer: snap('2', '8', 2) }, { ...bare, newer: snap('2', '7', 0) }, comparison, { ...bare, note: 'RAW' },
     ]) expect(() => decodeComparison(bad)).toThrow()
-    const feed = page([{ kind: 'incomplete', older: snap('2', '7', 2), newer: snap('3', '7', 3), changes: [], unknown_fields: ['full_name'] }, comparison, { kind: 'baseline', snapshot: snap('1', '7', 1) }])
+    const feed = page([{ kind: 'incomplete', older: snap('2', '7', 2), newer: snap('3', '7', 3), changes: [], unknown_fields: ['full_name'], posts: null }, comparison, { kind: 'baseline', snapshot: snap('1', '7', 1) }])
     expect(decodeHistoryPage(feed, CHANGE_KINDS).items.map(item => item.kind)).toEqual(['incomplete', 'comparison', 'baseline'])
     expect(() => decodeHistoryPage(page([{ ...comparison, changes: [] }]), CHANGE_KINDS)).toThrow()
     expect(() => decodeHistoryPage(page([{ kind: 'diagnostic', snapshot: snap('1', '7', 1), code: 'history_identity_unknown' }]), CHANGE_KINDS)).toThrow()
+  })
+  it('decodes the posts published between two snapshots and lets them alone make a feed item', () => {
+    const bare = { older: snap('1', '7', 1), newer: snap('2', '7', 2), changes: [], unknown_fields: [], posts: { added: ['3000000000000000002', '3000000000000000001'], window_full: false } }
+    expect(decodeComparison(bare).posts).toEqual(bare.posts)
+    expect(decodeComparison({ ...bare, posts: null }).posts).toBeNull()
+    const full = Array.from({ length: 64 }, (_, index) => String(index + 1))
+    expect(decodeComparison({ ...bare, posts: { added: full, window_full: true } }).posts?.added).toHaveLength(64)
+    for (const posts of [
+      { added: ['01'], window_full: false },           // not a canonical pk
+      { added: ['1_2'], window_full: false },          // a media id, not a pk
+      { added: [1], window_full: false },
+      { added: ['2', '2'], window_full: false },       // repeated
+      { added: [], window_full: true },                // a full window of nothing
+      { added: ['2'], window_full: 'yes' },
+      { added: ['2'] },
+      { added: ['2'], window_full: false, removed: [] },
+      { added: [...full, '65'], window_full: true },
+      [],
+    ]) expect(() => decodeComparison({ ...bare, posts }), JSON.stringify(posts)).toThrow()
+    // A core that predates `posts` is refused, not read as "no new posts".
+    const { posts: _posts, ...legacy } = bare
+    expect(() => decodeComparison(legacy)).toThrow()
+    // A new post alone makes a feed comparison; nothing at all still does not.
+    expect(decodeHistoryPage(page([{ kind: 'comparison', ...bare }]), CHANGE_KINDS).items[0]).toMatchObject({ kind: 'comparison', changes: [], posts: bare.posts })
+    for (const posts of [null, { added: [], window_full: false }]) expect(() => decodeHistoryPage(page([{ kind: 'comparison', ...bare, posts }]), CHANGE_KINDS)).toThrow()
   })
   it('decodes every service-inspection shape the core can return', () => {
     // R8 1-5, straight from `registration_facts`.

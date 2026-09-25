@@ -203,6 +203,8 @@ export const en = {
   'changes.unknown_fields': 'Fields with no data in the older snapshot (unknown): {fields}.',
   'changes.media_added': 'Added',
   'changes.media_removed': 'Removed',
+  'changes.new_posts': 'New posts',
+  'changes.new_posts_more': '{count} or more',
   'changes.media_replaced': 'Replaced with a new one',
 
   // Lookup section: an on-demand check of any public account. It spends the paid

@@ -8,7 +8,12 @@ export interface Overview { configured: boolean; desired_service: 'running' | 's
 export interface Snapshot { id: string; target_pk: string; captured_at: number }
 export type ChangeValue = null | boolean | number | string
 export interface Change { field: string; old: ChangeValue; new: ChangeValue }
-export interface Comparison { older: Snapshot; newer: Snapshot; changes: Change[]; unknown_fields: string[] }
+// Posts published between the two checks, from the recent-post pks every check
+// stores: `added` are pks of the newer window absent from the older one and newer
+// than all of it; `window_full` means more may lie beyond the newer window. `null`
+// when either window is empty, so the pair says nothing about posts.
+export interface PostDelta { added: string[]; window_full: boolean }
+export interface Comparison { older: Snapshot; newer: Snapshot; changes: Change[]; unknown_fields: string[]; posts: PostDelta | null }
 // `snapshots.read`: one saved snapshot's tracked values, typed exactly as the
 // comparison reports its change values. A tracked field the snapshot has no
 // data for is listed in `unknown_fields` instead of carrying a value.
@@ -154,13 +159,25 @@ function changeValue(value: unknown): ChangeValue {
 }
 // A standalone comparison (compare_snapshots data) carries no inner `kind`: the
 // Rust IPC envelope holds it. Feed items carry `kind` inside the item.
+// At most as many pks as the largest recent-post window a check can store.
+const MAX_ADDED_POSTS = 64
+function postDelta(value: unknown): PostDelta | null {
+  if (value === null) return null
+  const v = exact(value, ['added', 'window_full'])
+  if (!Array.isArray(v.added) || v.added.length > MAX_ADDED_POSTS || typeof v.window_full !== 'boolean') fail()
+  const added = (v.added as unknown[]).map(pk => text(pk, TARGET_PK))
+  if (new Set(added).size !== added.length || (v.window_full && added.length === 0)) fail()
+  return { added, window_full: v.window_full as boolean }
+}
+export const publishedPosts = (comparison: Comparison): number => comparison.posts?.added.length ?? 0
 function comparisonBody(value: unknown, kind: 'comparison' | 'incomplete' | null): Comparison {
-  const v = exact(value, kind === null ? ['older', 'newer', 'changes', 'unknown_fields'] : ['kind', 'older', 'newer', 'changes', 'unknown_fields'])
+  const keys = ['older', 'newer', 'changes', 'unknown_fields', 'posts']
+  const v = exact(value, kind === null ? keys : ['kind', ...keys])
   if ((kind !== null && v.kind !== kind) || !Array.isArray(v.changes) || !Array.isArray(v.unknown_fields) || v.changes.length > 64 || v.unknown_fields.length > 64) fail()
   const older = decodeSnapshot(v.older), newer = decodeSnapshot(v.newer)
   if (older.target_pk !== newer.target_pk || !later(newer, older)) fail()
   const changes = (v.changes as unknown[]).map(change => { const c = exact(change, ['field', 'old', 'new']); return { field: text(c.field, FIELD), old: changeValue(c.old), new: changeValue(c.new) } })
-  return { older, newer, changes, unknown_fields: (v.unknown_fields as unknown[]).map(name => text(name, FIELD)) }
+  return { older, newer, changes, unknown_fields: (v.unknown_fields as unknown[]).map(name => text(name, FIELD)), posts: postDelta(v.posts) }
 }
 export const decodeComparison = (value: unknown): Comparison => comparisonBody(value, null)
 // The host re-emits the core's object as-is, so the key set is exact and every
@@ -197,7 +214,8 @@ function historyItem(value: unknown, kinds: readonly HistoryKind[]): HistoryItem
     case 'baseline': return { kind: 'baseline', snapshot: decodeSnapshot(exact(v, ['kind', 'snapshot']).snapshot) }
     case 'comparison': {
       const c = comparisonBody(v, 'comparison')
-      if (c.changes.length === 0 || c.unknown_fields.length > 0) fail()
+      // The feed omits a pair with neither a field change nor a new post.
+      if ((c.changes.length === 0 && publishedPosts(c) === 0) || c.unknown_fields.length > 0) fail()
       return { kind: 'comparison', ...c }
     }
     case 'incomplete': {
