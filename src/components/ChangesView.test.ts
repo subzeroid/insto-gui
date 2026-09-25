@@ -10,8 +10,8 @@ describe('changes feed', () => {
   it('labels baselines, comparisons, incomplete and diagnostic entries and continues empty pages', async () => {
     const invoke = vi.fn()
       .mockResolvedValueOnce(envelope('history_page', page([
-        { kind: 'incomplete', older: snap('3', '7', 3), newer: snap('4', '7', 4), changes: [], unknown_fields: ['full_name'] },
-        { kind: 'comparison', older: snap('2', '7', 2), newer: snap('3', '7', 3), changes: [{ field: 'follower_count', old: 10, new: 12 }, { field: 'biography', old: 'a <b>x</b>', new: 'https://example.com/y' }], unknown_fields: [] },
+        { kind: 'incomplete', older: snap('3', '7', 3), newer: snap('4', '7', 4), changes: [], unknown_fields: ['full_name'], posts: null },
+        { kind: 'comparison', older: snap('2', '7', 2), newer: snap('3', '7', 3), changes: [{ field: 'follower_count', old: 10, new: 12 }, { field: 'biography', old: 'a <b>x</b>', new: 'https://example.com/y' }], unknown_fields: [], posts: null },
         { kind: 'diagnostic', snapshot: snap('2', '8', 2), code: 'history_corrupt' },
         { kind: 'baseline', snapshot: snap('1', '7', 1) },
       ], 'next', 1500)))
@@ -26,6 +26,19 @@ describe('changes feed', () => {
     await wrapper.get('button[data-action="more"]').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('The feed has been scanned to the end')
     expect(invoke.mock.calls[1]).toEqual(['list_changes', { query: { cursor: 'next' } }])
+  })
+  it('counts new posts, says when there may be more, and stays silent when posts cannot be compared', async () => {
+    const pks = (count: number) => Array.from({ length: count }, (_, index) => String(3_000_000_000_000_000_000n + BigInt(index)))
+    const invoke = vi.fn().mockResolvedValueOnce(envelope('history_page', page([
+      { kind: 'comparison', older: snap('3', '7', 3), newer: snap('4', '7', 4), changes: [], unknown_fields: [], posts: { added: pks(12), window_full: true } },
+      { kind: 'comparison', older: snap('2', '7', 2), newer: snap('3', '7', 3), changes: [{ field: 'media_count', old: 10, new: 12 }], unknown_fields: [], posts: { added: pks(2), window_full: false } },
+      { kind: 'comparison', older: snap('1', '7', 1), newer: snap('2', '7', 2), changes: [{ field: 'is_private', old: false, new: true }], unknown_fields: [], posts: null },
+      { kind: 'baseline', snapshot: snap('1', '7', 1) },
+    ])))
+    const wrapper = mount(ChangesView, { props: { history: createHistoryState(new DesktopClient(invoke)), filterPk: null } })
+    await flushPromises()
+    const rows = wrapper.findAll('[data-field="new_posts"]').map(row => row.text())
+    expect(rows).toEqual([`New posts${formatCount(12)} or more`, `New posts${formatCount(2)}`])
   })
   it('shows loading, empty and error states', async () => {
     const invoke = vi.fn().mockRejectedValueOnce('transport').mockResolvedValueOnce(envelope('history_page', page([])))

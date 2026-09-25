@@ -342,12 +342,28 @@ pub struct Change {
     pub old: ChangeValue,
     pub new: ChangeValue,
 }
+// Posts published between the two checks, read from the recent-post pks each
+// check stores: `added` are pks of the newer window that are absent from the
+// older one and newer than all of it. `null` when either window is empty, so
+// the pair is not comparable for posts. `window_full` means every post in the
+// newer window is new, so more may have been published beyond it.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct PostDelta {
+    pub added: Vec<String>,
+    pub window_full: bool,
+}
+impl PostDelta {
+    fn published(delta: &Option<PostDelta>) -> bool {
+        delta.as_ref().is_some_and(|d| !d.added.is_empty())
+    }
+}
 #[derive(Debug, Serialize)]
 pub struct Comparison {
     pub older: Snapshot,
     pub newer: Snapshot,
     pub changes: Vec<Change>,
     pub unknown_fields: Vec<String>,
+    pub posts: Option<PostDelta>,
 }
 // `snapshots.read`: one saved snapshot's tracked values. The names, the value
 // typing and the `avatar`/`banner` stored-hash treatment are exactly the ones
@@ -385,12 +401,14 @@ pub enum HistoryItem {
         newer: Snapshot,
         changes: Vec<Change>,
         unknown_fields: Vec<String>,
+        posts: Option<PostDelta>,
     },
     Incomplete {
         older: Snapshot,
         newer: Snapshot,
         changes: Vec<Change>,
         unknown_fields: Vec<String>,
+        posts: Option<PostDelta>,
     },
     Diagnostic {
         snapshot: Snapshot,
@@ -1240,10 +1258,41 @@ fn change_value(value: &Value) -> Result<ChangeValue, HostError> {
         _ => Err(HostError::Protocol),
     }
 }
+// At most as many pks as the largest recent-post window a check can store.
+const MAX_ADDED_POSTS: usize = 64;
+fn post_delta(value: &Value) -> Result<Option<PostDelta>, HostError> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let obj = exact_keys(value, &["added", "window_full"])?;
+    let window_full = obj["window_full"].as_bool().ok_or(HostError::Protocol)?;
+    let mut added: Vec<String> = Vec::new();
+    for pk in obj["added"].as_array().ok_or(HostError::Protocol)? {
+        let pk = pk
+            .as_str()
+            .filter(|pk| target_pk(pk))
+            .ok_or(HostError::Protocol)?;
+        if added.iter().any(|seen| seen == pk) {
+            return Err(HostError::Protocol);
+        }
+        added.push(pk.to_owned());
+    }
+    if added.len() > MAX_ADDED_POSTS || (window_full && added.is_empty()) {
+        return Err(HostError::Protocol);
+    }
+    Ok(Some(PostDelta { added, window_full }))
+}
 fn comparison(value: &Value, expected_kind: &str) -> Result<Comparison, HostError> {
     let obj = exact_keys(
         value,
-        &["kind", "older", "newer", "changes", "unknown_fields"],
+        &[
+            "kind",
+            "older",
+            "newer",
+            "changes",
+            "unknown_fields",
+            "posts",
+        ],
     )?;
     if obj["kind"].as_str() != Some(expected_kind) {
         return Err(HostError::Protocol);
@@ -1286,6 +1335,7 @@ fn comparison(value: &Value, expected_kind: &str) -> Result<Comparison, HostErro
         newer,
         changes,
         unknown_fields,
+        posts: post_delta(&obj["posts"])?,
     })
 }
 fn history_item(value: &Value, kind: PageKind) -> Result<HistoryItem, HostError> {
@@ -1321,7 +1371,10 @@ fn history_item(value: &Value, kind: PageKind) -> Result<HistoryItem, HostError>
         }
         (PageKind::Changes, "comparison") => {
             let c = comparison(value, "comparison")?;
-            if c.changes.is_empty() || !c.unknown_fields.is_empty() {
+            // The feed omits a pair with neither a field change nor a new post.
+            if (c.changes.is_empty() && !PostDelta::published(&c.posts))
+                || !c.unknown_fields.is_empty()
+            {
                 return Err(HostError::Protocol);
             }
             HistoryItem::Comparison {
@@ -1329,6 +1382,7 @@ fn history_item(value: &Value, kind: PageKind) -> Result<HistoryItem, HostError>
                 newer: c.newer,
                 changes: c.changes,
                 unknown_fields: c.unknown_fields,
+                posts: c.posts,
             }
         }
         (PageKind::Changes, "incomplete") => {
@@ -1341,6 +1395,7 @@ fn history_item(value: &Value, kind: PageKind) -> Result<HistoryItem, HostError>
                 newer: c.newer,
                 changes: c.changes,
                 unknown_fields: c.unknown_fields,
+                posts: c.posts,
             }
         }
         (_, "diagnostic") => {
@@ -3133,9 +3188,98 @@ mod tests {
         .is_err());
     }
     #[test]
+    fn new_posts_are_decoded_bounded_and_admit_a_feed_item() {
+        let feed = Operation::ChangesList {
+            target_pk: None,
+            limit: None,
+            cursor: None,
+        };
+        let compare = Operation::SnapshotsCompare {
+            target_pk: "7".into(),
+            older_id: "1".into(),
+            newer_id: "2".into(),
+        };
+        let with_posts = |posts: &str| {
+            format!(
+                r#"{{"kind":"comparison","older":{},"newer":{},"changes":[],"unknown_fields":[],"posts":{}}}"#,
+                snap(1, "7", 1),
+                snap(2, "7", 2),
+                posts
+            )
+        };
+        // A pair whose only difference is a new post is a feed item now.
+        let published = with_posts(r#"{"added":["3000000000000000002"],"window_full":false}"#);
+        match decode(
+            &envelope(&page(std::slice::from_ref(&published), None, 1)),
+            "test",
+            &feed,
+        )
+        .unwrap()
+        {
+            Response::HistoryPage(p) => match &p.items[0] {
+                HistoryItem::Comparison { posts, changes, .. } => {
+                    assert!(changes.is_empty());
+                    assert_eq!(
+                        posts,
+                        &Some(PostDelta {
+                            added: vec!["3000000000000000002".into()],
+                            window_full: false
+                        })
+                    );
+                }
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
+        // …but no field change and no new post is still not one.
+        for quiet in [
+            with_posts("null"),
+            with_posts(r#"{"added":[],"window_full":false}"#),
+        ] {
+            assert!(decode(
+                &envelope(&page(std::slice::from_ref(&quiet), None, 1)),
+                "test",
+                &feed
+            )
+            .is_err());
+            assert!(decode(&envelope(&quiet), "test", &compare).is_ok());
+        }
+        let full: Vec<String> = (1..=64).map(|n| format!("\"{n}\"")).collect();
+        assert!(decode(
+            &envelope(&with_posts(&format!(
+                r#"{{"added":[{}],"window_full":true}}"#,
+                full.join(",")
+            ))),
+            "test",
+            &compare
+        )
+        .is_ok());
+        let over: Vec<String> = (1..=65).map(|n| format!("\"{n}\"")).collect();
+        for bad in [
+            r#"{"added":["01"],"window_full":false}"#.to_owned(),
+            r#"{"added":["1_2"],"window_full":false}"#.to_owned(),
+            r#"{"added":[1],"window_full":false}"#.to_owned(),
+            r#"{"added":["2","2"],"window_full":false}"#.to_owned(),
+            r#"{"added":[],"window_full":true}"#.to_owned(),
+            r#"{"added":["2"],"window_full":"yes"}"#.to_owned(),
+            r#"{"added":["2"]}"#.to_owned(),
+            r#"{"added":["2"],"window_full":false,"removed":[]}"#.to_owned(),
+            r#"[]"#.to_owned(),
+            format!(r#"{{"added":[{}],"window_full":true}}"#, over.join(",")),
+        ] {
+            assert!(
+                decode(&envelope(&with_posts(&bad)), "test", &compare).is_err(),
+                "{bad}"
+            );
+        }
+        // A core that predates `posts` is refused rather than read as "no posts".
+        let legacy = with_posts("null").replace(r#","posts":null"#, "");
+        assert!(decode(&envelope(&legacy), "test", &compare).is_err());
+    }
+    #[test]
     fn feed_and_comparison_values_are_bounded() {
         let comparison = format!(
-            r#"{{"kind":"comparison","older":{},"newer":{},"changes":[{{"field":"follower_count","old":1,"new":2}},{{"field":"biography","old":null,"new":"x"}},{{"field":"avatar","old":null,"new":"{}"}}],"unknown_fields":[]}}"#,
+            r#"{{"kind":"comparison","older":{},"newer":{},"changes":[{{"field":"follower_count","old":1,"new":2}},{{"field":"biography","old":null,"new":"x"}},{{"field":"avatar","old":null,"new":"{}"}}],"unknown_fields":[],"posts":null}}"#,
             snap(1, "7", 1),
             snap(2, "7", 2),
             "a".repeat(64)
@@ -3147,7 +3291,7 @@ mod tests {
         };
         let baseline = format!(r#"{{"kind":"baseline","snapshot":{}}}"#, snap(1, "7", 1));
         let incomplete = format!(
-            r#"{{"kind":"incomplete","older":{},"newer":{},"changes":[],"unknown_fields":["full_name"]}}"#,
+            r#"{{"kind":"incomplete","older":{},"newer":{},"changes":[],"unknown_fields":["full_name"],"posts":null}}"#,
             snap(2, "7", 2),
             snap(3, "7", 3)
         );
@@ -3177,7 +3321,7 @@ mod tests {
             comparison.replace(&snap(2, "7", 2), &snap(2, "7", 0)),
             incomplete.replace("[\"full_name\"]", "[]"),
             format!(
-                r#"{{"kind":"comparison","older":{},"newer":{},"changes":[],"unknown_fields":[]}}"#,
+                r#"{{"kind":"comparison","older":{},"newer":{},"changes":[],"unknown_fields":[],"posts":null}}"#,
                 snap(1, "7", 1),
                 snap(2, "7", 2)
             ),
@@ -3217,7 +3361,7 @@ mod tests {
         );
         assert!(decode(
             &envelope(&format!(
-                r#"{{"kind":"comparison","older":{},"newer":{},"changes":[],"unknown_fields":[]}}"#,
+                r#"{{"kind":"comparison","older":{},"newer":{},"changes":[],"unknown_fields":[],"posts":null}}"#,
                 snap(1, "7", 1),
                 snap(2, "7", 2)
             )),

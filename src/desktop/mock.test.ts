@@ -155,6 +155,29 @@ describe('mock desktop', () => {
     expect(changes.some(change => typeof change.new === 'boolean')).toBe(true)
   })
 
+  it('reports the posts published between snapshots, folded for any pair', async () => {
+    const desktop = client()
+    const history = async (user: string) => {
+      const pk = (await desktop.searchTargets(user)).items[0]
+      if (pk?.kind !== 'target') throw new Error(user)
+      const ids = (await desktop.listSnapshots(pk.target_pk)).items.flatMap(item => (item.kind === 'snapshot' ? [item.snapshot.id] : [])) // newest first
+      return { pk: pk.target_pk, ids }
+    }
+    const atlas = await history('atlas.ferry')
+    const newest = await desktop.compareSnapshots(atlas.pk, atlas.ids[1], atlas.ids[0])
+    expect(newest.posts?.added).toHaveLength(3)
+    expect(newest.posts?.window_full).toBe(false)
+    // Oldest to newest folds every step: 2 + 0 + 3, newest pk first, all newer than the first window.
+    const whole = await desktop.compareSnapshots(atlas.pk, atlas.ids[atlas.ids.length - 1], atlas.ids[0])
+    expect(whole.posts?.added).toHaveLength(5)
+    expect(whole.posts!.added.map(BigInt)).toEqual([...whole.posts!.added.map(BigInt)].sort((a, b) => (a > b ? -1 : 1)))
+    expect(newest.posts!.added).toEqual(whole.posts!.added.slice(0, 3))
+    // The account that went private answered its last check with an empty post window.
+    const ember = await history('emberline.co')
+    expect((await desktop.compareSnapshots(ember.pk, ember.ids[1], ember.ids[0])).posts).toBeNull()
+    const feed = await desktop.listChanges()
+    expect(feed.items.some(item => item.kind === 'comparison' && (item.posts?.added.length ?? 0) > 0)).toBe(true)
+  })
   it('accepts the watch mutations and reflects them in the next read', async () => {
     const desktop = client()
     const before = (await desktop.overview()).watches

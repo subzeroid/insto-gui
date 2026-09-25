@@ -184,6 +184,8 @@ export const ru: Dictionary = {
   'changes.unknown_fields': 'Поля без данных в старом снимке (неизвестно): {fields}.',
   'changes.media_added': 'Добавлено',
   'changes.media_removed': 'Удалено',
+  'changes.new_posts': 'Новые посты',
+  'changes.new_posts_more': '{count} или больше',
   'changes.media_replaced': 'Заменено на новое',
 
   'lookup.title': 'Проверить аккаунт',

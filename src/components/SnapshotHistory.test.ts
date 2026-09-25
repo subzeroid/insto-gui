@@ -37,7 +37,7 @@ describe('snapshot history', () => {
       .mockResolvedValueOnce(envelope('history_page', page([target('7', '3', 3)])))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('2', '7', 2), snapshot('1', '7', 1)])))
       .mockResolvedValueOnce(fields('3', '7', 3))
-      .mockResolvedValueOnce(envelope('comparison', { older: snap('2', '7', 2), newer: snap('3', '7', 3), changes: [], unknown_fields: ['biography'] }))
+      .mockResolvedValueOnce(envelope('comparison', { older: snap('2', '7', 2), newer: snap('3', '7', 3), changes: [], unknown_fields: ['biography'], posts: null }))
     const history = createHistoryState(new DesktopClient(invoke))
     const wrapper = mount(SnapshotHistory, { props: { history } })
     await history.load('alice'); await flushPromises()
@@ -47,7 +47,7 @@ describe('snapshot history', () => {
     expect(wrapper.find('button[data-action="reload-history"]').exists()).toBe(true)
   })
   it('lists the comparison, unknown fields and lets the user pick another pair', async () => {
-    const comparison = { older: snap('1', '7', 1), newer: snap('3', '7', 3), changes: [{ field: 'follower_count', old: 1, new: 2 }], unknown_fields: ['full_name'] }
+    const comparison = { older: snap('1', '7', 1), newer: snap('3', '7', 3), changes: [{ field: 'follower_count', old: 1, new: 2 }], unknown_fields: ['full_name'], posts: null }
     const invoke = vi.fn()
       .mockResolvedValueOnce(envelope('history_page', page([target('7', '3', 3)])))
       .mockResolvedValueOnce(envelope('history_page', page([snapshot('3', '7', 3), snapshot('2', '7', 2), snapshot('1', '7', 1)])))
