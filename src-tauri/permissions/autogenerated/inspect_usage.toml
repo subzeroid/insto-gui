@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-inspect-usage"
+description = "Enables the inspect_usage command without any pre-configured scope."
+commands.allow = ["inspect_usage"]
+
+[[permission]]
+identifier = "deny-inspect-usage"
+description = "Denies the inspect_usage command without any pre-configured scope."
+commands.deny = ["inspect_usage"]

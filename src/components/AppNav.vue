@@ -1,22 +1,23 @@
 <script setup lang="ts">
-import { nextTick } from 'vue'
+import { computed, nextTick } from 'vue'
 import { t } from '../i18n'
-export type Section = 'watches' | 'changes' | 'lookup' | 'service' | 'settings'
-defineProps<{ current: Section }>()
+export type Section = 'watches' | 'changes' | 'lookup' | 'library' | 'service' | 'settings' | 'budget'
+const props = defineProps<{ current: Section; disabled?: boolean }>()
 const emit = defineEmits<{ navigate: [section: Section] }>()
+const selected = computed(() => props.current === 'changes' ? 'watches' : props.current === 'service' || props.current === 'budget' ? 'settings' : props.current)
 // Built per instance, not once per module: the locale is fixed before the app
 // mounts, so every mount reads the labels of the locale in force for it.
 const sections: { id: Section; label: string }[] = [
-  { id: 'watches', label: t('nav.watches') },
-  { id: 'changes', label: t('nav.changes') },
   { id: 'lookup', label: t('nav.lookup') },
-  { id: 'service', label: t('nav.service') },
+  { id: 'watches', label: t('nav.watches') },
+  { id: 'library', label: t('nav.library') },
   { id: 'settings', label: t('nav.settings') }
 ]
 // Roving tabindex: only the selected tab is in the tab order, so keyboard
 // selection has to carry focus with it or focus would be left on a tab that
 // is no longer reachable.
 async function select(id: Section) {
+  if (props.disabled) return
   emit('navigate', id)
   await nextTick()
   document.getElementById(`tab-${id}`)?.focus()
@@ -33,10 +34,12 @@ function move(index: number, step: number) {
       :key="section.id"
       type="button"
       role="tab"
-      :aria-selected="section.id === current"
+      :disabled="disabled"
+      :aria-selected="section.id === selected"
       :aria-controls="`panel-${section.id}`"
-      :tabindex="section.id === current ? 0 : -1"
-      @click="emit('navigate', section.id)"
+      :tabindex="!disabled && section.id === selected ? 0 : -1"
+      :class="{ 'nav-settings': section.id === 'settings' }"
+      @click="select(section.id)"
       @keydown.right.prevent="move(index, 1)"
       @keydown.left.prevent="move(index, -1)"
       @keydown.home.prevent="select(sections[0].id)"

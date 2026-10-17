@@ -5,6 +5,7 @@ import { DesktopClient, type Invoke } from './desktop/client'
 import { createDesktopState } from './desktop/state'
 import { createMonitoringState } from './desktop/monitoring'
 import { createHistoryState } from './desktop/history'
+import { ResearchClient, createResearchState, type SavedCheck } from './desktop/workbench'
 import { createLookupState } from './desktop/lookup'
 import { createServiceState, type ServiceNotice } from './desktop/service'
 import { createHomeState, type SelectOutcome } from './desktop/home'
@@ -14,6 +15,9 @@ import OnboardingView from './components/OnboardingView.vue'
 import WatchesView from './components/WatchesView.vue'
 import ChangesView from './components/ChangesView.vue'
 import LookupView from './components/LookupView.vue'
+import SavedChecksView from './components/SavedChecksView.vue'
+import BudgetPanel from './components/BudgetPanel.vue'
+import BrandLogo from './components/BrandLogo.vue'
 import ServiceView from './components/ServiceView.vue'
 import SettingsView from './components/SettingsView.vue'
 const props = defineProps<{ invokeCommand?: Invoke }>()
@@ -25,13 +29,14 @@ const history = createHistoryState(client)
 // One lookup state for the window: the section is unmounted whenever another tab
 // is open, and a paid answer must survive that rather than be bought again.
 const lookup = createLookupState(client)
+const research = createResearchState(new ResearchClient(props.invokeCommand ?? invoke))
 // One service state and one home state for the window: onboarding, the service
 // section and Settings must agree on the same binding, the same facts and the same
 // checked report.
 const service = createServiceState(client, ui)
 const home = createHomeState(client, ui, { invalidate, settled: afterSelection })
 const { state } = ui
-const section = ref<Section>('watches')
+const section = ref<Section>('lookup')
 const feedFilter = ref<string | null>(null)
 const booted = ref(false)
 const selecting = ref(false)
@@ -68,6 +73,7 @@ function invalidate() {
   // A lookup was paid for out of the quota of the profile the app is leaving,
   // and so was the balance it reports: neither belongs to the next one.
   lookup.clear()
+  research.reset()
   service.clear()
 }
 async function afterSelection(outcome: SelectOutcome) {
@@ -83,10 +89,13 @@ async function afterSelection(outcome: SelectOutcome) {
   } else {
     // Only a selection that actually happened moves the user; a refusal changed
     // nothing and leaves them on the screen that carries the reason.
-    if (outcome === 'selected') { await ui.initialize(); section.value = 'watches' }
+    if (outcome === 'selected') { await ui.initialize(); section.value = 'lookup' }
     // A refusal changed nothing either way, but the invalidation cleared the facts.
     if (state.phase === 'ready') await service.inspect()
   }
+  // A local callback admitted during selection must not survive activation of
+  // the settled binding, even if it ran after the first invalidation.
+  research.reset()
   selecting.value = false
 }
 async function releaseFromFailure() {
@@ -95,7 +104,8 @@ async function releaseFromFailure() {
   await ui.releaseBinding()
   await service.refreshBinding()
   if (state.phase === 'ready' && state.profile?.configured) await service.refreshFacts()
-  section.value = 'watches'
+  section.value = 'lookup'
+  research.reset()
   selecting.value = false
 }
 onMounted(boot)
@@ -109,7 +119,9 @@ observe(attention, needed => { if (needed) section.value = 'service' })
 // can be acted on.
 observe(() => service.state.notice, notice => { if (notice !== null && notice !== 'migrated') section.value = 'service' })
 function showChanges(pk: string) { feedFilter.value = pk; section.value = 'changes' }
+function navigate(next: Section) { if (!selecting.value) section.value = next }
 // A watch added from Lookup opens where it now lives, already selected.
+function openCheck(check: SavedCheck) { if (lookup.restore(check)) section.value = 'lookup' }
 function openWatch(user: string) { monitoring.select(user); section.value = 'watches' }
 // R7: every profile mutation re-reads the registration facts. Reconcile (not
 // refresh) for the overview: a service action must not acknowledge an uncertain
@@ -120,10 +132,10 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
 </script>
 <template>
   <div class="app-shell">
-    <header class="app-header"><div class="brand"><span class="brand-mark" aria-hidden="true">i</span>insto</div><span class="build-label">{{ t('header.version', { version: appVersion }) }}</span></header>
-    <AppNav v-if="state.phase === 'ready' && state.profile?.configured" :current="section" @navigate="section = $event" />
+    <header class="app-header"><BrandLogo /><span class="build-label">{{ t('header.version', { version: appVersion }) }}</span></header>
+    <AppNav v-if="state.phase === 'ready' && state.profile?.configured" :current="section" :disabled="selecting" @navigate="navigate" />
     <main>
-      <section v-if="state.phase === 'preparing'" class="loading-panel" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"/><div class="eyebrow">{{ t('boot.eyebrow') }}</div><h1>{{ t('boot.title') }}</h1><p class="intro">{{ t('boot.intro') }}</p></section>
+      <section v-if="state.phase === 'preparing' || selecting" class="loading-panel" role="status" aria-live="polite"><div class="spinner" aria-hidden="true"/><div class="eyebrow">{{ t('boot.eyebrow') }}</div><h1>{{ t('boot.title') }}</h1><p class="intro">{{ t('boot.intro') }}</p></section>
       <section v-else-if="state.phase === 'failed'" class="loading-panel">
         <div class="eyebrow">{{ t('boot.failed_eyebrow') }}</div>
         <h1>{{ t('boot.failed_title') }}</h1>
@@ -146,21 +158,39 @@ async function serviceAction(action: () => Promise<boolean>) { const ok = await 
           <p v-else-if="state.outcomeUnknown" class="notice" role="status">{{ t('app.outcome_unknown') }}</p>
           <p v-if="migrationNotice" class="notice" :class="{ warning: service.state.notice !== 'migrated' }" role="status">{{ migrationNotice }}</p>
           <p v-if="attention && section !== 'service'" class="notice warning" role="status">{{ t('app.attention') }} <button type="button" class="text-button" data-action="open-service" @click="section = 'service'">{{ t('app.open_service') }}</button></p>
-          <div v-if="section === 'watches'" id="panel-watches" role="tabpanel" aria-labelledby="tab-watches">
-            <WatchesView :monitoring="monitoring" :history="history" @show-changes="showChanges" />
-          </div>
-          <div v-else-if="section === 'changes'" id="panel-changes" role="tabpanel" aria-labelledby="tab-changes">
-            <ChangesView :history="history" :filter-pk="feedFilter" @clear-filter="feedFilter = null" />
+          <div v-if="section === 'watches' || section === 'changes'" id="panel-watches" role="tabpanel" aria-labelledby="tab-watches">
+            <div class="monitoring-heading"><div><div class="eyebrow">OSINT WATCHLIST</div><h1>{{ t('monitoring.title') }}</h1></div></div>
+            <div class="monitoring-status">
+              <div><span class="status-dot" :class="{ live: state.profile.service_running }" aria-hidden="true" /><span>{{ state.profile.service_running ? t('monitoring.running') : t('monitoring.stopped') }}</span></div>
+              <button v-if="state.profile.service_running || state.profile.desired_service === 'running'" type="button" data-action="pause-monitoring" :disabled="state.busy || state.stale || service.readonly() || attention" @click="serviceAction(ui.stop)">{{ t('monitoring.pause') }}</button>
+              <button v-else type="button" data-action="start-monitoring" :disabled="state.busy || state.stale || service.readonly() || attention" @click="serviceAction(ui.start)">{{ t('monitoring.start') }}</button>
+            </div>
+            <p class="fine-print monitoring-note">{{ t('monitoring.note') }}</p>
+            <nav class="section-switcher" :aria-label="t('monitoring.sections')">
+              <button id="tab-accounts" type="button" :aria-pressed="section === 'watches'" @click="section = 'watches'">{{ t('monitoring.accounts') }}</button>
+              <button id="tab-changes" type="button" :aria-pressed="section === 'changes'" @click="section = 'changes'">{{ t('monitoring.changes') }}</button>
+            </nav>
+            <WatchesView v-if="section === 'watches'" :monitoring="monitoring" :history="history" @show-changes="showChanges" />
+            <ChangesView v-else :history="history" :filter-pk="feedFilter" @clear-filter="feedFilter = null" />
           </div>
           <div v-else-if="section === 'lookup'" id="panel-lookup" role="tabpanel" aria-labelledby="tab-lookup">
-            <LookupView :lookup="lookup" :monitoring="monitoring" @open-watch="openWatch" />
+            <LookupView :lookup="lookup" :monitoring="monitoring" :research="research" @open-watch="openWatch" />
           </div>
-          <div v-else-if="section === 'service'" id="panel-service" role="tabpanel" aria-labelledby="tab-service">
-            <ServiceView :profile="state.profile" :overview="monitoring.state.overview" :last-read-at="monitoring.state.lastReadAt" :stale="state.stale" :monitoring-stale="monitoring.state.stale" :read-error="monitoring.state.readError" :busy="state.busy" :service="service" :refresh-overview="monitoring.refresh" :refresh-facts="service.refreshFacts" :start="() => serviceAction(ui.start)" :stop="() => serviceAction(ui.stop)" :repair="() => serviceAction(ui.repair)" />
-            <div class="refresh-row"><span>{{ t('app.service_local_read') }}</span><button class="text-button" data-action="refresh-service" :aria-label="t('app.refresh_service_label')" :disabled="state.busy" @click="ui.refresh">{{ t('app.refresh') }}</button></div>
+          <div v-else-if="section === 'library'" id="panel-library" role="tabpanel" aria-labelledby="tab-library">
+            <SavedChecksView :research="research" @open="openCheck" />
           </div>
           <div v-else id="panel-settings" role="tabpanel" aria-labelledby="tab-settings">
-            <SettingsView :busy="state.busy" :stale="state.stale" :configured="state.profile.configured" :recovery="state.profile.status === 'recovery_required'" :service-running="state.profile.service_running" :core-version="state.runtime?.core_version ?? null" :build-id="state.runtime?.build_id ?? null" :service="service" :home="home" :binding="service.state.binding" :replace="replaceToken" :uninstall="service.uninstall" :open-token-page="() => client.openTokenPage()" />
+            <nav class="section-switcher settings-switcher" :aria-label="t('settings.sections')">
+              <button id="tab-general-settings" type="button" :aria-pressed="section === 'settings'" @click="section = 'settings'">{{ t('settings.general') }}</button>
+              <button id="tab-budget" type="button" :aria-pressed="section === 'budget'" @click="section = 'budget'">{{ t('settings.budget') }}</button>
+              <button id="tab-service" type="button" :aria-pressed="section === 'service'" @click="section = 'service'">{{ t('settings.diagnostics') }}</button>
+            </nav>
+            <SettingsView v-if="section === 'settings'" :busy="state.busy" :stale="state.stale" :configured="state.profile.configured" :recovery="state.profile.status === 'recovery_required'" :service-running="state.profile.service_running" :core-version="state.runtime?.core_version ?? null" :build-id="state.runtime?.build_id ?? null" :service="service" :home="home" :binding="service.state.binding" :replace="replaceToken" :uninstall="service.uninstall" :open-token-page="() => client.openTokenPage()" />
+            <template v-else-if="section === 'budget'"><div class="budget-heading"><div class="eyebrow">API BUDGET</div><h1>{{ t('settings.budget') }}</h1></div><BudgetPanel :client="client" :watches="monitoring.state.overview?.watches ?? []" :incomplete="monitoring.state.overview === null || monitoring.state.overview.next_cursor !== null" /></template>
+            <template v-else>
+              <ServiceView :profile="state.profile" :overview="monitoring.state.overview" :last-read-at="monitoring.state.lastReadAt" :stale="state.stale" :monitoring-stale="monitoring.state.stale" :read-error="monitoring.state.readError" :busy="state.busy" :service="service" :refresh-overview="monitoring.refresh" :refresh-facts="service.refreshFacts" :start="() => serviceAction(ui.start)" :stop="() => serviceAction(ui.stop)" :repair="() => serviceAction(ui.repair)" />
+              <div class="refresh-row"><span>{{ t('app.service_local_read') }}</span><button class="text-button" data-action="refresh-service" :aria-label="t('app.refresh_service_label')" :disabled="state.busy" @click="ui.refresh">{{ t('app.refresh') }}</button></div>
+            </template>
           </div>
         </template>
       </template>

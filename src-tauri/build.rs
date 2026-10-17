@@ -29,6 +29,12 @@ fn main() {
             "inspect_binding",
             "lookup_profile",
             "lookup_activity",
+            "inspect_usage",
+            "configure_usage",
+            "research_list",
+            "research_save",
+            "research_delete",
+            "research_export",
         ]),
     ))
     .expect("application configuration is invalid");

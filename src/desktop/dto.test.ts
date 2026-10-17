@@ -90,9 +90,31 @@ describe('bridge decoders', () => {
     expect(Object.keys(decodeSnapshotFields({ ...example, fields: Object.fromEntries(names(64).map(name => [name, 1])), unknown_fields: [] }).fields)).toHaveLength(64)
     expect(decodeSnapshotFields({ ...example, unknown_fields: names(64) }).unknown_fields).toHaveLength(64)
   })
+  it('requires and preserves canonical post deltas, including a posts-only feed item', () => {
+    const bare = { older: snap('1', '7', 1), newer: snap('2', '7', 2), changes: [], unknown_fields: [], posts: { added: ['9007199254740993', '8'], window_full: true } }
+    expect(decodeComparison(bare)).toEqual(bare)
+    const item = { kind: 'comparison', ...bare }
+    expect(decodeHistoryPage(page([item]), CHANGE_KINDS).items).toEqual([item])
+    expect(decodeHistoryPage(page([{ ...item, kind: 'incomplete', unknown_fields: ['full_name'] }]), CHANGE_KINDS).items).toHaveLength(1)
+    for (const posts of [null, { added: [], window_full: false }]) {
+      expect(decodeComparison({ ...bare, posts }).posts).toEqual(posts)
+      expect(() => decodeHistoryPage(page([{ ...item, posts }]), CHANGE_KINDS)).toThrow()
+    }
+    const { posts: omitted, ...missing } = bare
+    expect(omitted).toBeDefined()
+    expect(() => decodeComparison(missing)).toThrow()
+    for (const posts of [
+      { added: ['8'], window_full: true, raw: 'unsafe' }, { added: ['8'] },
+      { added: ['8'], window_full: 1 }, { added: ['8', '8'], window_full: false },
+      { added: ['0'], window_full: false }, { added: ['08'], window_full: false },
+      { added: ['8_7'], window_full: false }, { added: [8], window_full: false },
+      { added: ['9'.repeat(65)], window_full: false }, { added: [], window_full: true },
+      { added: Array.from({ length: 16384 }, (_, i) => String(i + 1)), window_full: false },
+    ]) expect(() => decodeComparison({ ...bare, posts })).toThrow(expect.objectContaining({ code: 'protocol' }))
+  })
   it('bounds change values and comparison identity', () => {
     // compare_snapshots data has no inner kind (the IPC envelope carries it); feed items do.
-    const bare = { older: snap('1', '7', 1), newer: snap('2', '7', 2), changes: [{ field: 'follower_count', old: 1, new: 2 }, { field: 'biography', old: null, new: 'x' }], unknown_fields: [] }
+    const bare = { older: snap('1', '7', 1), newer: snap('2', '7', 2), changes: [{ field: 'follower_count', old: 1, new: 2 }, { field: 'biography', old: null, new: 'x' }], unknown_fields: [], posts: null }
     const comparison = { kind: 'comparison', ...bare }
     expect(decodeComparison(bare).changes).toHaveLength(2)
     expect(decodeComparison({ ...bare, changes: [], unknown_fields: ['full_name'] }).unknown_fields).toEqual(['full_name'])
@@ -105,7 +127,7 @@ describe('bridge decoders', () => {
       { ...bare, changes: [{ field: 'Follower Count', old: 1, new: 2 }] },
       { ...bare, newer: snap('2', '8', 2) }, { ...bare, newer: snap('2', '7', 0) }, comparison, { ...bare, note: 'RAW' },
     ]) expect(() => decodeComparison(bad)).toThrow()
-    const feed = page([{ kind: 'incomplete', older: snap('2', '7', 2), newer: snap('3', '7', 3), changes: [], unknown_fields: ['full_name'] }, comparison, { kind: 'baseline', snapshot: snap('1', '7', 1) }])
+    const feed = page([{ kind: 'incomplete', older: snap('2', '7', 2), newer: snap('3', '7', 3), changes: [], unknown_fields: ['full_name'], posts: null }, comparison, { kind: 'baseline', snapshot: snap('1', '7', 1) }])
     expect(decodeHistoryPage(feed, CHANGE_KINDS).items.map(item => item.kind)).toEqual(['incomplete', 'comparison', 'baseline'])
     expect(() => decodeHistoryPage(page([{ ...comparison, changes: [] }]), CHANGE_KINDS)).toThrow()
     expect(() => decodeHistoryPage(page([{ kind: 'diagnostic', snapshot: snap('1', '7', 1), code: 'history_identity_unknown' }]), CHANGE_KINDS)).toThrow()
@@ -247,7 +269,7 @@ describe('bridge decoders', () => {
       },
       timeline: {
         hour_of_day: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        day_of_week: [0, 1, 1, 1, 1, 0, 0], first_post_at: 1789468200, last_post_at: 1789727400,
+        day_of_week: [0, 1, 1, 1, 1, 0, 0], weekday_hours: Array.from({ length: 7 }, (_, day) => Array.from({ length: 24 }, (_, hour) => day >= 1 && day <= 4 && hour === 10 ? 1 : 0)), first_post_at: 1789468200, last_post_at: 1789727400,
       },
       hashtags: [{ key: 'ams', count: 2 }, { key: 'coffee', count: 2 }],
       mentions: [{ key: 'bob', count: 2 }],
@@ -269,7 +291,7 @@ describe('bridge decoders', () => {
     const empty = {
       ...example, target_pk: '7', window: 12, analyzed: 0,
       geo: { geotagged: 0, anchor: null, centroid: null, radius_km: null, places: [] },
-      timeline: { hour_of_day: Array.from({ length: 24 }, () => 0), day_of_week: Array.from({ length: 7 }, () => 0), first_post_at: null, last_post_at: null },
+      timeline: { hour_of_day: Array.from({ length: 24 }, () => 0), day_of_week: Array.from({ length: 7 }, () => 0), weekday_hours: Array.from({ length: 7 }, () => Array(24).fill(0)), first_post_at: null, last_post_at: null },
       hashtags: [], mentions: [], locations: [],
       likes: { total: 0, average: 0, top_posts: [] }, quota_remaining: null,
     }

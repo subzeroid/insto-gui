@@ -8,7 +8,8 @@ export interface Overview { configured: boolean; desired_service: 'running' | 's
 export interface Snapshot { id: string; target_pk: string; captured_at: number }
 export type ChangeValue = null | boolean | number | string
 export interface Change { field: string; old: ChangeValue; new: ChangeValue }
-export interface Comparison { older: Snapshot; newer: Snapshot; changes: Change[]; unknown_fields: string[] }
+export interface PostDelta { added: string[]; window_full: boolean }
+export interface Comparison { older: Snapshot; newer: Snapshot; changes: Change[]; unknown_fields: string[]; posts: PostDelta | null }
 // `snapshots.read`: one saved snapshot's tracked values, typed exactly as the
 // comparison reports its change values. A tracked field the snapshot has no
 // data for is listed in `unknown_fields` instead of carrying a value.
@@ -34,7 +35,7 @@ export type LookupWindow = 12 | 30 | 50
 export interface Coordinates { lat: number; lng: number }
 export interface Place { name: string; lat: number; lng: number; count: number }
 export interface Geo { geotagged: number; anchor: Place | null; centroid: Coordinates | null; radius_km: number | null; places: Place[] }
-export interface Timeline { hour_of_day: number[]; day_of_week: number[]; first_post_at: number | null; last_post_at: number | null }
+export interface Timeline { hour_of_day: number[]; day_of_week: number[]; weekday_hours: number[][]; first_post_at: number | null; last_post_at: number | null }
 export interface Term { key: string; count: number }
 export interface TopPost { code: string; like_count: number }
 export interface Likes { total: number; average: number; top_posts: TopPost[] }
@@ -154,13 +155,29 @@ function changeValue(value: unknown): ChangeValue {
 }
 // A standalone comparison (compare_snapshots data) carries no inner `kind`: the
 // Rust IPC envelope holds it. Feed items carry `kind` inside the item.
+function postDelta(value: unknown): PostDelta | null {
+  if (value === null) return null
+  const v = exact(value, ['added', 'window_full'])
+  if (!Array.isArray(v.added) || typeof v.window_full !== 'boolean') fail()
+  let bytes = 1
+  const seen = new Set<string>()
+  const added = (v.added as unknown[]).map(value => {
+    const pk = text(value, TARGET_PK)
+    bytes += pk.length + 3
+    if (bytes > 65_536 || seen.has(pk)) fail()
+    seen.add(pk)
+    return pk
+  })
+  if (v.window_full && added.length === 0) fail()
+  return { added, window_full: v.window_full as boolean }
+}
 function comparisonBody(value: unknown, kind: 'comparison' | 'incomplete' | null): Comparison {
-  const v = exact(value, kind === null ? ['older', 'newer', 'changes', 'unknown_fields'] : ['kind', 'older', 'newer', 'changes', 'unknown_fields'])
+  const v = exact(value, kind === null ? ['older', 'newer', 'changes', 'unknown_fields', 'posts'] : ['kind', 'older', 'newer', 'changes', 'unknown_fields', 'posts'])
   if ((kind !== null && v.kind !== kind) || !Array.isArray(v.changes) || !Array.isArray(v.unknown_fields) || v.changes.length > 64 || v.unknown_fields.length > 64) fail()
   const older = decodeSnapshot(v.older), newer = decodeSnapshot(v.newer)
   if (older.target_pk !== newer.target_pk || !later(newer, older)) fail()
   const changes = (v.changes as unknown[]).map(change => { const c = exact(change, ['field', 'old', 'new']); return { field: text(c.field, FIELD), old: changeValue(c.old), new: changeValue(c.new) } })
-  return { older, newer, changes, unknown_fields: (v.unknown_fields as unknown[]).map(name => text(name, FIELD)) }
+  return { older, newer, changes, unknown_fields: (v.unknown_fields as unknown[]).map(name => text(name, FIELD)), posts: postDelta(v.posts) }
 }
 export const decodeComparison = (value: unknown): Comparison => comparisonBody(value, null)
 // The host re-emits the core's object as-is, so the key set is exact and every
@@ -197,7 +214,7 @@ function historyItem(value: unknown, kinds: readonly HistoryKind[]): HistoryItem
     case 'baseline': return { kind: 'baseline', snapshot: decodeSnapshot(exact(v, ['kind', 'snapshot']).snapshot) }
     case 'comparison': {
       const c = comparisonBody(v, 'comparison')
-      if (c.changes.length === 0 || c.unknown_fields.length > 0) fail()
+      if ((c.changes.length === 0 && (c.posts === null || c.posts.added.length === 0)) || c.unknown_fields.length > 0) fail()
       return { kind: 'comparison', ...c }
     }
     case 'incomplete': {
@@ -316,16 +333,23 @@ function histogram(value: unknown, buckets: number, analyzed: number): [number[]
   return [counts, total]
 }
 function decodeTimeline(value: unknown, analyzed: number): Timeline {
-  const v = exact(value, ['hour_of_day', 'day_of_week', 'first_post_at', 'last_post_at'])
+  const v = exact(value, ['hour_of_day', 'day_of_week', 'weekday_hours', 'first_post_at', 'last_post_at'])
   const [hours, hourTotal] = histogram(v.hour_of_day, 24, analyzed)
   const [days, dayTotal] = histogram(v.day_of_week, 7, analyzed)
+  if (!Array.isArray(v.weekday_hours) || v.weekday_hours.length !== 7) fail()
+  const joint = (v.weekday_hours as unknown[]).map((row, day) => {
+    const [counts, total] = histogram(row, 24, analyzed)
+    if (total !== days[day]) fail()
+    return counts
+  })
+  if (hours.some((n, hour) => joint.reduce((sum, row) => sum + row[hour], 0) !== n)) fail()
   const first = nullableCount(v.first_post_at, MAX_TIME)
   const last = nullableCount(v.last_post_at, MAX_TIME)
   // Both histograms count the same posts — the ones carrying a usable timestamp —
   // and those are exactly the posts the first/last pair spans.
   if (hourTotal !== dayTotal || (hourTotal > 0) !== (first !== null) || (first === null) !== (last === null)) fail()
   if (first !== null && last !== null && first > last) fail()
-  return { hour_of_day: hours, day_of_week: days, first_post_at: first, last_post_at: last }
+  return { hour_of_day: hours, day_of_week: days, weekday_hours: joint, first_post_at: first, last_post_at: last }
 }
 function decodeTerms(value: unknown): Term[] {
   if (!Array.isArray(value) || value.length > TOP_TERMS) fail()

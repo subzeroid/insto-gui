@@ -1,5 +1,5 @@
 use super::{
-    filesystem::{check, same, Dir, Ownership},
+    filesystem::{check, same, sync, Dir, Ownership},
     manifest::Entry,
     Result, RuntimeError,
 };
@@ -80,7 +80,7 @@ fn stream(
     if let Some(file) = destination {
         file.set_permissions(Permissions::from_mode(*mode))
             .map_err(|_| RuntimeError::Storage)?;
-        file.sync_all().map_err(|_| RuntimeError::Storage)?;
+        sync(file, deadline)?;
     }
     check(deadline)
 }
@@ -139,7 +139,7 @@ fn walk(
         dir.0
             .set_permissions(Permissions::from_mode(entry.mode()))
             .map_err(|_| RuntimeError::Storage)?;
-        dir.sync()?;
+        dir.sync(deadline)?;
     }
     check(deadline)
 }

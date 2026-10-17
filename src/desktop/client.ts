@@ -1,6 +1,7 @@
 import { DesktopFailure, safeFailure } from './messages'
+import { decodeUsage, type Usage } from './workbench'
 import { CHANGE_KINDS, HISTORY_CURSOR, LOOKUP_WINDOWS, SNAPSHOT_KINDS, TARGET_KINDS, TARGET_PK, REVISION, USERNAME, WATCH_CURSOR, decodeBinding, decodeComparison, decodeHistoryPage, decodeHomeReport, decodeLookupActivity, decodeLookupProfile, decodeOverview, decodeRemoved, decodeServiceFacts, decodeSnapshotFields, decodeWatch, decodeWatchPage, record, validSnapshotId, type Binding, type Comparison, type HistoryPage, type HomeReport, type LookupActivity, type LookupProfile, type LookupWindow, type Overview, type ServiceFacts, type SnapshotFields, type Watch, type WatchPage } from './dto'
-export const CORE_VERSION = '0.7.22'
+export const CORE_VERSION = '0.7.25'
 export type { Binding, HomeReport, LookupActivity, LookupProfile, LookupWindow, ServiceFacts } from './dto'
 export { LOOKUP_FIELDS, LOOKUP_WINDOWS, RESPONSE_PATH_LIMIT } from './dto'
 export const HOME_PATH_LIMIT = 1024
@@ -65,19 +66,22 @@ export const READ_SLOTS = 2
 // A paid lookup runs in the host's own network-read pool — one slot, separate
 // from the two storage-read slots — so it can never delay the overview poll or a
 // history page. One permit here means the window never even sends a second one
-// while the first is still out. It is a queue, not a retry: nothing in this
-// client ever repeats a lookup, because each one is charged.
+// while the first is still out. Busy paid calls are refused immediately: a
+// queued intent could otherwise dispatch after a reset under a different home.
 export const LOOKUP_SLOTS = 1
-const READ_COMMANDS = new Set(['inspect_setup', 'read_overview', 'list_watches', 'search_targets', 'list_snapshots', 'compare_snapshots', 'read_snapshot', 'list_changes', 'inspect_service', 'inspect_home'])
+const READ_COMMANDS = new Set(['inspect_usage', 'inspect_setup', 'read_overview', 'list_watches', 'search_targets', 'list_snapshots', 'compare_snapshots', 'read_snapshot', 'list_changes', 'inspect_service', 'inspect_home'])
 const LOOKUP_COMMANDS = new Set(['lookup_profile', 'lookup_activity'])
 class Gate {
-  constructor(private readonly slots: number) {}
+  constructor(private readonly slots: number, private readonly waitWhenBusy = true) {}
   private active = 0
   private readonly waiting: (() => void)[] = []
   async run<T>(work: () => Promise<T>): Promise<T> {
     // A waiter receives the finishing call's permit directly; the count only
     // drops when nobody waits, so an extra call can never slip in during hand-off.
-    if (this.active >= this.slots) await new Promise<void>(resolve => { this.waiting.push(resolve) })
+    if (this.active >= this.slots) {
+      if (!this.waitWhenBusy) throw new DesktopFailure('busy')
+      await new Promise<void>(resolve => { this.waiting.push(resolve) })
+    }
     else this.active++
     try { return await work() } finally { const next = this.waiting.shift(); if (next) next(); else this.active-- }
   }
@@ -98,7 +102,7 @@ export class DesktopClient {
   private readonly gate = new Gate(READ_SLOTS)
   // Its own permit: a lookup must never hold a storage read's place, on either
   // side of the bridge.
-  private readonly lookups = new Gate(LOOKUP_SLOTS)
+  private readonly lookups = new Gate(LOOKUP_SLOTS, false)
   private async call(command: string, args?: Record<string, unknown>): Promise<unknown> {
     try { return args ? await this.invoke(command, args) : await this.invoke(command) }
     catch (error) { throw safeFailure(error) }
@@ -134,6 +138,11 @@ export class DesktopClient {
   repair() { return this.readProfile('repair_service') }
   async openTokenPage() { await this.call('open_token_page') }
   overview(): Promise<Overview> { return this.read('read_overview', 'overview', decodeOverview) }
+  inspectUsage(): Promise<Usage> { return this.read('inspect_usage', 'usage', decodeUsage) }
+  configureUsage(dailyLimit: number | null): Promise<Usage> {
+    if (dailyLimit !== null && (!Number.isSafeInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 1_000_000)) throw new DesktopFailure('invalid_params')
+    return this.read('configure_usage', 'usage', decodeUsage, { budget: { daily_limit: dailyLimit } })
+  }
   async listWatches(page: Page = {}): Promise<WatchPage> { return this.read('list_watches', 'watch_page', decodeWatchPage, { page: pageArgs(page, WATCH_CURSOR, 'invalid_watch_input') }) }
   async addWatch(user: string, intervalSeconds?: number): Promise<Watch> {
     if (canonicalUsername(user) !== user || (intervalSeconds !== undefined && !validInterval(intervalSeconds))) throw new DesktopFailure('invalid_watch_input')

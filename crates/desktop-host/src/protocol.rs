@@ -5,8 +5,8 @@ pub const MAX_REQUEST: usize = 64 * 1024;
 pub const MAX_RESPONSE: usize = 2 * 1024 * 1024;
 pub const MAX_TIME: u64 = 253_402_300_799;
 pub const MAX_SAFE: u64 = 9_007_199_254_740_991;
-pub const CORE_VERSION: &str = "0.7.22";
-pub const CAPABILITIES: [&str; 27] = [
+pub const CORE_VERSION: &str = "0.7.25";
+pub const CAPABILITIES: [&str; 29] = [
     "hello",
     "setup.inspect",
     "setup.configure",
@@ -34,6 +34,8 @@ pub const CAPABILITIES: [&str; 27] = [
     "home.select",
     "lookup.profile",
     "lookup.activity",
+    "usage.inspect",
+    "usage.configure",
 ];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Budget {
@@ -52,6 +54,10 @@ pub enum Budget {
 pub const WINDOWS: [u8; 3] = [12, 30, 50];
 pub enum Operation {
     Hello,
+    UsageInspect,
+    UsageConfigure {
+        daily_limit: Option<u64>,
+    },
     SetupInspect,
     SettingsInspect,
     SetupConfigure {
@@ -139,6 +145,7 @@ impl std::fmt::Debug for Operation {
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum Response {
     Hello(Hello),
+    Usage(Usage),
     Profile(Profile),
     Overview(Overview),
     WatchPage(WatchPage),
@@ -343,11 +350,17 @@ pub struct Change {
     pub new: ChangeValue,
 }
 #[derive(Debug, Serialize)]
+pub struct PostDelta {
+    pub added: Vec<String>,
+    pub window_full: bool,
+}
+#[derive(Debug, Serialize)]
 pub struct Comparison {
     pub older: Snapshot,
     pub newer: Snapshot,
     pub changes: Vec<Change>,
     pub unknown_fields: Vec<String>,
+    pub posts: Option<PostDelta>,
 }
 // `snapshots.read`: one saved snapshot's tracked values. The names, the value
 // typing and the `avatar`/`banner` stored-hash treatment are exactly the ones
@@ -385,12 +398,14 @@ pub enum HistoryItem {
         newer: Snapshot,
         changes: Vec<Change>,
         unknown_fields: Vec<String>,
+        posts: Option<PostDelta>,
     },
     Incomplete {
         older: Snapshot,
         newer: Snapshot,
         changes: Vec<Change>,
         unknown_fields: Vec<String>,
+        posts: Option<PostDelta>,
     },
     Diagnostic {
         snapshot: Snapshot,
@@ -448,6 +463,7 @@ pub struct Timeline {
     pub hour_of_day: Vec<u64>,
     /// Exactly 7 day buckets, Monday first.
     pub day_of_week: Vec<u64>,
+    pub weekday_hours: Vec<Vec<u64>>,
     pub first_post_at: Option<u64>,
     pub last_post_at: Option<u64>,
 }
@@ -483,6 +499,13 @@ pub struct LookupActivity {
     pub locations: Vec<Term>,
     pub likes: Likes,
     pub quota_remaining: Option<u64>,
+}
+#[derive(Debug, Serialize)]
+pub struct Usage {
+    pub day: String,
+    pub used: u64,
+    pub daily_limit: Option<u64>,
+    pub reset_at: u64,
 }
 #[derive(Debug, Serialize)]
 pub struct SafeError {
@@ -560,6 +583,8 @@ impl Operation {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Hello => "hello",
+            Self::UsageInspect => "usage.inspect",
+            Self::UsageConfigure { .. } => "usage.configure",
             Self::SetupInspect => "setup.inspect",
             Self::SettingsInspect => "settings.inspect",
             Self::SetupConfigure { .. } => "setup.configure",
@@ -590,7 +615,8 @@ impl Operation {
     }
     pub fn budget(&self) -> Budget {
         match self {
-            Self::Hello
+            Self::UsageInspect
+            | Self::Hello
             | Self::SetupInspect
             | Self::SettingsInspect
             | Self::Overview
@@ -603,7 +629,8 @@ impl Operation {
             | Self::ServiceInspect
             | Self::HomeInspect { .. } => Budget::Read,
             Self::LookupProfile { .. } | Self::LookupActivity { .. } => Budget::NetworkRead,
-            Self::WatchesAdd { .. }
+            Self::UsageConfigure { .. }
+            | Self::WatchesAdd { .. }
             | Self::WatchesUpdate { .. }
             | Self::WatchesPause { .. }
             | Self::WatchesResume { .. }
@@ -628,6 +655,10 @@ impl Operation {
     }
     pub fn validate(&self) -> Result<(), HostError> {
         let ok = match self {
+            Self::UsageInspect => true,
+            Self::UsageConfigure { daily_limit } => {
+                daily_limit.is_none_or(|n| (1..=1_000_000).contains(&n))
+            }
             Self::SetupConfigure { token } | Self::CredentialsReplace { token } => {
                 return if (4..=4096).contains(&token.len())
                     && token.bytes().all(|b| (33..=126).contains(&b))
@@ -826,6 +857,12 @@ impl Operation {
                 // The core requires exactly `{"path": …}`; `null` is the own profile
                 // and is only accepted for `home.select`.
                 params.insert("path".into(), path.as_deref().map_or(Value::Null, text));
+            }
+            Self::UsageConfigure { daily_limit } => {
+                params.insert(
+                    "daily_limit".into(),
+                    daily_limit.map_or(Value::Null, Value::from),
+                );
             }
             Self::LookupProfile { username } => {
                 params.insert("username".into(), text(username));
@@ -1240,10 +1277,44 @@ fn change_value(value: &Value) -> Result<ChangeValue, HostError> {
         _ => Err(HostError::Protocol),
     }
 }
+fn post_delta(value: &Value) -> Result<Option<PostDelta>, HostError> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let obj = exact_keys(value, &["added", "window_full"])?;
+    let window_full = obj["window_full"].as_bool().ok_or(HostError::Protocol)?;
+    let mut added = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    // The core reads both stored JSON bodies within 64 KiB. Its emitted added
+    // list is a subset of one body; bound that list without truncating evidence.
+    let mut bytes = 1usize;
+    for value in obj["added"].as_array().ok_or(HostError::Protocol)? {
+        let pk = value
+            .as_str()
+            .filter(|s| target_pk(s))
+            .ok_or(HostError::Protocol)?;
+        bytes += pk.len() + 3;
+        if bytes > 65_536 || !seen.insert(pk) {
+            return Err(HostError::Protocol);
+        }
+        added.push(pk.to_owned());
+    }
+    if window_full && added.is_empty() {
+        return Err(HostError::Protocol);
+    }
+    Ok(Some(PostDelta { added, window_full }))
+}
 fn comparison(value: &Value, expected_kind: &str) -> Result<Comparison, HostError> {
     let obj = exact_keys(
         value,
-        &["kind", "older", "newer", "changes", "unknown_fields"],
+        &[
+            "kind",
+            "older",
+            "newer",
+            "changes",
+            "unknown_fields",
+            "posts",
+        ],
     )?;
     if obj["kind"].as_str() != Some(expected_kind) {
         return Err(HostError::Protocol);
@@ -1286,6 +1357,7 @@ fn comparison(value: &Value, expected_kind: &str) -> Result<Comparison, HostErro
         newer,
         changes,
         unknown_fields,
+        posts: post_delta(&obj["posts"])?,
     })
 }
 fn history_item(value: &Value, kind: PageKind) -> Result<HistoryItem, HostError> {
@@ -1321,7 +1393,9 @@ fn history_item(value: &Value, kind: PageKind) -> Result<HistoryItem, HostError>
         }
         (PageKind::Changes, "comparison") => {
             let c = comparison(value, "comparison")?;
-            if c.changes.is_empty() || !c.unknown_fields.is_empty() {
+            if (c.changes.is_empty() && c.posts.as_ref().is_none_or(|p| p.added.is_empty()))
+                || !c.unknown_fields.is_empty()
+            {
                 return Err(HostError::Protocol);
             }
             HistoryItem::Comparison {
@@ -1329,6 +1403,7 @@ fn history_item(value: &Value, kind: PageKind) -> Result<HistoryItem, HostError>
                 newer: c.newer,
                 changes: c.changes,
                 unknown_fields: c.unknown_fields,
+                posts: c.posts,
             }
         }
         (PageKind::Changes, "incomplete") => {
@@ -1341,6 +1416,7 @@ fn history_item(value: &Value, kind: PageKind) -> Result<HistoryItem, HostError>
                 newer: c.newer,
                 changes: c.changes,
                 unknown_fields: c.unknown_fields,
+                posts: c.posts,
             }
         }
         (_, "diagnostic") => {
@@ -1531,7 +1607,7 @@ const LOOKUP_PROFILE_KEYS: [&str; 6] = [
     "unknown_fields",
     "quota_remaining",
 ];
-fn lookup_profile(result: &Value) -> Result<LookupProfile, HostError> {
+pub(crate) fn lookup_profile(result: &Value) -> Result<LookupProfile, HostError> {
     let obj = exact_keys(result, &LOOKUP_PROFILE_KEYS)?;
     if obj["kind"].as_str() != Some("lookup_profile") {
         return Err(HostError::Protocol);
@@ -1696,9 +1772,10 @@ fn histogram(value: &Value, buckets: usize, analyzed: u64) -> Result<(Vec<u64>, 
     }
     Ok((counts, total))
 }
-const TIMELINE_KEYS: [&str; 4] = [
+const TIMELINE_KEYS: [&str; 5] = [
     "hour_of_day",
     "day_of_week",
+    "weekday_hours",
     "first_post_at",
     "last_post_at",
 ];
@@ -1706,6 +1783,25 @@ fn timeline(value: &Value, analyzed: u64) -> Result<Timeline, HostError> {
     let obj = exact_keys(value, &TIMELINE_KEYS)?;
     let (hour_of_day, hours) = histogram(&obj["hour_of_day"], 24, analyzed)?;
     let (day_of_week, days) = histogram(&obj["day_of_week"], 7, analyzed)?;
+    let rows = obj["weekday_hours"]
+        .as_array()
+        .filter(|rows| rows.len() == 7)
+        .ok_or(HostError::Protocol)?;
+    let mut weekday_hours = Vec::with_capacity(7);
+    let mut columns = vec![0u64; 24];
+    for (day, row) in rows.iter().enumerate() {
+        let (counts, total) = histogram(row, 24, analyzed)?;
+        if total != day_of_week[day] {
+            return Err(HostError::Protocol);
+        }
+        for (hour, count) in counts.iter().enumerate() {
+            columns[hour] += count;
+        }
+        weekday_hours.push(counts);
+    }
+    if columns != hour_of_day {
+        return Err(HostError::Protocol);
+    }
     let moment = |value: &Value| match value {
         Value::Null => Ok(None),
         item => item
@@ -1728,6 +1824,7 @@ fn timeline(value: &Value, analyzed: u64) -> Result<Timeline, HostError> {
     Ok(Timeline {
         hour_of_day,
         day_of_week,
+        weekday_hours,
         first_post_at,
         last_post_at,
     })
@@ -1816,7 +1913,11 @@ const LOOKUP_ACTIVITY_KEYS: [&str; 11] = [
     "likes",
     "quota_remaining",
 ];
-fn lookup_activity(result: &Value, pk: &str, window: u8) -> Result<LookupActivity, HostError> {
+pub(crate) fn lookup_activity(
+    result: &Value,
+    pk: &str,
+    window: u8,
+) -> Result<LookupActivity, HostError> {
     let obj = exact_keys(result, &LOOKUP_ACTIVITY_KEYS)?;
     // The pk and the window are echoed, never re-derived: the core takes both
     // from the request it already validated.
@@ -1859,6 +1960,64 @@ fn compare_result(
     }
     Ok(c)
 }
+fn usage(value: &Value) -> Result<Usage, HostError> {
+    let obj = exact_keys(value, &["kind", "day", "used", "daily_limit", "reset_at"])?;
+    if obj["kind"].as_str() != Some("usage") {
+        return Err(HostError::Protocol);
+    }
+    let day = obj["day"]
+        .as_str()
+        .filter(|s| s.len() == 10 && s.as_bytes()[4] == b'-' && s.as_bytes()[7] == b'-')
+        .ok_or(HostError::Protocol)?;
+    let parts: Vec<u64> = day
+        .split('-')
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .map_err(|_| HostError::Protocol)?;
+    if parts.len() != 3 {
+        return Err(HostError::Protocol);
+    }
+    let (year, month, date) = (parts[0], parts[1], parts[2]);
+    if !(1970..=9999).contains(&year) || !(1..=12).contains(&month) {
+        return Err(HostError::Protocol);
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let lengths = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if date < 1 || date > lengths[(month - 1) as usize] {
+        return Err(HostError::Protocol);
+    }
+    let leaps = |y: u64| y / 4 - y / 100 + y / 400;
+    let days = 365 * (year - 1970) + leaps(year - 1) - leaps(1969)
+        + lengths[..(month - 1) as usize].iter().sum::<u64>()
+        + date;
+    let reset_at = counted(&obj["reset_at"])?;
+    if reset_at != days * 86400 || reset_at > MAX_TIME {
+        return Err(HostError::Protocol);
+    }
+    let daily_limit = quota(&obj["daily_limit"])?;
+    if daily_limit.is_some_and(|n| !(1..=1_000_000).contains(&n)) {
+        return Err(HostError::Protocol);
+    }
+    Ok(Usage {
+        day: day.to_owned(),
+        used: counted(&obj["used"])?,
+        daily_limit,
+        reset_at,
+    })
+}
 pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, HostError> {
     let bad = || HostError::Protocol;
     if raw.len() > MAX_RESPONSE
@@ -1880,6 +2039,9 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
     if let Some(result) = obj.get("result") {
         return Ok(match operation {
             Operation::Hello => Response::Hello(hello(result)?),
+            Operation::UsageInspect | Operation::UsageConfigure { .. } => {
+                Response::Usage(usage(result)?)
+            }
             Operation::SetupInspect
             | Operation::SettingsInspect
             | Operation::SetupConfigure { .. }
@@ -2097,6 +2259,11 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
             "The provider's answer could not be read safely.",
             false,
         ),
+        "daily_budget_reached" => (
+            "daily_budget_reached",
+            "The daily request limit has been reached. It resets at midnight UTC.",
+            false,
+        ),
         _ => return Err(bad()),
     };
     Ok(Response::Error(SafeError {
@@ -2109,7 +2276,7 @@ pub fn decode(raw: &[u8], id: &str, operation: &Operation) -> Result<Response, H
 #[cfg(test)]
 mod tests {
     use super::*;
-    const HELLO: &str = r#"{"core_version":"0.7.22","schema_version_supported":2,"capabilities":["hello","setup.inspect","setup.configure","settings.inspect","credentials.replace","service.start","service.stop","service.repair","overview","watches.list","watches.add","watches.update","watches.pause","watches.resume","watches.remove","snapshots.targets","snapshots.list","snapshots.compare","snapshots.read","changes.list","service.inspect","service.migrate","service.uninstall","home.inspect","home.select","lookup.profile","lookup.activity"]}"#;
+    const HELLO: &str = r#"{"core_version":"0.7.25","schema_version_supported":2,"capabilities":["hello","setup.inspect","setup.configure","settings.inspect","credentials.replace","service.start","service.stop","service.repair","overview","watches.list","watches.add","watches.update","watches.pause","watches.resume","watches.remove","snapshots.targets","snapshots.list","snapshots.compare","snapshots.read","changes.list","service.inspect","service.migrate","service.uninstall","home.inspect","home.select","lookup.profile","lookup.activity","usage.inspect","usage.configure"]}"#;
     fn envelope(result: &str) -> Vec<u8> {
         format!("{{\"protocol_version\":1,\"request_id\":\"test\",\"result\":{result}}}\n")
             .into_bytes()
@@ -3133,9 +3300,59 @@ mod tests {
         .is_err());
     }
     #[test]
+    fn comparison_posts_are_required_canonical_and_preserved() {
+        let good = serde_json::json!({
+            "kind": "comparison",
+            "older": {"id": "1", "target_pk": "7", "captured_at": 1},
+            "newer": {"id": "2", "target_pk": "7", "captured_at": 2},
+            "changes": [], "unknown_fields": [],
+            "posts": {"added": ["9007199254740993", "8"], "window_full": true}
+        });
+        let decoded = comparison(&good, "comparison").unwrap();
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap()["posts"],
+            good["posts"]
+        );
+        let feed = history_item(&good, PageKind::Changes).unwrap();
+        assert_eq!(serde_json::to_value(feed).unwrap()["posts"], good["posts"]);
+        for posts in [
+            serde_json::Value::Null,
+            serde_json::json!({"added": [], "window_full": false}),
+        ] {
+            let mut unchanged = good.clone();
+            unchanged["posts"] = posts;
+            assert!(comparison(&unchanged, "comparison").is_ok());
+            assert!(history_item(&unchanged, PageKind::Changes).is_err());
+        }
+        let mut incomplete = good.clone();
+        incomplete["kind"] = "incomplete".into();
+        incomplete["unknown_fields"] = serde_json::json!(["full_name"]);
+        assert!(history_item(&incomplete, PageKind::Changes).is_ok());
+        let mut missing = good.clone();
+        missing.as_object_mut().unwrap().remove("posts");
+        assert!(comparison(&missing, "comparison").is_err());
+        for posts in [
+            serde_json::json!({"added": ["8"], "window_full": true, "raw": "unsafe"}),
+            serde_json::json!({"added": ["8"]}),
+            serde_json::json!({"added": ["8"], "window_full": 1}),
+            serde_json::json!({"added": ["8", "8"], "window_full": false}),
+            serde_json::json!({"added": ["0"], "window_full": false}),
+            serde_json::json!({"added": ["08"], "window_full": false}),
+            serde_json::json!({"added": ["8_7"], "window_full": false}),
+            serde_json::json!({"added": [8], "window_full": false}),
+            serde_json::json!({"added": ["9".repeat(65)], "window_full": false}),
+            serde_json::json!({"added": [], "window_full": true}),
+            serde_json::json!({"added": (1..=16384).map(|id| id.to_string()).collect::<Vec<_>>(), "window_full": false}),
+        ] {
+            let mut bad = good.clone();
+            bad["posts"] = posts;
+            assert!(comparison(&bad, "comparison").is_err(), "{}", bad["posts"]);
+        }
+    }
+    #[test]
     fn feed_and_comparison_values_are_bounded() {
         let comparison = format!(
-            r#"{{"kind":"comparison","older":{},"newer":{},"changes":[{{"field":"follower_count","old":1,"new":2}},{{"field":"biography","old":null,"new":"x"}},{{"field":"avatar","old":null,"new":"{}"}}],"unknown_fields":[]}}"#,
+            r#"{{"kind":"comparison","older":{},"newer":{},"changes":[{{"field":"follower_count","old":1,"new":2}},{{"field":"biography","old":null,"new":"x"}},{{"field":"avatar","old":null,"new":"{}"}}],"unknown_fields":[],"posts":null}}"#,
             snap(1, "7", 1),
             snap(2, "7", 2),
             "a".repeat(64)
@@ -3147,7 +3364,7 @@ mod tests {
         };
         let baseline = format!(r#"{{"kind":"baseline","snapshot":{}}}"#, snap(1, "7", 1));
         let incomplete = format!(
-            r#"{{"kind":"incomplete","older":{},"newer":{},"changes":[],"unknown_fields":["full_name"]}}"#,
+            r#"{{"kind":"incomplete","older":{},"newer":{},"changes":[],"unknown_fields":["full_name"],"posts":null}}"#,
             snap(2, "7", 2),
             snap(3, "7", 3)
         );
@@ -3177,7 +3394,7 @@ mod tests {
             comparison.replace(&snap(2, "7", 2), &snap(2, "7", 0)),
             incomplete.replace("[\"full_name\"]", "[]"),
             format!(
-                r#"{{"kind":"comparison","older":{},"newer":{},"changes":[],"unknown_fields":[]}}"#,
+                r#"{{"kind":"comparison","older":{},"newer":{},"changes":[],"unknown_fields":[],"posts":null}}"#,
                 snap(1, "7", 1),
                 snap(2, "7", 2)
             ),
@@ -3217,7 +3434,7 @@ mod tests {
         );
         assert!(decode(
             &envelope(&format!(
-                r#"{{"kind":"comparison","older":{},"newer":{},"changes":[],"unknown_fields":[]}}"#,
+                r#"{{"kind":"comparison","older":{},"newer":{},"changes":[],"unknown_fields":[],"posts":null}}"#,
                 snap(1, "7", 1),
                 snap(2, "7", 2)
             )),
@@ -3726,9 +3943,9 @@ mod tests {
     }
     // The two documented examples from the core's own fake-backend tests.
     const LOOKUP_PROFILE: &str = r#"{"kind":"lookup_profile","target_pk":"17841400000000001","access":"public","fields":{"username":"alice","full_name":"Alice Example","biography":"bio line","external_url":"https://example.test/alice","is_verified":true,"is_business":false,"is_private":false,"follower_count":1200,"following_count":300,"media_count":87,"public_email":"alice@example.test","public_phone":null,"business_category":null},"unknown_fields":[],"quota_remaining":4211}"#;
-    const LOOKUP_ACTIVITY: &str = r#"{"kind":"lookup_activity","target_pk":"17841400000000001","window":50,"analyzed":4,"geo":{"geotagged":3,"anchor":{"name":"Cafe Zero","lat":52.37,"lng":4.89,"count":2},"centroid":{"lat":52.36666666666667,"lng":4.886666666666667},"radius_km":0.869,"places":[{"name":"Cafe Zero","lat":52.37,"lng":4.89,"count":2},{"name":"Museum","lat":52.36,"lng":4.88,"count":1}]},"timeline":{"hour_of_day":[0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0],"day_of_week":[0,1,1,1,1,0,0],"first_post_at":1789468200,"last_post_at":1789727400},"hashtags":[{"key":"ams","count":2},{"key":"coffee","count":2}],"mentions":[{"key":"bob","count":2}],"locations":[{"key":"Cafe Zero","count":2},{"key":"Museum","count":1}],"likes":{"total":100,"average":25.0,"top_posts":[{"code":"code3","like_count":40},{"code":"code1","like_count":30},{"code":"code2","like_count":20},{"code":"code0","like_count":10}]},"quota_remaining":4208}"#;
+    const LOOKUP_ACTIVITY: &str = r#"{"kind":"lookup_activity","target_pk":"17841400000000001","window":50,"analyzed":4,"geo":{"geotagged":3,"anchor":{"name":"Cafe Zero","lat":52.37,"lng":4.89,"count":2},"centroid":{"lat":52.36666666666667,"lng":4.886666666666667},"radius_km":0.869,"places":[{"name":"Cafe Zero","lat":52.37,"lng":4.89,"count":2},{"name":"Museum","lat":52.36,"lng":4.88,"count":1}]},"timeline":{"hour_of_day":[0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0],"day_of_week":[0,1,1,1,1,0,0],"first_post_at":1789468200,"last_post_at":1789727400,"weekday_hours":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},"hashtags":[{"key":"ams","count":2},{"key":"coffee","count":2}],"mentions":[{"key":"bob","count":2}],"locations":[{"key":"Cafe Zero","count":2},{"key":"Museum","count":1}],"likes":{"total":100,"average":25.0,"top_posts":[{"code":"code3","like_count":40},{"code":"code1","like_count":30},{"code":"code2","like_count":20},{"code":"code0","like_count":10}]},"quota_remaining":4208}"#;
     // The same shape for an account with no posts: zeros, nulls, empty lists.
-    const EMPTY_ACTIVITY: &str = r#"{"kind":"lookup_activity","target_pk":"7","window":12,"analyzed":0,"geo":{"geotagged":0,"anchor":null,"centroid":null,"radius_km":null,"places":[]},"timeline":{"hour_of_day":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"day_of_week":[0,0,0,0,0,0,0],"first_post_at":null,"last_post_at":null},"hashtags":[],"mentions":[],"locations":[],"likes":{"total":0,"average":0.0,"top_posts":[]},"quota_remaining":null}"#;
+    const EMPTY_ACTIVITY: &str = r#"{"kind":"lookup_activity","target_pk":"7","window":12,"analyzed":0,"geo":{"geotagged":0,"anchor":null,"centroid":null,"radius_km":null,"places":[]},"timeline":{"hour_of_day":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"day_of_week":[0,0,0,0,0,0,0],"first_post_at":null,"last_post_at":null,"weekday_hours":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},"hashtags":[],"mentions":[],"locations":[],"likes":{"total":0,"average":0.0,"top_posts":[]},"quota_remaining":null}"#;
     fn profile_lookup() -> Operation {
         Operation::LookupProfile {
             username: "alice".into(),
@@ -4210,6 +4427,66 @@ mod tests {
             assert_eq!(error.retryable, retryable);
             assert!(!error.message.contains("TOKEN_SENTINEL"));
             assert!(!error.message.contains("alice"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod workbench_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn usage_cap_is_validated_before_any_child_can_start() {
+        assert!(Operation::UsageConfigure { daily_limit: None }
+            .validate()
+            .is_ok());
+        assert!(Operation::UsageConfigure {
+            daily_limit: Some(100)
+        }
+        .validate()
+        .is_ok());
+        for n in [0, 1_000_001] {
+            assert!(Operation::UsageConfigure {
+                daily_limit: Some(n)
+            }
+            .validate()
+            .is_err());
+        }
+        assert_eq!(Operation::UsageInspect.budget(), Budget::Read);
+        assert_eq!(
+            Operation::UsageConfigure { daily_limit: None }.budget(),
+            Budget::LocalMutation
+        );
+    }
+    #[test]
+    fn usage_wire_requires_a_real_utc_day_and_corresponding_reset() {
+        let result = json!({"kind":"usage","day":"2026-10-13","used":10,"daily_limit":100,"reset_at":1791936000u64});
+        let decode_result = |r: Value| {
+            decode(
+                format!(
+                    "{}\n",
+                    json!({"protocol_version":1,"request_id":"u","result":r})
+                )
+                .as_bytes(),
+                "u",
+                &Operation::UsageInspect,
+            )
+        };
+        assert!(matches!(
+            decode_result(result.clone()).unwrap(),
+            Response::Usage(_)
+        ));
+        for patch in [
+            json!({"used":-1}),
+            json!({"daily_limit":0}),
+            json!({"reset_at":1}),
+            json!({"day":"2026-02-31"}),
+        ] {
+            let mut bad = result.clone();
+            for (key, value) in patch.as_object().unwrap() {
+                bad[key] = value.clone();
+            }
+            assert!(decode_result(bad).is_err());
         }
     }
 }

@@ -2,7 +2,7 @@
 
 # insto-gui
 
-A self-contained macOS app that watches Instagram accounts in the background and tells you what changed — **no Instagram login required**.
+A self-contained macOS OSINT workspace for checking Instagram profiles and monitoring changes — **no Instagram login required**.
 
 Powered by [HikerAPI](https://hikerapi.com/p/uk064a1b) · built with [Tauri 2](https://tauri.app) + Vue 3
 
@@ -10,13 +10,13 @@ Powered by [HikerAPI](https://hikerapi.com/p/uk064a1b) · built with [Tauri 2](h
 
 ---
 
-Paste your HikerAPI token once, add a few accounts, and a background service checks each new account straight away and then keeps checking it on the interval you choose — it goes on running after you close the window. The app saves a snapshot of every check and shows you the difference between any two of them: followers gained and lost, a rewritten bio, a new avatar, a profile that turned private. Because the checks go through the HikerAPI cloud instead of a logged-in session, **your Instagram account never touches the flow**.
+Paste your HikerAPI token once, enter a username, and choose **Profile** or **Profile + posts**. The start screen shows the request cost before you run a check. The scanner displays the current request stage and elapsed time; the results open as a compact profile with separate analysis tabs. Because checks go through the HikerAPI cloud, **your Instagram account never touches the flow**.
 
-![insto-gui watching six accounts, with the saved snapshots of one of them compared side by side](docs/screenshot.png)
+![The account-first insto start screen with a choice of profile or profile-and-posts checks](docs/screenshot.png)
 
-Or look an account up on demand — where its posts are tagged, when it posts, which hashtags and accounts it mentions:
+See where posts are tagged, when an account posts, and which hashtags and accounts it mentions. Analysis tabs reuse the same fetched sample. Save a check for offline review, or add the account to **Monitoring** for background checks and snapshot comparisons:
 
-![The Lookup section: places, posting rhythm by hour and weekday, and top hashtags of one account](docs/screenshot-lookup.png)
+![A checked profile and the overview of its recent-post sample](docs/screenshot-lookup.png)
 
 > The interface is in English; Russian can be chosen in **Settings**.
 
@@ -25,10 +25,14 @@ Or look an account up on demand — where its posts are tagged, when it posts, w
 - **Watched accounts** — add by username, give each one its own check interval (300 s and up), pause, resume or remove it; up to three watches run at a time
 - **Status you can trust** — each row shows the last *successful* check, not the fact that a process is alive, plus the interval and any run of consecutive errors
 - **The profile, right away** — a new account is checked as soon as you add it, and every tracked field except the avatar and banner hashes — followers, following, posts, bio, link, public email and phone, business category and the verified / business / private flags — appears in the window a few seconds later, dated to the check it came from
-- **Lookup on demand** — type any public username and see its profile at once; ask for the analysis and you also get the geography of its recent posts (top places, how far apart they are), the posting rhythm by hour of the day and day of the week, top hashtags and mentions, and like statistics. It runs when you press the button, never on its own, and nothing it shows is written to disk
+- **Lookup on demand** — the start screen offers a profile check or a profile-and-posts check. Overview, Activity, Geography, and Hashtags / mentions tabs share the fetched sample. It runs when you press the button, and results are saved only on your command
+- **OSINT identity** — an original orange, pink, and purple gradient mark, a dark workspace, and a scanner with actual request stages and elapsed time. Reduced-motion preferences disable its decorative animation
 - **Snapshot history** — every successful check is stored; pick any two saved snapshots of one account and compare exactly those two
 - **Change feed** — all accounts, newest first, filterable down to one; a first snapshot is labelled a baseline rather than dressed up as a change, and a comparison whose older snapshot lacked a field is labelled incomplete rather than guessed at
 - **Tracked fields** — username, full name, biography, profile link, verified / business / private flags, follower, following and media counts, public email, public phone, business category, and avatar and banner hashes
+- **Saved checks and reports** — explicitly save a lookup, reopen it without a provider call, compare two checks, and export a portable HTML report or JSON
+- **Geography and posting rhythm** — local schematic map plus a Monday-first UTC heatmap from the same analyzed posts
+- **Request budget** — one optional UTC daily ceiling shared by lookups and the background service, with a baseline interval estimate
 - **Background service** — a macOS LaunchAgent that keeps checking with the app closed; start, stop and repair it from the app, and disable it from **Settings** before you move the app to the Trash
 - **Bundled core** — a compatible Python insto core ships inside the app; no Python, uv or CLI install, and no downloads on first run
 - **Adopts an existing `~/.insto`** — inspect the folder first, connect it only after an explicit confirmation, and go back to the app's own profile later without the folder's files being touched
@@ -40,7 +44,7 @@ Or look an account up on demand — where its posts are tagged, when it posts, w
 
 Requires **macOS 14 (Sonoma) or newer**.
 
-Take the file for your Mac from [GitHub Releases](https://github.com/subzeroid/insto-gui/releases) and drag `insto.app` to `/Applications`. Apple menu → *About This Mac* shows which chip you have.
+Take the file for your Mac from [GitHub Releases](https://github.com/subzeroid/insto-gui/releases) and drag `insto.app` to `/Applications`. Apple menu → *About This Mac* shows which chip you have. See the [changelog](CHANGELOG.md) and [current release notes](.github/release-notes.md) for release changes.
 
 | Mac | File |
 |---|---|
@@ -69,23 +73,23 @@ The app is ad-hoc signed and not notarized, so macOS refuses it once:
 2. Copy the token from your [HikerAPI dashboard](https://hikerapi.com/p/uk064a1b).
 3. Paste it into the app on first launch.
 
-Every check of a watched account spends HikerAPI requests, so the check interval — not the number of times you open the window — decides how fast the balance goes down, together with any lookups you run (see *What a lookup costs* below). The remaining balance is shown in the **Service** section together with the moment it was last read; it is a reading, not a live counter. You can replace the token later in **Settings** without losing history.
+Every check of a watched account spends HikerAPI requests, so the check interval and any lookups you run decide how fast the balance goes down (see *What a lookup costs* below). The remaining balance is shown in **Settings → Diagnostics** together with the moment it was last read; it is a reading, not a live counter. You can replace the token in **Settings → Connection** without losing history.
 
 ## How monitoring works
 
-The app bundles its own Python insto core, so nothing is installed alongside it. When you connect a token, it registers a macOS LaunchAgent that performs the checks; that agent keeps running after the window is closed, and moving the app to the Trash does not remove it — disable it from **Settings** first, which leaves the settings, the snapshot history and the token in place.
+The app bundles its own Python insto core, so nothing is installed alongside it. When you connect a token, it registers a macOS LaunchAgent that performs the checks. **Monitoring** groups the account list and change feed, with explicit start and pause controls. The agent keeps running after the window is closed, and moving the app to the Trash does not remove it — disable it from **Settings → Connection** first, which leaves the settings, the snapshot history and the token in place.
 
-If you already run the insto CLI, the app can work with that existing `~/.insto` folder instead of its own: it inspects the folder, reports what it found, and connects it only after you confirm. The folder's own files are never rewritten, and you can return the app to its own profile at any time. A service the CLI registered stays the CLI's until you explicitly hand it over.
+If you already run the insto CLI, the app can work with that existing `~/.insto` folder instead of its own: it inspects the folder, reports what it found, and connects it only after you confirm. The app keeps the folder's settings and history; the request budget has its own accounting file, and you can return the app to its own profile at any time. A service the CLI registered stays the CLI's until you explicitly hand it over.
 
 ## What a lookup costs
 
-The **Lookup** section is the one section that spends HikerAPI requests on the accounts you ask about, and it does so only when you press a button — the price is written under each one beforehand. A profile costs 2 requests, or up to 4 if one of them has to be tried again. The analysis of the recent posts costs one request per page of posts: usually between 1 and 5 for the windows offered (the last 12, 30 or 50 posts). Reading stops after 6 pages, and a page that fails is tried once more, so one analysis costs at most 12 requests — then the app analyses what it already paid for and says how many posts it actually read.
+The **Lookup** section is the one section that spends HikerAPI requests on the accounts you ask about, and it does so only when you press a button — the price is written under each one beforehand. A profile costs 1 request, or up to 2 with a retry. The analysis of the recent posts costs one request per page of posts: usually between 1 and 5 for the windows offered (the last 12, 30 or 50 posts). Reading stops after 6 pages, and a page that fails is tried once more, so one analysis costs at most 12 requests — then the app analyses what it already paid for and says how many posts it actually read.
 
-A result stays in memory while the window is open, so leaving the section and coming back shows the same answer without paying for it again; nothing about a lookup is written to disk, and no snapshot or history entry is created. A private account shows its profile, but its posts are not public and cannot be analysed. The account you looked up can be turned into a watch with one button, if you have a free watch slot.
+A result stays in memory while the window is open, so leaving the section and coming back shows the same answer without paying for it again; saving a check is explicit and creates no monitoring snapshot or history entry. A private account shows its profile, but its posts are not public and cannot be analysed. The account you looked up can be turned into a watch with one button, if you have a free watch slot.
 
 ## Building from source
 
-Requires Node 22+, Rust, and — for the bundled runtime — Python 3.12+ and [uv](https://docs.astral.sh/uv/). Preparing that runtime and running the release gates is described in [packaging/README.md](packaging/README.md); those are build-machine steps, not installation instructions.
+Requires Node 22.12.0+, Rust, and — for the bundled runtime — Python 3.12+ and [uv](https://docs.astral.sh/uv/). Preparing that runtime and running the release gates is described in [packaging/README.md](packaging/README.md); those are build-machine steps, not installation instructions.
 
 ```sh
 npm ci --ignore-scripts
@@ -119,3 +123,18 @@ This app is not affiliated with, authorized, maintained, or endorsed by Instagra
 ## License
 
 [MIT](LICENSE)
+
+## Saved checks and request budgets
+
+After a lookup, choose **Save this check** to keep a local copy of the profile
+and any analysis already obtained. **Saved** reopens results, compares two checks,
+and exports HTML or JSON without HikerAPI requests. Reports include capture times,
+unknown fields and the actual post coverage. The map uses embedded schematic
+geometry; the heatmap uses UTC. Shared terms refer only to these post samples.
+
+In **Settings → Request limit**, set a whole-number daily cap from 1 to 1,000,000 or leave it empty
+for unlimited. The cap covers this profile's lookups and background checks,
+including retries and failed attempts, and resets at midnight UTC. Raising it
+requires no service restart. The local count is an attempt counter, not billing;
+free balance reads are excluded. Interval forecasts are baseline estimates and
+extra pages, initial lookups or retries can increase consumption.

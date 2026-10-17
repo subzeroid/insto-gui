@@ -3,6 +3,7 @@ pub mod error;
 pub mod owner;
 pub mod process;
 pub mod protocol;
+pub mod research;
 pub mod runtime;
 pub use binding::{read_binding, Binding};
 pub use error::HostError;

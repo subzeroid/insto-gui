@@ -285,6 +285,7 @@ async fn c2_bridge_round_trip() {
     };
     assert_eq!(comparison.changes.len(), 1);
     assert_eq!(comparison.changes[0].field, "follower_count");
+    assert!(comparison.posts.is_none()); // An empty saved window is incomparable.
     assert_eq!(
         error_code(
             &call(
@@ -378,4 +379,89 @@ async fn c2_bridge_round_trip() {
         .collect();
     names.sort();
     assert_eq!(names, [".desktop.lock", "desktop-state.json", "profile"]);
+}
+
+#[tokio::test]
+async fn c2_posts_only_comparison_survives_the_real_bridge() {
+    let Some(runtime) = std::env::var_os("INSTO_GUI_RUNTIME") else {
+        eprintln!("skipped: INSTO_GUI_RUNTIME is not set");
+        return;
+    };
+    let python = PathBuf::from(runtime)
+        .join("python/bin/python3")
+        .canonicalize()
+        .expect("INSTO_GUI_RUNTIME must contain python/bin/python3");
+    let dir = tempfile::Builder::new()
+        .prefix("insto-gui-c2-posts-")
+        .tempdir()
+        .unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    seed(&python, &root);
+    // Only this fresh fixture is edited. Equal profile values isolate the
+    // inherited posts-only comparison contract; large media IDs stay strings.
+    let output = Command::new(&python)
+        .args(["-I", "-B", "-c", r#"
+import json, sqlite3, sys
+from pathlib import Path
+with sqlite3.connect(Path(sys.argv[1]) / 'profile' / 'store.db') as db:
+    fields = db.execute('SELECT profile_fields_json FROM snapshots WHERE target_pk=? AND captured_at=?', ('7', 1)).fetchone()[0]
+    for stamp, posts in [(1, ['9007199254740993']), (2, ['9007199254740995', '9007199254740994', '9007199254740993'])]:
+        db.execute('UPDATE snapshots SET profile_fields_json=?,last_post_pks_json=? WHERE target_pk=? AND captured_at=?', (fields, json.dumps(posts), '7', stamp))
+"#])
+        .arg(&root)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let owner = Owner::new(TrustedLauncher::new(&root, &python, &root).unwrap());
+    let Response::Comparison(comparison) = call(
+        &owner,
+        Operation::SnapshotsCompare {
+            target_pk: "7".into(),
+            older_id: "1".into(),
+            newer_id: "2".into(),
+        },
+    )
+    .await
+    else {
+        panic!("comparison")
+    };
+    assert!(comparison.changes.is_empty() && comparison.unknown_fields.is_empty());
+    let posts = comparison.posts.unwrap();
+    assert_eq!(posts.added, ["9007199254740995", "9007199254740994"]);
+    assert!(!posts.window_full);
+    let Response::HistoryPage(feed) = call(
+        &owner,
+        Operation::ChangesList {
+            target_pk: Some("7".into()),
+            limit: None,
+            cursor: None,
+        },
+    )
+    .await
+    else {
+        panic!("feed")
+    };
+    assert_eq!(feed.items.len(), 2);
+    match &feed.items[0] {
+        HistoryItem::Comparison {
+            changes,
+            unknown_fields,
+            posts: Some(posts),
+            ..
+        } => {
+            assert!(changes.is_empty() && unknown_fields.is_empty());
+            assert_eq!(posts.added, ["9007199254740995", "9007199254740994"]);
+            assert!(!posts.window_full);
+        }
+        other => panic!("posts-only comparison was lost: {other:?}"),
+    }
+    owner.shutdown().await;
 }

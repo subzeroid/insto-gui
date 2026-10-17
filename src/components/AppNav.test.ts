@@ -8,22 +8,21 @@ describe('AppNav', () => {
     const nav = mount(AppNav, { props: { current: 'service' }, attachTo: document.body })
     const tabs = nav.findAll('[role="tab"]')
     expect(nav.find('[role="tablist"]').attributes('aria-label')).toBe('Sections')
-    expect(tabs.map(tab => tab.attributes('id'))).toEqual(['tab-watches', 'tab-changes', 'tab-lookup', 'tab-service', 'tab-settings'])
-    expect(tabs.map(tab => tab.attributes('aria-controls'))).toEqual(['panel-watches', 'panel-changes', 'panel-lookup', 'panel-service', 'panel-settings'])
-    expect(tabs.map(tab => tab.attributes('aria-selected'))).toEqual(['false', 'false', 'false', 'true', 'false'])
-    expect(tabs.map(tab => tab.attributes('tabindex'))).toEqual(['-1', '-1', '-1', '0', '-1'])
+    expect(tabs.map(tab => tab.attributes('id'))).toEqual(['tab-lookup', 'tab-watches', 'tab-library', 'tab-settings'])
+    expect(tabs.map(tab => tab.attributes('aria-controls'))).toEqual(['panel-lookup', 'panel-watches', 'panel-library', 'panel-settings'])
+    expect(tabs.map(tab => tab.attributes('aria-selected'))).toEqual(['false', 'false', 'false', 'true'])
+    expect(tabs.map(tab => tab.attributes('tabindex'))).toEqual(['-1', '-1', '-1', '0'])
     nav.unmount()
   })
 
   it('moves selection with the arrow, Home and End keys', async () => {
     const nav = mount(AppNav, { props: { current: 'service' }, attachTo: document.body })
     const tabs = nav.findAll('[role="tab"]')
-    // Service is the fourth of the five tabs: Lookup sits between Changes and it.
     await tabs[3].trigger('keydown', { key: 'ArrowRight' })
     await tabs[3].trigger('keydown', { key: 'ArrowLeft' })
     await tabs[3].trigger('keydown', { key: 'Home' })
     await tabs[3].trigger('keydown', { key: 'End' })
-    expect(nav.emitted('navigate')).toEqual([['settings'], ['lookup'], ['watches'], ['settings']])
+    expect(nav.emitted('navigate')).toEqual([['lookup'], ['library'], ['lookup'], ['settings']])
     nav.unmount()
   })
 
@@ -32,7 +31,7 @@ describe('AppNav', () => {
     setLocale('ru')
     try {
       const nav = mount(AppNav, { props: { current: 'watches' } })
-      expect(nav.findAll('[role="tab"]').map(tab => tab.text())).toEqual(['Наблюдения', 'Изменения', 'Проверка', 'Служба', 'Настройки'])
+      expect(nav.findAll('[role="tab"]').map(tab => tab.text())).toEqual(['Проверка', 'Наблюдение', 'Сохранённое', 'Настройки'])
       expect(nav.find('[role="tablist"]').attributes('aria-label')).toBe('Разделы')
       nav.unmount()
     } finally { setLocale('en') }
@@ -43,5 +42,30 @@ describe('AppNav', () => {
     await nav.findAll('[role="tab"]')[0].trigger('keydown', { key: 'ArrowLeft' })
     expect(nav.emitted('navigate')).toEqual([['settings']])
     nav.unmount()
+  })
+
+  it('blocks click and keyboard navigation while the selected profile is changing', async () => {
+    const nav = mount(AppNav, { props: { current: 'settings', disabled: true }, attachTo: document.body })
+    try {
+      const tabs = nav.findAll('[role="tab"]')
+      await tabs[2].trigger('click')
+      await tabs[3].trigger('keydown', { key: 'ArrowLeft' })
+      await tabs[3].trigger('keydown', { key: 'Home' })
+      await tabs[3].trigger('keydown', { key: 'End' })
+      expect(tabs.every(tab => (tab.element as HTMLButtonElement).disabled)).toBe(true)
+      expect(tabs.every(tab => tab.attributes('tabindex') === '-1')).toBe(true)
+      expect(nav.emitted('navigate')).toBeUndefined()
+      await nav.setProps({ disabled: false })
+      await tabs[2].trigger('click')
+      expect(nav.emitted('navigate')).toEqual([['library']])
+    } finally { nav.unmount() }
+  })
+
+  it('keeps changes under Monitoring and budget under Settings', () => {
+    for (const [current, selected] of [['changes', 'watches'], ['budget', 'settings']] as const) {
+      const nav = mount(AppNav, { props: { current } })
+      expect(nav.get('[aria-selected="true"]').attributes('id')).toBe(`tab-${selected}`)
+      nav.unmount()
+    }
   })
 })

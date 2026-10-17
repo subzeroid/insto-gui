@@ -7,7 +7,7 @@ const fields = (id: string, pk: string, at: number) => envelope('snapshot_fields
 
 const target = (pk: string, id: string, at: number) => ({ kind: 'target' as const, target_pk: pk, snapshot: snap(id, pk, at) })
 const snapshot = (id: string, pk: string, at: number) => ({ kind: 'snapshot' as const, snapshot: snap(id, pk, at) })
-const bare = { older: snap('1', '7', 1), newer: snap('2', '7', 2), changes: [{ field: 'follower_count', old: 1, new: 2 }], unknown_fields: [] }
+const bare = { older: snap('1', '7', 1), newer: snap('2', '7', 2), changes: [{ field: 'follower_count', old: 1, new: 2 }], unknown_fields: [], posts: null }
 const comparison = { kind: 'comparison' as const, ...bare }
 
 describe('history state', () => {

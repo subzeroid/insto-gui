@@ -5,6 +5,13 @@ import { t } from '../i18n'
 // dictionaries, so `error.` plus this closed set makes it impossible for a string
 // from the core to pick out a UI sentence and show it as an error nobody sent.
 export const ERROR_CODES = [
+  'daily_budget_reached',
+  'research_invalid',
+  'research_storage',
+  'research_corrupt',
+  'research_missing',
+  'research_limit',
+  'research_scope',
   'invalid_token_input',
   'invalid_token',
   'quota_exhausted',

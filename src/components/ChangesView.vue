@@ -33,7 +33,7 @@ function title(item: HistoryItem) {
     <article v-for="item in feed.items" :key="item.kind === 'comparison' || item.kind === 'incomplete' ? `${item.newer.id}-${item.older.id}` : item.snapshot.id" class="feed-item">
       <div class="stamp">{{ title(item) }} · PK {{ item.kind === 'comparison' || item.kind === 'incomplete' ? item.newer.target_pk : item.snapshot.target_pk }} · {{ item.kind === 'comparison' || item.kind === 'incomplete' ? `${localTime(item.older.captured_at)} → ${localTime(item.newer.captured_at)}` : localTime(item.snapshot.captured_at) }}</div>
       <template v-if="item.kind === 'comparison' || item.kind === 'incomplete'">
-        <ChangeList :changes="item.changes" :unknown-fields="item.unknown_fields" />
+        <ChangeList :changes="item.changes" :unknown-fields="item.unknown_fields" :posts="item.posts" />
       </template>
       <p v-else-if="item.kind === 'baseline'" class="fine-print">{{ t('changes.baseline_note') }}</p>
       <p v-else-if="item.kind === 'diagnostic'" class="fine-print">{{ item.code === 'history_oversized' ? t('changes.diagnostic_oversized') : t('changes.diagnostic_corrupt') }}</p>

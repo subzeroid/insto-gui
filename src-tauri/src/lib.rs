@@ -4,6 +4,7 @@ mod lifecycle;
 mod proof;
 #[cfg(feature = "app-proof")]
 mod proof_window;
+mod research;
 mod state;
 use state::DesktopState;
 use std::sync::Arc;
@@ -122,6 +123,7 @@ pub fn run() {
         None
     };
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::prepare_desktop,
             commands::inspect_setup,
@@ -150,7 +152,13 @@ pub fn run() {
             commands::select_home,
             commands::inspect_binding,
             commands::lookup_profile,
-            commands::lookup_activity
+            commands::lookup_activity,
+            commands::inspect_usage,
+            commands::configure_usage,
+            commands::research_list,
+            commands::research_save,
+            commands::research_delete,
+            commands::research_export
         ])
         .setup(move |app| {
             let bundle = app.path().resource_dir()?.join("runtime");
@@ -239,3 +247,6 @@ fn local_navigation(url: &tauri::Url) -> bool {
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod workbench_tests;

@@ -692,3 +692,97 @@ runtimes that day (0.1.1, 0.1.3-era and two local builds) the same way. On that 
 service log reads "no changes" for a watched account on every 300 s check since the core's
 stable picture hashes, where every check used to report an avatar change. Still not recorded:
 the *Open Anyway* path through System Settings on a first launch.
+
+## Research workbench local evidence — 2026-10-13
+
+Scope: macOS arm64 development build, still labeled 0.2.0 before the 0.3.0
+release version was set, using clean insto 0.7.25 commit
+`dcb082c1eb4792a56df93bc3787028d22311cd51`. No GitHub publication, real provider
+requests, live profile, Application Support replacement, or LaunchAgent changes
+were used. At the time of this proof the core commit was local; it was published
+on `subzeroid/insto`'s `feat/desktop-workbench` branch on 2026-10-17.
+
+Validation passed:
+
+- 313 Vitest tests across 36 files and the production TypeScript/Vite build.
+- 101 Rust host tests, six integration tests against the actual bundled Python
+  runtime, and 26 native application tests. These include shared cross-process
+  usage accounting, post-only comparisons, saved-check locking/bounds, native
+  export writes/cancellation, ACL validation, and cross-window profile isolation.
+- 147 Python packaging tests. A deterministic regression repairs a supervisor
+  race where a child's final pipe signal arrived between its last read and exit
+  observation.
+- Core: 2334 passed, two native-gated skips; 87.61% coverage. Ruff, formatting,
+  mypy, both Rust Clippy checks with warnings denied, and whitespace checks pass.
+
+Real-window proof `.build/native-app-workbench-04` used the final native source
+and completed in 51.247 seconds. Its fixed WebKit script exercised usage
+inspection, explicit save/list/reopen/delete and invalid export rejection, then
+reached `ui_ready` and drained. `passed`, `cleanup_confirmed`, and
+`app_group_cleaned` are true; app stderr is empty. The earlier `-01` and `-02`
+attempts remain failed evidence: sampling caught Darwin's per-file physical
+flush stalled in `F_FULLFSYNC`. POSIX inode flushes and one publication ordering
+barrier fixed that path; `-03` and final `-04` both passed.
+
+Browser checks covered saved-check reopening, comparison, the map and UTC
+heatmap, the budget cap, and 375×812/780×820 layouts without horizontal overflow
+or console errors. The standalone Russian comparison report has zero scripts
+and zero external resources. Screenshots and fixture report are retained under
+`.build/`; these are mock UI evidence, not provider-data evidence.
+
+The ordinary build was produced with
+`CI=true npm run tauri -- build --bundles app,dmg -- --locked` and is ad-hoc
+signed, without notarization. Deep strict signature verification and complete
+runtime inventory verification pass. The DMG checksum verifies; its read-only
+mount contains exactly one application, with the same executable and verified
+runtime as the built app. That mount was detached. The ordinary application
+rejects both developer proof arguments without creating the requested root.
+
+- Runtime build ID: `dd62c79eb371157d7f0d8e307abfa25c04bc06e16089e288adf42a0b728401b9`.
+- DMG SHA-256: `4b4faf92f7869a398bacb2c37dc18f82d388ffb22b182066a1fb1c95be7aa251`.
+- Executable SHA-256: `f385cd71e64133a82fc8cf150f30a6ec1d31502f82584a5461b885d32497affa`.
+- Bounded artifact evidence: `.build/workbench-artifact-verification.json`.
+- Installer: `src-tauri/target/release/bundle/dmg/insto_0.2.0_aarch64.dmg`.
+
+## Account-first interface and gradient identity — 2026-10-16
+
+Local macOS arm64 build, still labeled 0.2.0 before the 0.3.0 release version
+was set, using the same verified insto 0.7.25 runtime above. The hashes below
+identify this local build, not 0.3.0 release artifacts.
+Lookup is the initial configured screen; Monitoring groups accounts and changes,
+and Settings groups connection, request limit, and diagnostics. Profile-only
+and profile-plus-posts checks are explicit, with cost shown before dispatch.
+The original insto mark and native icon use an orange/pink/purple gradient.
+The scanner uses actual request stages and monotonic elapsed time, preserving
+both scope and clock when the view is reopened. Reduced motion disables the
+radar and scan line.
+
+Validation passed: 364 frontend tests across 37 files, TypeScript/Vite production
+build, 26 native Rust tests, 147 packaging tests, and whitespace verification.
+Read-only spec and quality reviews covered the admitted-request generations,
+private/saved guards, scoped navigation, and current-check save/export feedback.
+Browser tests used local mock IPC only. They covered both locales, profile-only
+and combined checks, scan remounts, offline saved reopening, analysis tabs with
+no added provider calls, failed posts preserving the profile, private-profile
+post skipping, reduced motion, and a 375×812 layout. Console errors: zero.
+Updated README screenshots show mock data.
+
+The isolated real-window proof `.build/native-app-gradient-01` passed in
+36.116 seconds, reached `ui_ready`, and drained. Cleanup and owned-process-group
+cleanup were confirmed, with empty app stderr. The ordinary application rejects
+developer proof arguments before startup. The ordinary app and DMG were built,
+the complete runtime inventory and deep strict ad-hoc signature were verified,
+and the DMG checksum passed. Its read-only mount contained the matching verified
+application and icon; the mount was detached. The build is not notarized and
+has not been published.
+
+- Runtime build ID: `dd62c79eb371157d7f0d8e307abfa25c04bc06e16089e288adf42a0b728401b9`.
+- DMG SHA-256: `b0aa7242154069eaf072b68ce36071b46a27a38a6ca27e091cfaabb6671e83c1`.
+- Executable SHA-256: `1ef429d6238853fa27d73eb14348cab81670e5f28f50d0cab2eea8cb529d764a`.
+- Browser and bundle evidence: `.build/branding-qa-20261016/`.
+
+Installed the verified build at `/Applications/insto.app`, with the previous app
+retained at `.build/local-install-20261016T012608Z-shmdgypx/insto.app`. Application
+Support data was retained. The installed executable matches the verified bundle.
+The launched app has an on-screen window, and the existing published runtime
+matches all 3138 inventory entries in the bundled manifest.

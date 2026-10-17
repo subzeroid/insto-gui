@@ -399,18 +399,36 @@ pub(crate) mod tests {
     async fn stream_overflow_is_immediate_not_deadline_capture() {
         let _lock = FIXTURE_LOCK.lock().await;
         for stream in ["stdout", "stderr"] {
-            let fixture=Fixture::new(&format!("sys.{stream}.write('SECRET_SENTINEL'*200000)\nsys.{stream}.flush()\ntime.sleep(30)"));
+            // Measure overflow handling after the interpreter is ready. Cold
+            // startup is unrelated to whether a full pipe is bounded promptly.
+            let fixture = Fixture::new(&format!("open('ready','w').close()\nwhile not os.path.exists('release'): time.sleep(.001)\nsys.{stream}.write('SECRET_SENTINEL'*200000)\nsys.{stream}.flush()\ntime.sleep(30)"));
+            let launcher = fixture.launcher.clone();
             let (_tx, rx) = watch::channel(false);
-            let start = Instant::now();
-            let result = run(
-                &fixture.launcher,
-                Operation::CredentialsReplace {
-                    token: "TOKEN_SENTINEL".into(),
+            let mut call = tokio::spawn(async move {
+                run(
+                    &launcher,
+                    Operation::CredentialsReplace {
+                        token: "TOKEN_SENTINEL".into(),
+                    },
+                    Instant::now() + Duration::from_secs(10),
+                    rx,
+                )
+                .await
+            });
+            let ready = async {
+                while !fixture._dir.path().join("ready").exists() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            };
+            tokio::select! {
+                _ = tokio::time::timeout(Duration::from_secs(5), ready) => {
+                    assert!(fixture._dir.path().join("ready").exists(), "fixture did not become ready");
                 },
-                start + Duration::from_secs(5),
-                rx,
-            )
-            .await;
+                result = &mut call => panic!("child ended before overflow release: {result:?}"),
+            }
+            let start = Instant::now();
+            std::fs::write(fixture._dir.path().join("release"), "").unwrap();
+            let result = call.await.unwrap();
             assert_eq!(result.unwrap_err(), HostError::OutcomeUnknown);
             assert!(start.elapsed() < Duration::from_secs(2));
         }

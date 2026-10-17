@@ -1,5 +1,5 @@
 use super::{
-    filesystem::{check, metadata, same, Dir, Ownership},
+    filesystem::{check, metadata, publication_barrier, same, sync, Dir, Ownership},
     inventory,
     manifest::{Manifest, MAX_MANIFEST_BYTES},
     Result, RuntimeError,
@@ -266,10 +266,11 @@ fn prepare(bundle: &Path, root: &Path, home: &Path, deadline: Instant) -> Result
         inventory::copy(&source.child("python")?, &python, &manifest.files, deadline)?;
         let mut file = wrapper.create("manifest.json")?;
         file.write_all(&raw).map_err(|_| RuntimeError::Storage)?;
-        file.sync_all().map_err(|_| RuntimeError::Storage)?;
-        wrapper.sync()?;
-        runtimes.sync()?;
-        root_dir.sync()?;
+        sync(&file, deadline)?;
+        wrapper.sync(deadline)?;
+        runtimes.sync(deadline)?;
+        root_dir.sync(deadline)?;
+        publication_barrier(&file, deadline)?;
     }
     let candidate = Candidate {
         _lock: held,
@@ -317,7 +318,7 @@ fn finish(candidate: Candidate) -> Result<PublishedRuntime> {
         {
             return Err(RuntimeError::Storage);
         }
-        candidate.runtimes.sync()?;
+        candidate.runtimes.sync(candidate.deadline)?;
     }
     check(candidate.deadline)?;
     let python = candidate

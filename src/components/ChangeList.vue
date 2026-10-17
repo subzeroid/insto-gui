@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { Change } from '../desktop/dto'
-import { describeValue, fieldLabel } from '../desktop/format'
+import { describeValue, fieldLabel, formatCount } from '../desktop/format'
 import { t } from '../i18n'
-defineProps<{ changes: Change[]; unknownFields: string[] }>()
+defineProps<{ changes: Change[]; unknownFields: string[]; posts?: { added: string[]; window_full: boolean } | null }>()
 // The core reports pictures as opaque hashes: two of them side by side tell a
 // person nothing, so a picture change is named rather than spelled out.
 const MEDIA = new Set(['avatar', 'banner'])
@@ -17,4 +17,12 @@ function mediaChange(change: Change): string {
     <div v-for="change in changes" :key="change.field"><dt>{{ fieldLabel(change.field) }}</dt><dd v-if="MEDIA.has(change.field)"><span class="new">{{ mediaChange(change) }}</span></dd><dd v-else><span class="old">{{ describeValue(change.old) }}</span> → <span class="new">{{ describeValue(change.new) }}</span></dd></div>
   </dl>
   <p v-if="unknownFields.length" class="fine-print">{{ t('changes.unknown_fields', { fields: unknownFields.map(fieldLabel).join(', ') }) }}</p>
+  <section v-if="posts && posts.added.length" class="post-delta" data-block="new-posts">
+    <p>{{ t('changes.new_posts', { count: formatCount(posts.added.length) }) }}</p>
+    <p class="fine-print">{{ t('changes.post_ids') }} {{ posts.added.join(', ') }}</p>
+    <p v-if="posts.window_full" class="fine-print">{{ t('changes.window_full') }}</p>
+  </section>
 </template>
+<style scoped>
+.post-delta { overflow-wrap: anywhere; }
+</style>

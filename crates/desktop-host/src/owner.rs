@@ -315,7 +315,9 @@ mod tests {
     async fn shutdown_preserves_original_mutation_deadline_and_never_replays() {
         let _lock = crate::process::tests::FIXTURE_LOCK.lock().await;
         let f = Fixture::shell("printf 1 >> started\nsleep 30");
-        const MUTATION: Duration = Duration::from_secs(3);
+        // Keep the renewed-clock rejection (1.25 vs 1.5 budgets) while leaving
+        // enough startup and scheduling slack on a busy macOS host.
+        const MUTATION: Duration = Duration::from_secs(6);
         let owner = Owner::with_policy(
             f.launcher.clone(),
             Policy {
