@@ -42,9 +42,9 @@ describe('translation', () => {
     try {
       expect(currentLocale()).toBe('ru')
       expect(localeTag()).toBe('ru-RU')
-      expect(t('nav.watches')).toBe('Наблюдения')
+      expect(t('nav.watches')).toBe('Наблюдение')
     } finally { setLocale('en') }
-    expect(t('nav.watches')).toBe('Watches')
+    expect(t('nav.watches')).toBe('Monitoring')
   })
 })
 

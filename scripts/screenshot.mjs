@@ -9,12 +9,10 @@ const url = process.argv[2] ?? "http://127.0.0.1:1420/?mock=1&lang=en";
 const out = process.argv[3] ?? "docs/screenshot.png";
 const width = Number(process.argv[4] ?? 1200);
 const height = Number(process.argv[5] ?? 800);
-// The saved comparison of the selected account: the last thing the watches view
-// paints, so waiting for it means every read behind it has already landed.
-const readySelector = process.argv[6] ?? ".snapshot-history .changes";
-// Selecting a watch is what opens that comparison; the list is keyboard- and
-// click-driven, so the picture needs the same click a user would make.
-const selectSelector = process.argv[7] ?? ".watch-list [role='option']";
+// The account-first start screen is the configured app's initial view. Optional
+// selectors still support capturing another screen through a user action.
+const readySelector = process.argv[6] ?? ".lookup-form";
+const selectSelector = process.argv[7] ?? "-";
 const extension = extname(out) || ".png";
 const temporaryOut = join(
   dirname(out),

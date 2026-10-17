@@ -133,6 +133,27 @@ class OwnedChildTests(unittest.TestCase):
         child.wait_for_line(lambda line: line == b"close", time.monotonic() + 5)
         self.assertEqual(child.finish(time.monotonic() + 5).returncode, 0)
 
+    def test_signal_written_between_last_read_and_exit_observation_is_drained(self):
+        child = self.start("print('ready',flush=True)")
+        deadline = time.monotonic() + 5
+        while child.observe_exit() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(child.observe_exit(), 0)
+        original_read = child._read
+        reads = 0
+
+        def delayed_read():
+            nonlocal reads
+            reads += 1
+            if reads > 1:
+                original_read()
+
+        with patch.object(child, "_read", side_effect=delayed_read):
+            self.assertEqual(
+                child.wait_for_line(lambda line: line == b"ready", deadline), b"ready"
+            )
+        self.assertEqual(child.finish(deadline).returncode, 0)
+
     def test_missing_waitid_refuses_before_spawn(self):
         with (
             patch("scripts.proof_process.os.waitid", None),

@@ -199,7 +199,7 @@ describe('mock desktop', () => {
     expect(Object.hasOwn(found.fields, 'avatar')).toBe(false)
     expect(found.unknown_fields).toEqual([])
     // A lookup costs paid requests, so the demo quota moves.
-    expect(found.quota_remaining).toBe(before - 2)
+    expect(found.quota_remaining).toBe(before - 1)
     const activity = await desktop.lookupActivity(found.target_pk, 30)
     expect(activity.window).toBe(30)
     expect(activity.analyzed).toBe(30)
@@ -214,7 +214,7 @@ describe('mock desktop', () => {
     expect(activity.locations.length).toBeGreaterThan(0)
     expect(activity.likes.top_posts).toHaveLength(5)
     expect(activity.likes.total).toBeGreaterThan(0)
-    expect(activity.quota_remaining).toBe(before - 3)
+    expect(activity.quota_remaining).toBe(before - 2)
     // The same window twice is the same picture.
     expect(await desktop.lookupActivity(found.target_pk, 30)).toMatchObject({ analyzed: 30, geo: activity.geo })
   })

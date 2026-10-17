@@ -591,3 +591,93 @@ pub async fn inspect_binding(
     // failed core inspection, and it must not spend one of the host's two read slots.
     state.binding().map(BindingReport::from)
 }
+
+#[tauri::command]
+pub async fn inspect_usage(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    no_arguments(request)?;
+    state.execute(Operation::UsageInspect).await
+}
+#[tauri::command]
+pub async fn configure_usage(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Response, &'static str> {
+    let budget: serde_json::Value = argument(request, "budget", "invalid_params")?;
+    let object = budget
+        .as_object()
+        .filter(|m| m.len() == 1)
+        .ok_or("invalid_params")?;
+    let value = object.get("daily_limit").ok_or("invalid_params")?;
+    let daily_limit = if value.is_null() {
+        None
+    } else {
+        Some(value.as_u64().ok_or("invalid_params")?)
+    };
+    state
+        .execute(checked(
+            Operation::UsageConfigure { daily_limit },
+            "invalid_params",
+        )?)
+        .await
+}
+#[tauri::command]
+pub async fn research_list(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Vec<insto_desktop_host::research::SavedCheck>, &'static str> {
+    no_arguments(request)?;
+    let (root, scope) = state.research_location()?;
+    tauri::async_runtime::spawn_blocking(move || insto_desktop_host::research::list(&root, &scope))
+        .await
+        .map_err(|_| "research_storage")?
+}
+#[tauri::command]
+pub async fn research_save(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<insto_desktop_host::research::SavedCheck, &'static str> {
+    let input: insto_desktop_host::research::SaveInput =
+        argument(request, "check", "research_invalid")?;
+    let (root, scope) = state.research_location()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        insto_desktop_host::research::save(&root, &scope, input)
+    })
+    .await
+    .map_err(|_| "research_storage")?
+}
+#[tauri::command]
+pub async fn research_delete(
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<bool, &'static str> {
+    let id: String = argument(request, "id", "research_invalid")?;
+    let (root, scope) = state.research_location()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        insto_desktop_host::research::delete(&root, &scope, &id)
+    })
+    .await
+    .map_err(|_| "research_storage")?
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportInput {
+    filename: String,
+    contents: String,
+}
+#[tauri::command]
+pub async fn research_export<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: tauri::State<'_, Arc<DesktopState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<bool, &'static str> {
+    state.check_open()?;
+    let tauri::ipc::InvokeBody::Json(value) = request.body() else {
+        return Err("research_invalid");
+    };
+    let input: ExportInput =
+        serde_json::from_value(value.clone()).map_err(|_| "research_invalid")?;
+    crate::research::export(app, input.filename, input.contents).await
+}

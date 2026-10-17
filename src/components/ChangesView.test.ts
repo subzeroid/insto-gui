@@ -10,8 +10,8 @@ describe('changes feed', () => {
   it('labels baselines, comparisons, incomplete and diagnostic entries and continues empty pages', async () => {
     const invoke = vi.fn()
       .mockResolvedValueOnce(envelope('history_page', page([
-        { kind: 'incomplete', older: snap('3', '7', 3), newer: snap('4', '7', 4), changes: [], unknown_fields: ['full_name'] },
-        { kind: 'comparison', older: snap('2', '7', 2), newer: snap('3', '7', 3), changes: [{ field: 'follower_count', old: 10, new: 12 }, { field: 'biography', old: 'a <b>x</b>', new: 'https://example.com/y' }], unknown_fields: [] },
+        { kind: 'incomplete', older: snap('3', '7', 3), newer: snap('4', '7', 4), changes: [], unknown_fields: ['full_name'], posts: null },
+        { kind: 'comparison', older: snap('2', '7', 2), newer: snap('3', '7', 3), changes: [{ field: 'follower_count', old: 10, new: 12 }, { field: 'biography', old: 'a <b>x</b>', new: 'https://example.com/y' }], unknown_fields: [], posts: null },
         { kind: 'diagnostic', snapshot: snap('2', '8', 2), code: 'history_corrupt' },
         { kind: 'baseline', snapshot: snap('1', '7', 1) },
       ], 'next', 1500)))

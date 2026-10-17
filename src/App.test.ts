@@ -6,6 +6,9 @@ import { current, envelope, facts, foreign, homeAdoptable, overview, page, profi
 import type { ServiceFacts } from './desktop/client'
 import { t } from './i18n'
 
+// These tests isolate setup/service orchestration; BudgetPanel has its own contract tests.
+vi.mock('./components/BudgetPanel.vue', () => ({ default: { template: '<section />' } }))
+
 const prepared = { core_version: CORE_VERSION, build_id: 'a'.repeat(64) }
 const empty: Profile = { configured: false, status: 'unconfigured', desired_service: null, service_running: false, quota_remaining: null, quota_checked_at: null, revision: null }
 const stopped: Profile = { configured: true, status: 'stopped', desired_service: 'stopped', service_running: false, quota_remaining: 10, quota_checked_at: 100, revision: 'a'.repeat(32) }
@@ -17,7 +20,27 @@ const adoptedBinding = { state: 'adopted', home: '/Users/x/.insto' }
 let wrapper: VueWrapper | undefined
 afterEach(() => { wrapper?.unmount(); wrapper = undefined })
 
+async function openService() {
+  await wrapper!.get('#tab-settings').trigger('click'); await flushPromises()
+  await wrapper!.get('#tab-service').trigger('click'); await flushPromises()
+}
+async function openChanges() {
+  await wrapper!.get('#tab-watches').trigger('click'); await flushPromises()
+  await wrapper!.get('#tab-changes').trigger('click'); await flushPromises()
+}
+
+
 describe('application integration', () => {
+  it('starts a configured window on the account check without issuing paid requests', async () => {
+    const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(stopped))
+      .mockResolvedValueOnce(ownBinding).mockResolvedValueOnce(inspection(current))
+      .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
+    wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
+    expect(wrapper.find('#panel-lookup').exists()).toBe(true)
+    expect(wrapper.find('#panel-watches').exists()).toBe(false)
+    expect(wrapper.get('.app-nav [aria-selected="true"]').attributes('id')).toBe('tab-lookup')
+    expect(invoke.mock.calls.some(([name]) => name.startsWith('lookup_'))).toBe(false)
+  })
   it('starts read-only with the setup screen and no monitoring reads', async () => {
     const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(empty))
     wrapper = mount(App, { props: { invokeCommand: invoke } })
@@ -31,17 +54,17 @@ describe('application integration', () => {
     expect(wrapper.find('#panel-lookup').exists()).toBe(false)
     expect(invoke.mock.calls.map(call => call[0])).toEqual(['prepare_desktop', 'inspect_setup', 'inspect_binding'])
   })
-  it('a configured profile lands on the watches section with the empty call to action and polls the overview', async () => {
+  it('a configured profile lands on Lookup and monitoring keeps its local overview poll', async () => {
     const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(stopped))
       .mockResolvedValueOnce(ownBinding).mockResolvedValueOnce(inspection(current))
       .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
-    expect(wrapper.text()).toContain('Add an account')
+    expect(wrapper.get('#panel-lookup').text()).toContain(t('lookup.title'))
     expect(invoke.mock.calls.slice(0, 5).map(call => call[0])).toEqual(['prepare_desktop', 'inspect_setup', 'inspect_binding', 'inspect_service', 'read_overview'])
     const tabs = wrapper.findAll('.app-nav button')
-    expect(tabs.map(tab => tab.text())).toEqual(['Watches', 'Changes', 'Lookup', 'Service', 'Settings'])
+    expect(tabs.map(tab => tab.text())).toEqual(['Lookup', 'Monitoring', 'Saved', 'Settings'])
     invoke.mockResolvedValueOnce(envelope('history_page', { items: [], next_cursor: null, scan_complete: true, scanned: 0 }))
-    await wrapper.get('#tab-changes').trigger('click'); await flushPromises()
+    await openChanges()
     expect(invoke.mock.calls.at(-1)?.[0]).toBe('list_changes')
     // Lookup pays only on a click: opening it issues nothing but the poll that
     // was running anyway.
@@ -49,7 +72,7 @@ describe('application integration', () => {
     await wrapper.get('#tab-lookup').trigger('click'); await flushPromises()
     expect(wrapper.get('#panel-lookup').text()).toContain('Look up an account')
     expect(invoke.mock.calls.slice(before).every(call => call[0] === 'read_overview')).toBe(true)
-    await wrapper.get('#tab-service').trigger('click'); await flushPromises()
+    await openService()
     expect(wrapper.text()).toContain('The service is stopped'); expect(wrapper.text()).toContain('Observed state')
     await wrapper.get('#tab-settings').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('Replace the token')
@@ -71,7 +94,7 @@ describe('application integration', () => {
     expect(wrapper.html()).not.toContain('TOKEN_SENTINEL'); expect(wrapper.html()).not.toContain('/private/secret')
     expect(wrapper.find('[role="alert"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('A repair is needed') // landed on the service section, recovery visible
-    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Service')
+    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Settings')
     expect(invoke.mock.calls.slice(0, 7).map(call => call[0])).toEqual(['prepare_desktop', 'inspect_setup', 'inspect_binding', 'configure_setup', 'inspect_setup', 'read_overview', 'inspect_service'])
   })
   it('opening the changes section loads the global feed with no filter', async () => {
@@ -80,7 +103,7 @@ describe('application integration', () => {
       .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
     invoke.mockResolvedValueOnce(envelope('history_page', { items: [], next_cursor: null, scan_complete: true, scanned: 0 }))
-    await wrapper.get('#tab-changes').trigger('click'); await flushPromises()
+    await openChanges()
     expect(invoke.mock.calls.at(-1)).toEqual(['list_changes', { query: {} }])
     expect(wrapper.find('button[data-action="clear-filter"]').exists()).toBe(false)
   })
@@ -93,9 +116,10 @@ describe('application integration', () => {
       .mockResolvedValueOnce(envelope('history_page', page([]))).mockResolvedValueOnce(envelope('history_page', page([])))
       .mockResolvedValue(envelope('overview', overview))
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
+    await wrapper.get('#tab-watches').trigger('click'); await flushPromises()
     await wrapper.get('[role="option"]').trigger('click'); await flushPromises()
     await wrapper.get('button[data-action="changes"]').trigger('click'); await flushPromises()
-    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Changes')
+    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Monitoring')
     expect(wrapper.text()).toContain('PK 7')
     expect(invoke.mock.calls.at(-1)).toEqual(['list_changes', { query: { target_pk: '7' } }])
     await wrapper.get('button[data-action="clear-filter"]').trigger('click'); await flushPromises()
@@ -112,7 +136,7 @@ describe('application integration', () => {
       .mockResolvedValueOnce(ownBinding).mockResolvedValueOnce(inspection(current))
       .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
-    await wrapper.get('#tab-service').trigger('click'); await flushPromises()
+    await openService()
     invoke.mockRejectedValueOnce('transport')
     await wrapper.findAll('button').find(button => button.text() === 'Refresh')!.trigger('click'); await flushPromises()
     expect(invoke.mock.calls.at(-1)?.[0]).toBe('inspect_setup')
@@ -130,14 +154,14 @@ describe('application integration', () => {
       .mockResolvedValueOnce(ownBinding).mockResolvedValueOnce(inspection(current))
       .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
-    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Service')
+    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Settings')
     expect(wrapper.find('button[data-action="open-service"]').exists()).toBe(false)
     await wrapper.get('#tab-settings').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('The service needs attention')
     expect(wrapper.get('button[data-action="replace"]').attributes('disabled')).toBeDefined() // recovery guards token replacement
     expect(wrapper.get('button[data-action="uninstall"]').attributes('disabled')).toBeDefined() // and service removal
     await wrapper.get('button[data-action="open-service"]').trigger('click'); await flushPromises()
-    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Service')
+    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Settings')
     expect(wrapper.text()).toContain('A repair is needed')
   })
   it('a service action is followed by one overview read', async () => {
@@ -146,7 +170,7 @@ describe('application integration', () => {
       .mockResolvedValueOnce(ownBinding).mockResolvedValueOnce(inspection(current)).mockResolvedValueOnce(envelope('overview', { ...overview, watches: [] }))
       .mockResolvedValueOnce(wrap(running)).mockResolvedValueOnce(inspection(current)).mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
-    await wrapper.get('#tab-service').trigger('click'); await flushPromises()
+    await openService()
     await wrapper.get('button[data-action="start"]').trigger('click'); await flushPromises()
     expect(invoke.mock.calls.map(call => call[0])).toEqual(['prepare_desktop', 'inspect_setup', 'inspect_binding', 'inspect_service', 'read_overview', 'start_service', 'inspect_service', 'read_overview'])
     expect(wrapper.text()).toContain('The service is running')
@@ -219,7 +243,7 @@ describe('application integration', () => {
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
     expect(wrapper.text()).toContain('The app restored nothing')
     expect(wrapper.text()).not.toContain('The previous registration was restored')
-    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Service')
+    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Settings')
   })
   it('an unconfigured profile reads the binding but not the registration facts', async () => {
     const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(empty)).mockResolvedValueOnce(ownBinding)
@@ -275,6 +299,7 @@ describe('application integration', () => {
       .mockResolvedValueOnce(envelope('history_page', page([{ kind: 'snapshot', snapshot: snap('1', '7', 1) }])))
       .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
+    await wrapper.get('#tab-watches').trigger('click'); await flushPromises()
     await wrapper.get('[role="option"]').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('PK 7')
     invoke.mockResolvedValueOnce(envelope('home_inspection', homeAdoptable))
@@ -288,9 +313,9 @@ describe('application integration', () => {
     await wrapper.get('button[data-action="adopt-home"]').trigger('click')
     await wrapper.get('button[data-action="confirm-adopt"]').trigger('click'); await flushPromises()
     // Nothing from the previous home is on screen or in the state.
-    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Watches')
+    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Lookup')
     expect(wrapper.text()).not.toContain('PK 7')
-    expect(wrapper.text()).toContain('Add an account')
+    expect(wrapper.text()).toContain(t('lookup.title'))
   })
   it('an uncertain selection re-reads the binding and re-initializes instead of resuming polling', async () => {
     const invoke = vi.fn().mockResolvedValueOnce(prepared).mockResolvedValueOnce(wrap(stopped))
@@ -346,7 +371,7 @@ describe('application integration', () => {
       .mockResolvedValueOnce(adoptedBinding).mockResolvedValueOnce(inspection(facts))
       .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
-    await wrapper.get('#tab-service').trigger('click'); await flushPromises()
+    await openService()
     await wrapper.get('button[data-action="migrate-service"]').trigger('click')
     expect(invoke.mock.calls.map(call => call[0])).not.toContain('migrate_service')
     invoke.mockResolvedValueOnce(wrap(runningProfile)).mockResolvedValueOnce(inspection(current))
@@ -360,7 +385,7 @@ describe('application integration', () => {
       .mockResolvedValueOnce(ownBinding).mockResolvedValueOnce(inspection(foreign))
       .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
-    await wrapper.get('#tab-service').trigger('click'); await flushPromises()
+    await openService()
     for (const action of ['start', 'stop', 'repair']) expect(wrapper.get(`button[data-action="${action}"]`).attributes('disabled')).toBeDefined()
     expect(wrapper.find('button[data-action="migrate-service"]').exists()).toBe(false)
     await wrapper.get('#tab-settings').trigger('click'); await flushPromises()
@@ -401,7 +426,7 @@ describe('application integration', () => {
     await wrapper.get('[data-action="watch"]').trigger('click'); await flushPromises()
     // The watch now exists, and the window is where it lives, with it selected.
     expect(invoke.mock.calls.some(call => call[0] === 'add_watch')).toBe(true)
-    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Watches')
+    expect(wrapper.get('.app-nav button[aria-selected="true"]').text()).toBe('Monitoring')
     expect(wrapper.get('.watch-row.selected').text()).toContain('bob')
     // Coming back shows the same answer; nothing was paid for twice.
     await wrapper.get('#tab-lookup').trigger('click'); await flushPromises()
@@ -415,11 +440,11 @@ describe('application integration', () => {
       .mockResolvedValue(envelope('overview', { ...overview, watches: [] }))
     wrapper = mount(App, { props: { invokeCommand: invoke } }); await flushPromises()
     const panel = wrapper.find('[role="tabpanel"]')
-    expect(panel.attributes('id')).toBe('panel-watches')
-    expect(panel.attributes('aria-labelledby')).toBe('tab-watches')
-    const sections = ['watches', 'changes', 'lookup', 'service', 'settings']
+    expect(panel.attributes('id')).toBe('panel-lookup')
+    expect(panel.attributes('aria-labelledby')).toBe('tab-lookup')
+    const sections = ['watches', 'lookup', 'library', 'settings']
     for (const name of sections) {
-      if (name === 'changes') invoke.mockResolvedValueOnce(envelope('history_page', { items: [], next_cursor: null, scan_complete: true, scanned: 0 }))
+      if (name === 'library') invoke.mockResolvedValueOnce([])
       await wrapper.get(`#tab-${name}`).trigger('click'); await flushPromises()
       const open = wrapper.get('[role="tabpanel"]')
       expect(open.attributes('id'), name).toBe(`panel-${name}`)
@@ -427,7 +452,7 @@ describe('application integration', () => {
     }
     // On the service section, a stale setup puts the global banner's control beside
     // the section's own: two buttons whose visible word is the same "Refresh".
-    await wrapper.get('#tab-service').trigger('click'); await flushPromises()
+    await openService()
     invoke.mockRejectedValueOnce('transport')
     await wrapper.get('button[data-action="refresh-service"]').trigger('click'); await flushPromises()
     const labels = wrapper.findAll('button').filter(button => button.text() === 'Refresh').map(button => button.attributes('aria-label'))

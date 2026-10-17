@@ -74,6 +74,27 @@
     }
     const response = await call('inspect_setup', {});
     check(response.kind === 'profile' && response.data.status === 'unconfigured' && response.data.configured === false && response.data.service_running === false, 'profile');
+    // Exercise the workbench boundary through the actual WKWebView IPC. All
+    // values are fixed offline fixtures; no provider call or save panel opens.
+    const usage = await call('inspect_usage', {});
+    check(usage.kind === 'usage' && usage.data.used === 0 && usage.data.daily_limit === null, 'ipc');
+    check(Array.isArray(await call('research_list', {})), 'ipc');
+    const saved = await call('research_save', { check: {
+      username: 'alice', target_pk: '7', captured_at: 1700000000,
+      profile: { target_pk: '7', access: 'public', fields: {},
+        unknown_fields: ['username','full_name','biography','external_url','is_verified','is_business','is_private','follower_count','following_count','media_count','public_email','public_phone','business_category'], quota_remaining: null },
+      activity: null,
+    } });
+    check(saved.username === 'alice' && /^[a-f0-9]{32}$/.test(saved.id), 'ipc');
+    const reopened = await call('research_list', {});
+    check(reopened.length === 1 && reopened[0].id === saved.id && reopened[0].captured_at === 1700000000, 'ipc');
+    check(await call('research_delete', { id: saved.id }) === true, 'ipc');
+    check((await call('research_list', {})).length === 0, 'ipc');
+    let exportRejected = false;
+    try { await call('research_export', { filename: '../outside.html', contents: 'fixture' }); }
+    catch (error) { exportRejected = error === 'research_invalid'; }
+    check(exportRejected, 'ipc');
+
   };
   // Leg (a): the application migrated its own registration at startup, with no
   // gesture from this script. Everything here only reads the result.
@@ -84,6 +105,7 @@
     check(moved.data.interpreter_exists === true && moved.data.settings === 'matching', 'profile');
     const profile = await call('inspect_setup', {});
     check(profile.kind === 'profile' && profile.data.configured === true && profile.data.service_running === true, 'profile');
+    await press('#tab-settings', end);
     await press('#tab-service', end);
     await until(() => document.querySelector('.registration-facts'), 'timeout', end);
     check(!document.querySelector('[data-action="migrate-service"]'), 'form');
@@ -108,6 +130,7 @@
     check(bound.state === 'adopted' && bound.home === home, 'profile');
     const before = await facts();
     check(before.kind === 'service_inspection' && before.data.registration === 'owned' && before.data.interpreter === 'other', 'profile');
+    await press('#tab-settings', end);
     await press('#tab-service', end);
     await press('[data-action="migrate-service"]', end);
     await press('[data-action="confirm-takeover"]', end);

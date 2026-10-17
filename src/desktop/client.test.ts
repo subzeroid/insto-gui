@@ -1,8 +1,26 @@
 import { describe, expect, it, vi } from 'vitest'
 import { CORE_VERSION, DesktopClient, HOME_PATH_LIMIT, LOOKUP_SLOTS, RESPONSE_PATH_LIMIT, validHomePath, type Profile } from './client'
 import { adoptedBinding, adoptedProfile, facts, homeAdoptable, running, serviceOwnedOther } from './fixtures'
+import { createLookupState } from './lookup'
 
 export const unconfigured: Profile = { configured: false, status: 'unconfigured', desired_service: null, service_running: false, quota_remaining: null, quota_checked_at: null, revision: null }
+const found = (username = 'alice', targetPk = '7') => ({
+  target_pk: targetPk, access: 'public',
+  fields: {
+    username, full_name: null, biography: null, external_url: null,
+    is_verified: false, is_business: false, is_private: false,
+    follower_count: 0, following_count: 0, media_count: 0,
+    public_email: null, public_phone: null, business_category: null,
+  },
+  unknown_fields: [], quota_remaining: 4211,
+})
+const deferred = <T>() => {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
+}
+const tick = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
 
 describe('desktop boundary', () => {
   it('uses only named commands and sends credentials only in the credential argument', async () => {
@@ -81,7 +99,7 @@ describe('desktop boundary', () => {
     const analysed = {
       target_pk: '17841400000000001', window: 12, analyzed: 0,
       geo: { geotagged: 0, anchor: null, centroid: null, radius_km: null, places: [] },
-      timeline: { hour_of_day: Array.from({ length: 24 }, () => 0), day_of_week: Array.from({ length: 7 }, () => 0), first_post_at: null, last_post_at: null },
+      timeline: { hour_of_day: Array.from({ length: 24 }, () => 0), day_of_week: Array.from({ length: 7 }, () => 0), weekday_hours: Array.from({ length: 7 }, () => Array(24).fill(0)), first_post_at: null, last_post_at: null },
       hashtags: [], mentions: [], locations: [],
       likes: { total: 0, average: 0, top_posts: [] }, quota_remaining: 4210,
     }
@@ -114,7 +132,7 @@ describe('desktop boundary', () => {
       expect(failing).toHaveBeenCalledTimes(2)
     }
   })
-  it('keeps a paid lookup off the storage-read slots and sends only one at a time', async () => {
+  it('refuses competing paid lookups immediately without delaying storage reads or replaying intent', async () => {
     const overview = { configured: true, desired_service: 'running', service_state: 'running', quota_remaining: 8, quota_checked_at: 100, watches: [], next_cursor: null }
     const found = {
       target_pk: '7', access: 'public',
@@ -134,16 +152,84 @@ describe('desktop boundary', () => {
     })
     const client = new DesktopClient(invoke)
     const first = client.lookupProfile('alice')
-    // A second lookup is not sent at all while the first is out: one permit.
-    const second = client.lookupProfile('bob')
+    // Both paid kinds use one permit. Refused requests are never queued for a
+    // later home or dispatched after the caller has already forgotten them.
+    let secondFailure: unknown, activityFailure: unknown
+    const second = client.lookupProfile('bob').catch(error => { secondFailure = error; return error })
+    const activity = client.lookupActivity('7', 12).catch(error => { activityFailure = error; return error })
     // The overview poll shares no permit with it and answers straight away.
     expect((await client.overview()).configured).toBe(true)
+    await tick()
+    expect(secondFailure).toMatchObject({ code: 'busy' })
+    expect(activityFailure).toMatchObject({ code: 'busy' })
     expect(invoke.mock.calls.map(call => call[0])).toEqual(['lookup_profile', 'read_overview'])
     release!()
     expect((await first).target_pk).toBe('7')
-    expect((await second).target_pk).toBe('7')
+    await Promise.all([second, activity])
+    expect(invoke.mock.calls.map(call => call[0])).toEqual(['lookup_profile', 'read_overview'])
+    // A fresh explicit request is accepted once the actual invoke has settled.
+    expect((await client.lookupProfile('bob')).target_pk).toBe('7')
     expect(invoke.mock.calls.map(call => call[0])).toEqual(['lookup_profile', 'read_overview', 'lookup_profile'])
     expect(LOOKUP_SLOTS).toBe(1)
+  })
+
+  it('does not dispatch a cleared paid intent under a later home after the previous transport settles', async () => {
+    const pending = deferred<unknown>()
+    let home = 'A'
+    const dispatched: { home: string; command: string; args: unknown }[] = []
+    const invoke = vi.fn((command: string, args?: Record<string, unknown>) => {
+      dispatched.push({ home, command, args })
+      if (dispatched.length === 1) return pending.promise
+      return Promise.resolve({ kind: 'lookup_profile', data: found('carol', '9') })
+    })
+    const lookup = createLookupState(new DesktopClient(invoke))
+    const alice = lookup.check('alice', true)
+    lookup.clear()
+    home = 'B'
+    const bob = lookup.check('bob', true)
+    await tick()
+    const bobFailure = lookup.state.profile.error?.code
+    const bobSpent = lookup.state.profile.spent
+    lookup.clear()
+    home = 'C'
+    pending.resolve({ kind: 'lookup_profile', data: found() })
+    expect(await alice).toBe(false)
+    expect(await bob).toBe(false)
+    expect(dispatched).toEqual([
+      { home: 'A', command: 'lookup_profile', args: { lookup: { username: 'alice' } } },
+    ])
+    expect(bobFailure).toBe('busy')
+    expect(bobSpent).toBe(false)
+    expect(lookup.state.username).toBeNull()
+    expect(lookup.state.profile.value).toBeNull()
+    expect(lookup.state.activity.value).toBeNull()
+    expect(await lookup.check('carol', false)).toBe(true)
+    expect(dispatched).toEqual([
+      { home: 'A', command: 'lookup_profile', args: { lookup: { username: 'alice' } } },
+      { home: 'C', command: 'lookup_profile', args: { lookup: { username: 'carol' } } },
+    ])
+    expect(lookup.state.username).toBe('carol')
+    expect(lookup.state.profile.value?.target_pk).toBe('9')
+  })
+
+  it.each(['rejected', 'malformed envelope', 'malformed payload'] as const)('releases the paid permit after a %s response', async (outcome) => {
+    const pending = deferred<unknown>()
+    const invoke = vi.fn().mockReturnValueOnce(pending.promise).mockResolvedValueOnce({ kind: 'lookup_profile', data: found('bob', '8') })
+    const client = new DesktopClient(invoke)
+    const first = client.lookupProfile('alice').catch(error => error)
+    let busyFailure: unknown
+    const refused = client.lookupActivity('7', 12).catch(error => { busyFailure = error; return error })
+    await tick()
+    expect(busyFailure).toMatchObject({ code: 'busy' })
+    if (outcome === 'rejected') pending.reject({ code: 'network_error' })
+    else pending.resolve(outcome === 'malformed envelope' ? null : { kind: 'lookup_profile', data: {} })
+    expect(await first).toMatchObject({ code: outcome === 'rejected' ? 'network_error' : 'protocol' })
+    await refused
+    expect((await client.lookupProfile('bob')).target_pk).toBe('8')
+    expect(invoke.mock.calls).toEqual([
+      ['lookup_profile', { lookup: { username: 'alice' } }],
+      ['lookup_profile', { lookup: { username: 'bob' } }],
+    ])
   })
   it('sends exact C2 arguments and decodes kinds', async () => {
     const watch = { user: 'alice', status: 'active', interval_seconds: 300, last_ok: null, waiting_first_check: true, has_error: false, consecutive_errors: 0, revision: 'a'.repeat(64) }

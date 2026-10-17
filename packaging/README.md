@@ -34,7 +34,7 @@ unknown binding, and an unknown binding makes every service control read-only.
 
 The lookup section adds `lookup_profile` and `lookup_activity` for the core's two
 on-demand reads, so the ACL now allows twenty-eight commands. Both spend paid
-HikerAPI requests on one explicit click and neither writes anything, so they run
+HikerAPI requests on one explicit click and neither saves history or analysis, so they run
 in the host's third budget class, "network read" (70 seconds: the core's own
 60-second composite budget plus the host's margin for interpreter start and
 response drain). That class has an admission slot of its own — one at a time,
@@ -44,27 +44,62 @@ rather than queued behind seventy seconds. They are still reads: cancelled when
 the window closes, never an unknown outcome, and never reached by a retry or a
 poll.
 
-Use the clean revision (insto 0.7.22) in `packaging/core-pin.json` as the read-only
-build input. The pin is `e871ea3e207cb78891b812480aa0a092d02d8402`: it adds
-`lookup.profile` and `lookup.activity` as the twenty-sixth and twenty-seventh
-capabilities on top of the previous pin
-(`2dc187a905a0620bfc322a08bb66d380a5c07df7`, which carried `snapshots.read`,
-checked a new account right away and identified a profile picture by its file
-name instead of the signed CDN URL). `.build/runtime-lookup` was prepared from a
-plain clone of that exact commit in `.build-core-lookup/` and staged into
-`.build/app-resources/runtime`; its build id is
-`61cf77f11d18b67a50e79a3fffc8424817a87e0590643dab37e5e8353630bb8d`, and its bridge
-advertises the twenty-seven pinned capabilities in the pinned order. The runtime it
-replaced is retained as `.build/app-resources/runtime.prev-2dc187a` (build id
-`efcf80e3ebefc505404824e9793ca439627066dff1f88cd5293ede748af532f0`, prepared as
-`.build/runtime-media-hash`). A runtime prepared from an earlier pin cannot be
-used: the host's `hello` check demands exactly the pinned list, so a
-25-capability bridge fails to prepare the desktop.
+The research workbench adds six native commands: `inspect_usage`,
+`configure_usage`, `research_list`, `research_save`, `research_delete`, and
+`research_export`. The ACL permits exactly thirty-four application commands.
+The first two reach the core's `usage.inspect` and `usage.configure`; saved checks
+are local Rust storage and exports use a native save dialog with no general
+filesystem or dialog capability exposed to the webview.
+
+The current clean input is insto **0.7.25**, commit
+`dcb082c1eb4792a56df93bc3787028d22311cd51`. It advertises twenty-nine capabilities in the exact
+order in `packaging/core-pin.json`. `.build/runtime-workbench` was prepared from
+that clean commit in `.build-core-osint` and staged into
+`.build/app-resources/runtime`; its build ID is
+`dd62c79eb371157d7f0d8e307abfa25c04bc06e16089e288adf42a0b728401b9`. The pinned commit is included in
+`subzeroid/insto`'s `main` and its published [v0.7.25 release](https://github.com/subzeroid/insto/releases/tag/v0.7.25), so CI can fetch it.
+Earlier runtime manifests fail the strict version/capability handshake.
+
+Runtime publication uses POSIX `fsync` for each copied inode and one Darwin
+write-order barrier before atomic rename. Rust's Darwin `sync_all` performs a
+physical-drive flush; repeating it for thousands of files caused a measured
+first-launch timeout. The runtime is a rebuildable cache verified against its
+complete inventory before every reuse. Filesystem calls themselves have no hard
+wall-clock bound; deadline checks surround I/O and interruption retries.
+
+The core counts reserved HikerAPI HTTP attempts in `<configured database>.usage.db`,
+shared between desktop lookups and the background daemon. Each retry reserves a
+slot before transport; failed attempts count, free `/sys/balance` reads do not.
+The optional daily cap resets at midnight UTC. Changes apply on the next request
+without a service restart; an exhausted cap leaves watches scheduled. The count
+is deliberately conservative, rather than a provider invoice. Absent-ledger
+inspection is read-only. Existing invalid accounting data fails closed.
+
+Saved checks are explicit, separated by the selected profile, bounded to 100
+checks and 2 MiB per library (256 KiB per check), and stored privately under the
+desktop root's `research-library`. Mutation uses a process lock and an atomic
+replacement. Reopening, comparing and exporting make no provider calls. They
+include capture times and actual analyzed/requested coverage. HTML is script-free,
+escapes provider text, and embeds charts without external assets. The geographic
+map is schematic; neither it nor shared terms establish a person's whereabouts
+or an audience relationship. `timeline.weekday_hours` is Monday-first, 7×24 UTC,
+and both native/frontend decoders verify its marginal totals.
+
+Each window remembers its confirmed profile binding. If another instance changes
+the shared binding, saved-check access, limit changes, and paid lookups refuse
+the mismatched context until an explicit folder selection or restart. A paid
+answer whose binding changes during acquisition is discarded. Local selection
+also invalidates pending reads and unmounts scoped panels before dispatch.
+
+Snapshot comparisons also retain the core's `posts` delta, including comparisons
+where only recent posts changed. IDs remain validated decimal strings. When all
+posts in the newer window are new, the interface explains that additional new
+posts may exist beyond the returned sample.
 
 Build from the staged runtime with:
 
 ```sh
-python3 -B -m scripts.stage_app_runtime .build/runtime-lookup
+python3 -B -m scripts.stage_app_runtime .build/runtime-workbench
 npm ci --ignore-scripts
 npm test
 npm run build
@@ -107,12 +142,12 @@ G2 adds the five C3 operations on the 0.7.22 bridge: `service.inspect`,
 against the pin of the day, and its bridge advertised the twenty-four capabilities
 that pin listed. It was the staged runtime for G2 — build id
 `4df54faceb61d38bd33ba2498d021384c5236d82a2431dbd932db4bee5ba7d60` — and has since
-been superseded by `.build/runtime-lookup` (see above), which is what
-`.build/app-resources/runtime` now holds. The retained 0.7.21 runtime
+been superseded first by `.build/runtime-lookup`, then by the current
+`.build/runtime-workbench` staged into `.build/app-resources/runtime`. The retained 0.7.21 runtime
 `.build/runtime-c2-01` in the app-shell worktree is the "previous version" the
 native migration proof starts from; it is kept, never deleted. Gated bridge tests
-need `INSTO_GUI_RUNTIME=$PWD/.build/runtime-lookup` — the host rejects both a
-0.7.21 handshake and any 0.7.22 one that is not the twenty-seven pinned names.
+now need `INSTO_GUI_RUNTIME=$PWD/.build/runtime-workbench`; the host requires
+the exact 0.7.25 version and twenty-nine capabilities in the current pin.
 Developer evidence only, not a release artifact.
 
 ## G2 developer fixtures and proof modes

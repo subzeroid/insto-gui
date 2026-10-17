@@ -1,4 +1,4 @@
-//! Real-bridge proof for the five C3 operations against the prepared 0.7.22
+//! Real-bridge proof for the five C3 operations against the prepared 0.7.25
 //! runtime. Set `INSTO_GUI_RUNTIME=/abs/path/.build/runtime-first-check`; otherwise
 //! the test skips.
 //!
@@ -297,9 +297,9 @@ async fn the_lookups_reach_the_core_and_refuse_an_unconfigured_profile() {
     let Response::Hello(hello) = call(&owner, Operation::Hello).await else {
         panic!("hello")
     };
-    assert_eq!(hello.capabilities.len(), 27);
+    assert_eq!(hello.capabilities.len(), 29);
     assert_eq!(hello.capabilities.len(), CAPABILITIES.len());
-    // The pinned names in the pinned order, the two lookups appended last.
+    // The pinned names in order: the lookups followed by local usage operations.
     assert!(hello
         .capabilities
         .iter()
@@ -307,7 +307,12 @@ async fn the_lookups_reach_the_core_and_refuse_an_unconfigured_profile() {
         .all(|(reported, pinned)| reported == pinned));
     assert_eq!(
         &hello.capabilities[25..],
-        ["lookup.profile", "lookup.activity"]
+        [
+            "lookup.profile",
+            "lookup.activity",
+            "usage.inspect",
+            "usage.configure"
+        ]
     );
 
     for operation in [

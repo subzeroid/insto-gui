@@ -17,6 +17,67 @@ pub(super) fn check(deadline: Instant) -> Result<()> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SyncOperation {
+    Fsync,
+    Barrier,
+}
+#[cfg(test)]
+thread_local! {
+    pub(super) static SYNC_EVENTS: std::cell::RefCell<Option<Vec<(SyncOperation, bool)>>> = const {std::cell::RefCell::new(None)};
+    pub(super) static FAIL_BARRIER: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};
+}
+#[cfg(test)]
+fn record_sync(file: &File, operation: SyncOperation) {
+    SYNC_EVENTS.with(|events| {
+        if let Some(events) = events.borrow_mut().as_mut() {
+            events.push((operation, file.metadata().unwrap().is_dir()));
+        }
+    });
+}
+fn synchronize(deadline: Instant, mut operation: impl FnMut() -> i32) -> Result<()> {
+    loop {
+        check(deadline)?;
+        if operation() == 0 {
+            return check(deadline);
+        }
+        if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return Err(RuntimeError::Storage);
+        }
+    }
+}
+
+/// Flush this inode's data and metadata without draining the entire drive queue.
+/// On Darwin Rust's sync_all *and* sync_data use F_FULLFSYNC, so use POSIX fsync
+/// explicitly. Repeating that physical-media flush for thousands of copied
+/// runtime files can stall publication far beyond its cooperative deadline.
+pub(super) fn sync(file: &File, deadline: Instant) -> Result<()> {
+    #[cfg(test)]
+    record_sync(file, SyncOperation::Fsync);
+    synchronize(deadline, || unsafe { libc::fsync(file.as_raw_fd()) })
+}
+
+/// Order all earlier fsync'd runtime bytes before the later publication rename.
+/// F_BARRIERFSYNC avoids waiting for a full physical-media flush. It guarantees
+/// write ordering, not that every byte has reached media when it returns. This
+/// rebuildable cache is fully verified before reuse after a power failure.
+///
+/// Deadlines are checked around I/O and EINTR retries; a kernel filesystem call
+/// itself cannot be interrupted safely to promise a hard wall-clock bound.
+pub(super) fn publication_barrier(file: &File, deadline: Instant) -> Result<()> {
+    #[cfg(test)]
+    {
+        record_sync(file, SyncOperation::Barrier);
+        if FAIL_BARRIER.with(|fail| fail.get()) {
+            return Err(RuntimeError::Storage);
+        }
+    }
+    synchronize(deadline, || unsafe {
+        libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC)
+    })
+}
 fn name(value: &str) -> Result<CString> {
     if value.is_empty() || value.contains('/') || value == ".." {
         return Err(RuntimeError::Ownership);
@@ -226,8 +287,8 @@ impl Dir {
             }
         }
     }
-    pub fn sync(&self) -> Result<()> {
-        self.0.sync_all().map_err(|_| RuntimeError::Storage)
+    pub fn sync(&self, deadline: Instant) -> Result<()> {
+        sync(&self.0, deadline)
     }
 }
 
@@ -235,6 +296,46 @@ impl Dir {
 mod tests {
     use super::*;
     use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn synchronization_retries_interruptions_and_propagates_storage_errors() {
+        let deadline = Instant::now() + std::time::Duration::from_secs(1);
+        let mut calls = 0;
+        synchronize(deadline, || {
+            calls += 1;
+            if calls == 1 {
+                unsafe { *libc::__error() = libc::EINTR };
+                -1
+            } else {
+                0
+            }
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(
+            synchronize(deadline, || {
+                unsafe { *libc::__error() = libc::EIO };
+                -1
+            }),
+            Err(RuntimeError::Storage)
+        );
+    }
+
+    #[test]
+    fn synchronization_checks_deadline_before_io_and_after_completion() {
+        assert_eq!(
+            synchronize(Instant::now(), || panic!("expired I/O must not run")),
+            Err(RuntimeError::Timeout)
+        );
+        assert_eq!(
+            synchronize(Instant::now() + std::time::Duration::from_millis(5), || {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                0
+            }),
+            Err(RuntimeError::Timeout)
+        );
+    }
+
     #[test]
     fn destination_ownership_excludes_root_and_other_accounts() {
         for (owner, source, destination) in

@@ -47,9 +47,9 @@ function pick(which: 'older' | 'newer', id: string) {
           <p v-else-if="state.comparison.error" role="alert" class="notice danger">{{ state.comparison.error.message }}</p>
           <template v-else-if="state.comparison.value">
             <p class="fine-print">{{ t('history.between', { older: localTime(state.comparison.value.older.captured_at), newer: localTime(state.comparison.value.newer.captured_at) }) }}</p>
-            <p v-if="state.comparison.value.changes.length === 0 && state.comparison.value.unknown_fields.length === 0" class="empty">{{ t('history.no_changes') }}</p>
-            <p v-else-if="state.comparison.value.changes.length === 0" class="notice">{{ t('history.incomplete') }}</p>
-            <ChangeList :changes="state.comparison.value.changes" :unknown-fields="state.comparison.value.unknown_fields" />
+            <p v-if="state.comparison.value.changes.length === 0 && state.comparison.value.unknown_fields.length === 0 && !state.comparison.value.posts?.added.length" class="empty">{{ t('history.no_changes') }}</p>
+            <p v-else-if="state.comparison.value.changes.length === 0 && state.comparison.value.unknown_fields.length > 0" class="notice">{{ t('history.incomplete') }}</p>
+            <ChangeList :changes="state.comparison.value.changes" :unknown-fields="state.comparison.value.unknown_fields" :posts="state.comparison.value.posts" />
           </template>
         </template>
         <p v-if="state.snapshots.diagnostics > 0" class="fine-print">{{ t('history.unreadable', { count: formatCount(state.snapshots.diagnostics) }) }}</p>

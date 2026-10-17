@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 import LookupView from './LookupView.vue'
+import LookupActivityComponent from './LookupActivity.vue'
 import type { DesktopClient } from '../desktop/client'
 import { MIN_INTERVAL } from '../desktop/client'
 import type { LookupActivity, LookupProfile, Overview, Watch } from '../desktop/dto'
@@ -11,6 +12,7 @@ import { DesktopFailure } from '../desktop/messages'
 import { formatCount, localTime } from '../desktop/format'
 import { overview as baseOverview, watch as baseWatch } from '../desktop/fixtures'
 import { t } from '../i18n'
+import { ResearchClient, createResearchState, type SaveInput, type SavedCheck } from '../desktop/workbench'
 
 const profile = (over: Partial<LookupProfile> = {}): LookupProfile => ({
   target_pk: '7', access: 'public',
@@ -32,7 +34,7 @@ const activity = (over: Partial<LookupActivity> = {}): LookupActivity => ({
     centroid: { lat: 52.3696, lng: 4.8842 }, radius_km: 1.2345,
     places: [{ name: 'Ferry Terminal', lat: 52.3739, lng: 4.8903, count: 2 }, { name: 'Birch Yard', lat: 52.3612, lng: 4.8721, count: 1 }],
   },
-  timeline: { hour_of_day: hours, day_of_week: days, first_post_at: 1_769_000_000, last_post_at: 1_770_000_000 },
+  timeline: { hour_of_day: hours, day_of_week: days, weekday_hours: days.map((count, day) => hours.map((_, hour) => day === 0 && hour === 20 ? 1 : day === 2 && hour === 9 ? count : 0)), first_post_at: 1_769_000_000, last_post_at: 1_770_000_000 },
   hashtags: [{ key: 'harbour', count: 3 }], mentions: [{ key: 'atlas.ferry', count: 1 }],
   locations: [{ key: 'Ferry Terminal', count: 2 }, { key: 'Birch Yard', count: 1 }],
   likes: { total: 301, average: 100.4, top_posts: [{ code: 'fer01', like_count: 150 }] },
@@ -41,7 +43,7 @@ const activity = (over: Partial<LookupActivity> = {}): LookupActivity => ({
 const emptyActivity = () => activity({
   analyzed: 0,
   geo: { geotagged: 0, anchor: null, centroid: null, radius_km: null, places: [] },
-  timeline: { hour_of_day: hours.map(() => 0), day_of_week: days.map(() => 0), first_post_at: null, last_post_at: null },
+  timeline: { hour_of_day: hours.map(() => 0), day_of_week: days.map(() => 0), weekday_hours: Array.from({ length: 7 }, () => Array(24).fill(0)), first_post_at: null, last_post_at: null },
   hashtags: [], mentions: [], locations: [], likes: { total: 0, average: 0, top_posts: [] },
 })
 
@@ -51,6 +53,8 @@ interface Options {
   watches?: Watch[]
   add?: (user: string, interval: number) => Promise<boolean>
   stale?: boolean
+  research?: ReturnType<typeof createResearchState>
+  attachTo?: boolean
 }
 // The real lookup state against a stub of the only two calls it makes, and a
 // stand-in for the monitoring state holding just what this section reads of it.
@@ -67,7 +71,7 @@ function setup(options: Options = {}) {
     return Promise.resolve(true)
   }))
   const monitoring = { state, add } as unknown as ReturnType<typeof createMonitoringState>
-  const wrapper = mount(LookupView, { props: { lookup, monitoring } })
+  const wrapper = mount(LookupView, { attachTo: options.attachTo ? document.body : undefined, props: { lookup, monitoring, research: options.research } })
   return { wrapper, lookup, monitoring, monitoringState: state, lookupProfile, lookupActivity, add }
 }
 const look = async (harness: ReturnType<typeof setup>, name = 'alice') => {
@@ -81,8 +85,290 @@ const analyse = async (harness: ReturnType<typeof setup>) => {
   await harness.wrapper.get('[data-action="analyse"]').trigger('click')
   await flushPromises()
 }
+const resultTab = async (harness: ReturnType<typeof setup>, tab: 'overview' | 'activity' | 'geography' | 'terms') => {
+  await harness.wrapper.get(`[data-action="result-tab-${tab}"]`).trigger('click')
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
+}
+const savedCheck = (check: SaveInput): SavedCheck => ({ ...check, id: 'a'.repeat(32), saved_at: check.captured_at })
+function researchClient(options: { save?: (check: SaveInput) => Promise<SavedCheck>; export?: () => Promise<boolean> } = {}) {
+  const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+    if (command === 'research_list') return []
+    if (command === 'research_save') {
+      const check = args!.check as SaveInput
+      return options.save ? options.save(check) : savedCheck(check)
+    }
+    if (command === 'research_export') return options.export ? options.export() : true
+    throw new DesktopFailure('internal_error')
+  })
+  return { research: createResearchState(new ResearchClient(invoke)), invoke }
+}
+
+describe('lookup research feedback', () => {
+  it('keeps successful save and export feedback for the unchanged check', async () => {
+    const archive = researchClient()
+    const harness = setup(archive)
+    try {
+      await look(harness)
+      await harness.wrapper.get('[data-action="save-check"]').trigger('click'); await flushPromises()
+      expect(harness.wrapper.text()).toContain(t('research.saved'))
+      expect(archive.research.state.items[0].username).toBe('alice')
+      await harness.wrapper.get('[data-action="export-html"]').trigger('click'); await flushPromises()
+      expect(harness.wrapper.text()).toContain(t('research.exported'))
+      expect(archive.invoke.mock.calls.find(([command]) => command === 'research_export')![1]!.filename).toMatch(/^insto-alice-.*\.html$/)
+    } finally { harness.wrapper.unmount() }
+  })
+
+  it.each(['lookup', 'analysis', 'input'] as const)('does not attach a delayed save to a changed %s', async change => {
+    const pending = deferred<void>()
+    const archive = researchClient({ save: async check => { await pending.promise; return savedCheck(check) } })
+    const harness = setup(archive)
+    try {
+      await look(harness)
+      await harness.wrapper.get('[data-action="save-check"]').trigger('click'); await flushPromises()
+      if (change === 'lookup') await look(harness, 'bob')
+      else if (change === 'analysis') await analyse(harness)
+      else await harness.wrapper.get('#lookup-user').setValue('bob')
+      pending.resolve(); await flushPromises()
+      expect(archive.research.state.items[0].username).toBe('alice')
+      expect(harness.wrapper.text()).not.toContain(t('research.saved'))
+    } finally { pending.resolve(); harness.wrapper.unmount() }
+  })
+
+  it('shows a current save failure but does not attach a delayed failure to another lookup', async () => {
+    const pending = deferred<void>()
+    const archive = researchClient({ save: async () => { await pending.promise; throw new DesktopFailure('research_storage') } })
+    const harness = setup(archive)
+    try {
+      await look(harness)
+      await harness.wrapper.get('[data-action="save-check"]').trigger('click'); await flushPromises()
+      await look(harness, 'bob')
+      pending.resolve(); await flushPromises()
+      expect(archive.research.state.error?.code).toBe('research_storage')
+      expect(harness.wrapper.find('[role="alert"]').exists()).toBe(false)
+      await harness.wrapper.get('[data-action="save-check"]').trigger('click'); await flushPromises()
+      expect(harness.wrapper.get('[role="alert"]').text()).toBe(new DesktopFailure('research_storage').message)
+    } finally { pending.resolve(); harness.wrapper.unmount() }
+  })
+
+  it.each(['success', 'failure'] as const)('does not attach delayed export %s to another lookup', async outcome => {
+    const pending = deferred<boolean>()
+    const archive = researchClient({ export: () => pending.promise })
+    const harness = setup(archive)
+    try {
+      await look(harness)
+      await harness.wrapper.get('[data-action="export-json"]').trigger('click'); await flushPromises()
+      await look(harness, 'bob')
+      if (outcome === 'success') pending.resolve(true)
+      else pending.reject(new DesktopFailure('research_storage'))
+      await flushPromises()
+      expect(harness.wrapper.text()).not.toContain(t('research.exported'))
+      expect(harness.wrapper.find('[role="alert"]').exists()).toBe(false)
+      expect(harness.wrapper.get('[data-action="export-json"]').attributes('disabled')).toBeUndefined()
+    } finally { pending.resolve(false); harness.wrapper.unmount() }
+  })
+
+  it.each(['save', 'export'] as const)('does not update %s feedback after the bound view unmounts', async action => {
+    const pending = deferred<void>()
+    const archive = researchClient({
+      save: async check => { await pending.promise; return savedCheck(check) },
+      export: async () => { await pending.promise; return true },
+    })
+    const harness = setup(archive)
+    await look(harness)
+    await harness.wrapper.get(`[data-action="${action === 'save' ? 'save-check' : 'export-html'}"]`).trigger('click'); await flushPromises()
+    const feedback = harness.wrapper.vm as unknown as { justSaved: boolean; exported: boolean }
+    harness.wrapper.unmount()
+    pending.resolve(); await flushPromises()
+    expect(feedback.justSaved).toBe(false)
+    expect(feedback.exported).toBe(false)
+  })
+})
 
 describe('lookup section', () => {
+  it('defaults to a profile check, with a short price and expandable request details', async () => {
+    const archive = researchClient()
+    const harness = setup(archive)
+    expect((harness.wrapper.get('[data-action="scope-profile"]').element as HTMLInputElement).checked).toBe(true)
+    expect((harness.wrapper.get('[data-action="scope-full"]').element as HTMLInputElement).checked).toBe(false)
+    expect(harness.wrapper.get('[data-note="request-cost"]').text()).toBe(t('lookup.cost_profile_short'))
+    expect(harness.wrapper.get('[data-action="cost-details"]').element.closest('details')?.open).toBe(false)
+    expect(harness.wrapper.text()).toContain(t('lookup.cost_profile'))
+    expect((harness.wrapper.get('#lookup-window').element as HTMLSelectElement).value).toBe('30')
+    expect(archive.invoke).not.toHaveBeenCalled()
+    const check = vi.spyOn(harness.lookup, 'check')
+    await look(harness, '@Alice ')
+    expect(check).toHaveBeenCalledExactlyOnceWith('@Alice ', false)
+    expect(harness.lookupActivity).not.toHaveBeenCalled()
+    expect(harness.wrapper.classes()).toContain('has-result')
+    harness.wrapper.unmount()
+  })
+
+  it('runs one profile and one activity stage for the explicitly chosen full check', async () => {
+    const first = deferred<LookupProfile>(), second = deferred<LookupActivity>()
+    const harness = setup({ lookupProfile: () => first.promise, lookupActivity: () => second.promise })
+    try {
+      await harness.wrapper.get('[data-action="scope-full"]').setValue(true)
+      await harness.wrapper.get('#lookup-window').setValue('12')
+      expect(harness.wrapper.get('[data-note="request-cost"]').text()).toBe(t('lookup.cost_full_short'))
+      expect(harness.lookupProfile).not.toHaveBeenCalled()
+      expect(harness.lookupActivity).not.toHaveBeenCalled()
+      await harness.wrapper.get('#lookup-user').setValue('alice')
+      await harness.wrapper.get('form').trigger('submit')
+      await harness.wrapper.get('form').trigger('submit')
+      expect(harness.lookupProfile.mock.calls).toEqual([['alice']])
+      expect(harness.wrapper.classes()).toContain('has-result')
+      expect(harness.wrapper.find('.intro').exists()).toBe(false)
+      expect(harness.wrapper.get('.scan-progress').attributes('data-phase')).toBe('profile')
+      expect(harness.wrapper.find('[data-stage="activity"]').exists()).toBe(true)
+      expect(harness.wrapper.get('[data-action="scope-profile"]').attributes('disabled')).toBeDefined()
+      first.resolve(profile()); await flushPromises()
+      expect(harness.lookupActivity.mock.calls).toEqual([['7', 12]])
+      expect(harness.wrapper.get('.scan-progress').attributes('data-phase')).toBe('activity')
+      expect(harness.wrapper.text()).toContain('Alice Harbour')
+      await harness.wrapper.get('form').trigger('submit')
+      expect(harness.lookupProfile).toHaveBeenCalledTimes(1)
+      second.resolve(activity({ window: 12 })); await flushPromises()
+      expect(harness.wrapper.find('.scan-progress').exists()).toBe(false)
+      expect(harness.wrapper.find('[data-block="overview"]').exists()).toBe(true)
+    } finally { first.resolve(profile()); second.resolve(activity()); harness.wrapper.unmount() }
+  })
+
+  it('keeps the full scope, pending posts and elapsed time when reopened during a check', async () => {
+    vi.useFakeTimers()
+    const first = deferred<LookupProfile>(), second = deferred<LookupActivity>()
+    const harness = setup({ lookupProfile: () => first.promise, lookupActivity: () => second.promise })
+    let reopened: typeof harness.wrapper | undefined
+    let left = false
+    try {
+      await harness.wrapper.get('[data-action="scope-full"]').setValue(true)
+      await harness.wrapper.get('#lookup-user').setValue('alice')
+      await harness.wrapper.get('form').trigger('submit')
+      const startedAt = harness.lookup.state.startedAt
+      await vi.advanceTimersByTimeAsync(7_000)
+      harness.wrapper.unmount(); left = true
+      await vi.advanceTimersByTimeAsync(4_000)
+      reopened = mount(LookupView, { props: { lookup: harness.lookup, monitoring: harness.monitoring } })
+      await reopened.vm.$nextTick()
+      expect.soft((reopened.get('[data-action="scope-full"]').element as HTMLInputElement).checked).toBe(true)
+      expect.soft(reopened.find('[data-stage="activity"][data-state="pending"]').exists()).toBe(true)
+      expect.soft(reopened.get('[data-elapsed]').text()).toBe('00:11')
+      expect(harness.lookup.state.startedAt).toBe(startedAt)
+      expect(harness.lookupProfile).toHaveBeenCalledTimes(1)
+      expect(harness.lookupActivity).not.toHaveBeenCalled()
+      first.resolve(profile()); await vi.advanceTimersByTimeAsync(0)
+      expect(reopened.get('.scan-progress').attributes('data-phase')).toBe('activity')
+      expect(reopened.get('[data-elapsed]').text()).toBe('00:11')
+      expect(harness.lookupActivity).toHaveBeenCalledTimes(1)
+      second.resolve(activity()); await vi.advanceTimersByTimeAsync(0)
+      expect(reopened.find('.scan-progress').exists()).toBe(false)
+    } finally {
+      first.resolve(profile()); second.resolve(activity())
+      reopened?.unmount()
+      if (!left) harness.wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the profile when the second stage fails and skips posts for private full checks', async () => {
+    const archive = researchClient()
+    const failed = setup({ ...archive, lookupActivity: () => Promise.reject(new DesktopFailure('operation_timeout')) })
+    await failed.wrapper.get('[data-action="scope-full"]').setValue(true)
+    await look(failed)
+    expect(failed.wrapper.text()).toContain('Alice Harbour')
+    expect(failed.wrapper.get('.lookup-analysis [role="alert"]').text()).toBe(new DesktopFailure('operation_timeout').message)
+    expect(failed.wrapper.find('[data-note="quota"]').exists()).toBe(false)
+    await failed.wrapper.get('[data-action="save-check"]').trigger('click'); await flushPromises()
+    expect(archive.research.state.items[0].profile.fields.full_name).toBe('Alice Harbour')
+    expect(archive.research.state.items[0].activity).toBe(null)
+    const privateCheck = setup({ lookupProfile: () => Promise.resolve(profile({ access: 'private' })) })
+    await privateCheck.wrapper.get('[data-action="scope-full"]').setValue(true)
+    await look(privateCheck)
+    expect(privateCheck.wrapper.text()).toContain('Alice Harbour')
+    expect(privateCheck.wrapper.get('[data-note="private"]').text()).toBe(t('lookup.private_notice'))
+    expect(privateCheck.lookupActivity).not.toHaveBeenCalled()
+    failed.wrapper.unmount(); privateCheck.wrapper.unmount()
+  })
+
+  it('uses the same fetched sample for every result tab and supports roving keyboard focus', async () => {
+    const harness = setup({ attachTo: true })
+    try {
+      await harness.wrapper.get('[data-action="scope-full"]').setValue(true)
+      await look(harness)
+      const overview = harness.wrapper.get('[data-action="result-tab-overview"]')
+      expect(overview.attributes('aria-selected')).toBe('true')
+      expect(overview.attributes('tabindex')).toBe('0')
+      expect(harness.wrapper.get('[data-block="overview"]').text()).toContain(t('research.coverage', { count: '3', window: '30' }))
+      expect(harness.wrapper.get('[data-block="overview"]').text()).toContain('#harbour')
+      expect(harness.wrapper.get('[data-block="overview"]').text()).toContain('09:00 UTC')
+      expect(harness.wrapper.find('.geo-map').exists()).toBe(false)
+      ;(overview.element as HTMLElement).focus()
+      await overview.trigger('keydown', { key: 'ArrowRight' })
+      const activityTab = harness.wrapper.get('[data-action="result-tab-activity"]')
+      expect(activityTab.attributes('aria-selected')).toBe('true')
+      expect(document.activeElement).toBe(activityTab.element)
+      expect(harness.wrapper.find('[data-block="when"]').exists()).toBe(true)
+      expect(harness.wrapper.find('[data-block="where"]').exists()).toBe(false)
+      await activityTab.trigger('keydown', { key: 'End' })
+      expect(harness.wrapper.get('[data-action="result-tab-terms"]').attributes('tabindex')).toBe('0')
+      expect(harness.wrapper.text()).toContain('@atlas.ferry')
+      await harness.wrapper.get('[data-action="result-tab-geography"]').trigger('click')
+      expect(harness.wrapper.find('[data-block="where"]').exists()).toBe(true)
+      await harness.wrapper.get('[data-action="result-tab-geography"]').trigger('keydown', { key: 'Home' })
+      expect(overview.attributes('aria-selected')).toBe('true')
+      await overview.trigger('keydown', { key: 'ArrowLeft' })
+      expect(harness.wrapper.get('[data-action="result-tab-terms"]').attributes('aria-selected')).toBe('true')
+      expect(harness.lookupProfile).toHaveBeenCalledTimes(1)
+      expect(harness.lookupActivity).toHaveBeenCalledTimes(1)
+    } finally { harness.wrapper.unmount() }
+  })
+
+  it('shows explicit empty sections for a sample with no dated posts, geotags or terms', async () => {
+    const sample = emptyActivity()
+    sample.analyzed = 3
+    const harness = setup({ lookupActivity: () => Promise.resolve(sample) })
+    await harness.wrapper.get('[data-action="scope-full"]').setValue(true)
+    await look(harness)
+    expect(harness.wrapper.get('[data-block="overview"]').text()).toContain(t('lookup.summary_none'))
+    await harness.wrapper.get('[data-action="result-tab-activity"]').trigger('click')
+    expect(harness.wrapper.text()).toContain(t('lookup.heatmap_empty'))
+    await harness.wrapper.get('[data-action="result-tab-geography"]').trigger('click')
+    expect(harness.wrapper.text()).toContain(t('lookup.map_empty'))
+    await harness.wrapper.get('[data-action="result-tab-terms"]').trigger('click')
+    expect(harness.wrapper.text()).toContain(t('lookup.results_empty'))
+    expect(harness.lookupActivity).toHaveBeenCalledTimes(1)
+    harness.wrapper.unmount()
+  })
+
+  it('reopens only already loaded recent checks locally and requires a fresh profile before analysis', async () => {
+    const archive = researchClient()
+    const check = savedCheck({ username: 'alice', target_pk: '7', captured_at: 1_770_000_000, profile: profile(), activity: activity() })
+    archive.research.state.items = [check]
+    archive.research.state.loaded = true
+    const harness = setup(archive)
+    await harness.wrapper.get('#lookup-user').setValue('bob')
+    await harness.wrapper.get('[data-action="open-recent"]').trigger('click')
+    expect((harness.wrapper.get('#lookup-user').element as HTMLInputElement).value).toBe('alice')
+    expect(harness.wrapper.get('[data-note="saved-origin"]').text()).toBe(t('research.from_saved', { time: localTime(check.captured_at) }))
+    expect(harness.wrapper.get('[data-action="analyse"]').attributes('disabled')).toBeDefined()
+    expect(harness.wrapper.text()).toContain(t('research.refresh_before_analysis'))
+    expect(harness.wrapper.find('[data-note="quota"]').exists()).toBe(false)
+    await harness.wrapper.get('[data-action="analyse"]').trigger('click')
+    await harness.wrapper.get('[data-action="result-tab-geography"]').trigger('click')
+    expect(harness.lookupProfile).not.toHaveBeenCalled()
+    expect(harness.lookupActivity).not.toHaveBeenCalled()
+    expect(archive.invoke).not.toHaveBeenCalled()
+    await look(harness)
+    expect(harness.lookupProfile).toHaveBeenCalledTimes(1)
+    expect(harness.wrapper.find('[data-note="saved-origin"]').exists()).toBe(false)
+    harness.wrapper.unmount()
+  })
+
   it('says what a lookup costs before it is pressed, and pays only on submit', async () => {
     const harness = setup()
     expect(harness.wrapper.text()).toContain(t('lookup.cost_profile'))
@@ -98,6 +384,7 @@ describe('lookup section', () => {
     expect(harness.wrapper.text()).toContain(t('lookup.quota_after', { count: formatCount(4211) }))
     // The analysis is a second, separate decision with a price of its own.
     expect(harness.lookupActivity).not.toHaveBeenCalled()
+    expect(harness.wrapper.get('[data-note="activity-request-cost"]').text()).toBe(t('lookup.cost_activity_short'))
     expect(harness.wrapper.text()).toContain(t('lookup.cost_activity'))
   })
 
@@ -136,7 +423,7 @@ describe('lookup section', () => {
     expect(second.wrapper.get('#lookup-window').attributes('disabled')).toBeDefined()
     // Every control on the screen says the same thing while a request is out.
     expect(second.wrapper.get('[data-action="watch"]').attributes('disabled')).toBeDefined()
-    expect(second.wrapper.get('[role="status"]').text()).toBe(t('lookup.analysing'))
+    expect(second.wrapper.get('.scan-progress [role="status"]').text()).toContain(t('scan.activity_title'))
     finish(activity())
     await flushPromises()
     expect(second.wrapper.get('#lookup-user').attributes('disabled')).toBeUndefined()
@@ -190,7 +477,7 @@ describe('lookup section', () => {
     expect(harness.wrapper.text()).not.toContain(t('lookup.may_be_charged'))
     expect(harness.wrapper.get('h2').text()).toBe('@alice')
     expect(harness.wrapper.text()).toContain('Alice Harbour')
-    expect(harness.wrapper.find('[data-block="where"]').exists()).toBe(true)
+    expect(harness.wrapper.find('[data-block="overview"]').exists()).toBe(true)
     // Editing the field takes the refusal away; so does a name that works.
     await harness.wrapper.get('#lookup-user').setValue('bo')
     expect(harness.wrapper.find('[data-note="input-refused"]').exists()).toBe(false)
@@ -229,7 +516,9 @@ describe('lookup section', () => {
     const harness = setup()
     await look(harness)
     await analyse(harness)
-    expect(blocks(harness)).toEqual(['where', 'places', 'when', 'hashtags', 'mentions', 'likes'])
+    expect(blocks(harness)).toEqual(['overview'])
+    await resultTab(harness, 'geography')
+    expect(blocks(harness)).toEqual(['where', 'places'])
     expect(harness.wrapper.text()).toContain(t('lookup.geotagged', { tagged: '3', analyzed: '3' }))
     expect(harness.wrapper.text()).toContain(t('lookup.anchor', { place: 'Ferry Terminal', count: '2' }))
     expect(harness.wrapper.text()).toContain(t('lookup.radius', { km: '1.2' }))
@@ -245,6 +534,8 @@ describe('lookup section', () => {
     expect(placesBlock.get('h4').text()).toBe(t('lookup.places_title'))
     expect(placesBlock.get('p').text()).toBe(t('lookup.places_note'))
     expect(where.findAll('h5')).toHaveLength(0)
+    await resultTab(harness, 'activity')
+    expect(blocks(harness)).toEqual(['when', 'likes'])
     expect(harness.wrapper.get('[data-block="likes"]').findAll('h5').map(node => node.text())).toEqual([t('lookup.top_posts_title')])
     expect(harness.wrapper.findAll('.bar-chart').length).toBe(2)
     // An hour reads as a time, and the day chart says which zone it counts in.
@@ -252,11 +543,13 @@ describe('lookup section', () => {
     expect(harness.wrapper.text()).toContain(t('lookup.days_title'))
     expect(harness.wrapper.text()).toContain(t('lookup.times_note'))
     expect(harness.wrapper.text()).toContain(t('lookup.first_post', { time: localTime(1_769_000_000) }))
-    expect(harness.wrapper.text()).toContain('#harbour')
-    expect(harness.wrapper.text()).toContain('@atlas.ferry')
     // The average is a count of likes, so it is shown as one.
     expect(harness.wrapper.text()).toContain(t('lookup.post_code', { code: 'fer01' }))
     expect(harness.wrapper.get('[data-block="likes"]').text()).toContain('100')
+    await resultTab(harness, 'terms')
+    expect(blocks(harness)).toEqual(['hashtags', 'mentions'])
+    expect(harness.wrapper.text()).toContain('#harbour')
+    expect(harness.wrapper.text()).toContain('@atlas.ferry')
     // The window asked for was larger than what could be read, and it says so.
     expect(harness.wrapper.get('[data-note="analyzed"]').text())
       .toBe(t('lookup.analyzed_short', { analyzed: '3', window: '30' }))
@@ -271,6 +564,7 @@ describe('lookup section', () => {
     })) })
     await look(quiet)
     await analyse(quiet)
+    await resultTab(quiet, 'activity')
     expect(blocks(quiet)).toEqual(['when', 'likes'])
     expect(quiet.wrapper.get('[data-note="analyzed"]').text()).toBe(t('lookup.analyzed', { count: '30' }))
   })
@@ -325,7 +619,8 @@ describe('lookup section', () => {
     })) })
     await look(namesOnly)
     await analyse(namesOnly)
-    expect(blocks(namesOnly)).toEqual(['places', 'when', 'hashtags', 'mentions', 'likes'])
+    await resultTab(namesOnly, 'geography')
+    expect(blocks(namesOnly)).toEqual(['geography-empty', 'places'])
     expect(namesOnly.wrapper.find('[data-block="where"]').exists()).toBe(false)
     expect(namesOnly.wrapper.get('[data-block="places"]').get('h4').text()).toBe(t('lookup.places_title'))
     expect(namesOnly.wrapper.get('[data-block="places"]').get('p').text()).toBe(t('lookup.places_note'))
@@ -342,12 +637,13 @@ describe('lookup section', () => {
     })) })
     await look(mixed)
     await analyse(mixed)
+    await resultTab(mixed, 'geography')
     const where = mixed.wrapper.get('[data-block="where"]')
     expect(where.text()).toContain(t('lookup.geotagged', { tagged: '3', analyzed: '12' }))
     expect(where.text()).toContain(t('lookup.anchor', { place: 'Ferry Terminal', count: '2' }))
     // The anchor's 2 is the posts with coordinates; the list's 7 is the posts
-    // that name it. Neither number appears in the other's block.
-    expect(where.text()).not.toContain('7')
+    // that name it. The geometry's anchor must not use the name-only count.
+    expect(where.text()).not.toContain(t('lookup.anchor', { place: 'Ferry Terminal', count: '7' }))
     expect(mixed.wrapper.findAll('[data-list="places"] dd').map(node => node.text())).toEqual(['7', '2'])
   })
 
@@ -360,6 +656,7 @@ describe('lookup section', () => {
     })) })
     await look(padded)
     await analyse(padded)
+    await resultTab(padded, 'geography')
     expect(padded.wrapper.findAll('[data-list="places"] dt').map(node => node.text()))
       .toEqual(['Ferry Terminal52.3739, 4.8903', 'Birch Yard52.3612, 4.8721'])
 
@@ -370,6 +667,7 @@ describe('lookup section', () => {
     })) })
     await look(duplicated)
     await analyse(duplicated)
+    await resultTab(duplicated, 'geography')
     expect(duplicated.wrapper.findAll('[data-list="places"] dt').map(node => node.text()))
       .toEqual(['Ferry Terminal', 'Birch Yard'])
   })
@@ -444,6 +742,8 @@ describe('lookup section', () => {
     expect((again.get('#lookup-user').element as HTMLInputElement).value).toBe('alice')
     expect((again.get('#lookup-window').element as HTMLSelectElement).value).toBe('12')
     expect(again.text()).toContain('Alice Harbour')
+    expect(again.find('[data-block="overview"]').exists()).toBe(true)
+    await again.get('[data-action="result-tab-geography"]').trigger('click')
     expect(again.find('[data-block="where"]').exists()).toBe(true)
     expect(harness.lookupProfile).toHaveBeenCalledTimes(1)
     expect(harness.lookupActivity).toHaveBeenCalledTimes(1)
@@ -464,5 +764,23 @@ describe('lookup section', () => {
     expect(harness.lookupProfile).toHaveBeenCalledTimes(1)
     await look(harness, 'bob')
     expect((harness.wrapper.get('#lookup-window').element as HTMLSelectElement).value).toBe('50')
+  })
+})
+
+describe('activity sample presentation', () => {
+  it('preserves the complete direct presentation when no section is selected', () => {
+    const wrapper = mount(LookupActivityComponent, { props: { activity: activity() } })
+    expect(wrapper.findAll('[data-block]').map(node => node.attributes('data-block'))).toEqual(['where', 'places', 'when', 'hashtags', 'mentions', 'likes'])
+    wrapper.unmount()
+  })
+
+  it('shows tied busiest hours and hashtags without inventing a single winner', () => {
+    const sample = activity()
+    sample.timeline.hour_of_day[20] = 2
+    sample.hashtags = [{ key: 'harbour', count: 3 }, { key: 'ferry', count: 3 }]
+    const wrapper = mount(LookupActivityComponent, { props: { activity: sample, section: 'overview' } })
+    expect(wrapper.text()).toContain('#harbour, #ferry')
+    expect(wrapper.text()).toContain('09:00 UTC, 20:00 UTC')
+    wrapper.unmount()
   })
 })

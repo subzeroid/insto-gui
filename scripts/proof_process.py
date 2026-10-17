@@ -107,16 +107,23 @@ class OwnedChild:
 
     def wait_for_line(self, predicate, deadline):
         try:
+            exited = False
             while time.monotonic() < deadline:
+                previous_length = len(self.stdout)
                 self._read()
                 while (end := self.stdout.find(b"\n", self._line_offset)) >= 0:
                     line = bytes(self.stdout[self._line_offset : end])
                     self._line_offset = end + 1
                     if predicate(line):
                         return line
-                if self.observe_exit() is not None:
+                # The leader can write its final signal between the pipe read
+                # and WNOWAIT. Drain those bounded bytes before reporting a
+                # missing signal; observing exit alone does not imply EOF.
+                if exited and len(self.stdout) == previous_length:
                     raise RuntimeError("child exited before proof signal")
-                time.sleep(0.01)
+                exited = self.observe_exit() is not None
+                if not exited:
+                    time.sleep(0.01)
             raise TimeoutError("proof signal timed out")
         except BaseException:
             if not self.unsafe:

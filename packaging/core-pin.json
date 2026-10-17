@@ -1,6 +1,6 @@
 {
-  "core_commit": "e871ea3e207cb78891b812480aa0a092d02d8402",
-  "core_version": "0.7.22",
+  "core_commit": "dcb082c1eb4792a56df93bc3787028d22311cd51",
+  "core_version": "0.7.25",
   "schema_version_supported": 2,
   "capabilities": [
     "hello",
@@ -29,6 +29,8 @@
     "home.inspect",
     "home.select",
     "lookup.profile",
-    "lookup.activity"
+    "lookup.activity",
+    "usage.inspect",
+    "usage.configure"
   ]
 }

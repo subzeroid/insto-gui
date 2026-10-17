@@ -11,6 +11,7 @@
  */
 import { CORE_VERSION, type Invoke, type Profile } from './client'
 import { LOOKUP_FIELDS, LOOKUP_WINDOWS, itemSnapshot, type Change, type ChangeValue, type Comparison, type HistoryItem, type HomeReport, type LookupWindow, type Overview, type Snapshot, type Watch, type WatchStatus } from './dto'
+import { decodeSavedCheck, type SavedCheck } from './workbench'
 import { DesktopFailure } from './messages'
 
 const envelope = (kind: string, data: unknown) => ({ kind, data })
@@ -231,7 +232,7 @@ const FEED: HistoryItem[] = ACCOUNTS.flatMap(account => {
   const items: HistoryItem[] = [{ kind: 'baseline', snapshot: snapshots[0] }]
   for (let index = 1; index < snapshots.length; index++) {
     const step = account.steps[index]
-    const body: Comparison = { older: snapshots[index - 1], newer: snapshots[index], changes: step.changes, unknown_fields: step.unknown ?? [] }
+    const body: Comparison = { older: snapshots[index - 1], newer: snapshots[index], changes: step.changes, unknown_fields: step.unknown ?? [], posts: null }
     // An `incomplete` item is exactly a comparison whose older snapshot lacked
     // some fields; a plain `comparison` never carries unknown fields.
     items.push(body.unknown_fields.length > 0 ? { kind: 'incomplete', ...body } : { kind: 'comparison', ...body })
@@ -296,7 +297,7 @@ function comparisonOf(
   if (account === undefined || from < 0 || to < 0 || from >= to) throw new DesktopFailure('snapshot_unavailable')
   const unknown = new Set<string>()
   for (let index = from + 1; index <= to; index++) for (const field of account.steps[index].unknown ?? []) unknown.add(field)
-  return { older: snapshots[from], newer: snapshots[to], changes: foldChanges(account, from, to), unknown_fields: [...unknown].slice(0, 64) }
+  return { older: snapshots[from], newer: snapshots[to], changes: foldChanges(account, from, to), unknown_fields: [...unknown].slice(0, 64), posts: null }
 }
 
 const historyPage = (items: HistoryItem[], scanned: number) => envelope('history_page', { items, next_cursor: null, scan_complete: true, scanned })
@@ -393,12 +394,14 @@ function activityOf(pk: string, user: string, posts: number, window: LookupWindo
   const radius = centroid === null ? null : round3(Math.max(...tagged.map(post => haversineKm(centroid.lat, centroid.lng, post.place!.lat!, post.place!.lng!))))
   const hours = Array.from({ length: 24 }, () => 0)
   const days = Array.from({ length: 7 }, () => 0)
+  const joint = Array.from({ length: 7 }, () => Array(24).fill(0))
   const hashtags = new Map<string, number>(), mentions = new Map<string, number>(), locations = new Map<string, number>()
   for (const post of inspected) {
     const at = new Date(post.takenAt * 1000)
     hours[at.getUTCHours()]++
     // Monday first, like `datetime.weekday()`.
     days[(at.getUTCDay() + 6) % 7]++
+    joint[(at.getUTCDay() + 6) % 7][at.getUTCHours()]++
     for (const tag of post.tags) hashtags.set(tag, (hashtags.get(tag) ?? 0) + 1)
     for (const mention of post.mentions) mentions.set(mention, (mentions.get(mention) ?? 0) + 1)
     if (post.place !== null) locations.set(post.place.name, (locations.get(post.place.name) ?? 0) + 1)
@@ -413,7 +416,7 @@ function activityOf(pk: string, user: string, posts: number, window: LookupWindo
       radius_km: radius, places: ordered,
     },
     timeline: {
-      hour_of_day: hours, day_of_week: days,
+      hour_of_day: hours, day_of_week: days, weekday_hours: joint,
       first_post_at: stamps.length === 0 ? null : Math.min(...stamps),
       last_post_at: stamps.length === 0 ? null : Math.max(...stamps),
     },
@@ -444,6 +447,17 @@ export const MOCK_FIRST_CHECK_MS = 2000
 export function createMockInvoke(options: { setup?: boolean; lookupDelayMs?: number } = {}): Invoke {
   const lookupDelayMs = options.lookupDelayMs ?? MOCK_LOOKUP_MS
   let revisions = 0
+  const libraries = new Map<string, SavedCheck[]>()
+  const budgets = new Map<string, { used: number; limit: number | null; day: string }>()
+  const scope = () => `${binding.state}:${binding.home ?? ''}`
+  function usage() {
+    const day = new Date().toISOString().slice(0, 10)
+    let state = budgets.get(scope())
+    if (!state) { state = { used: 0, limit: null, day }; budgets.set(scope(), state) }
+    if (state.day !== day) { state.used = 0; state.day = day }
+    return state
+  }
+  function usageResponse() { const state = usage(); return envelope('usage', { day: state.day, used: state.used, daily_limit: state.limit, reset_at: Date.parse(`${state.day}T00:00:00Z`) / 1000 + DAY }) }
   // Per-instance overlays: an account added here must not leak into another mock.
   const snapshotsByPk = new Map(SNAPSHOTS)
   const byPk = new Map(BY_PK)
@@ -503,10 +517,16 @@ export function createMockInvoke(options: { setup?: boolean; lookupDelayMs?: num
     feed = [{ kind: 'baseline', snapshot }, ...feed]
     watches.set(user, { ...current, last_ok: snapshot.captured_at, waiting_first_check: false, revision: nextRevision(user) })
   }
-  // A paid read costs the demo profile what the real one costs: two requests for
+  // A paid read costs the demo profile what the real one costs: one request for
   // a profile, one page request for an analysis.
   function spend(requests: number): void {
-    if (profile.quota_remaining !== null) profile = { ...profile, quota_remaining: Math.max(0, profile.quota_remaining - requests) }
+    for (let n = 0; n < requests; n++) {
+      const state = usage()
+      if (state.limit !== null && state.used >= state.limit) throw new DesktopFailure('daily_budget_reached')
+      state.used++
+      if (profile.quota_remaining !== null) profile = { ...profile, quota_remaining: Math.max(0, profile.quota_remaining - 1) }
+    }
+
   }
   function touch(user: string | null, change: (watch: Watch) => Watch): unknown {
     const current = user === null ? undefined : watches.get(user)
@@ -525,6 +545,34 @@ export function createMockInvoke(options: { setup?: boolean; lookupDelayMs?: num
       case 'read_overview': return envelope('overview', overview())
       case 'list_watches': return envelope('watch_page', { items: sorted(), next_cursor: null })
       case 'open_token_page': return undefined
+      case 'inspect_usage': return usageResponse()
+      case 'configure_usage': {
+        const budget = args?.budget as { daily_limit: number | null }
+        usage().limit = budget.daily_limit
+        return usageResponse()
+      }
+      case 'research_list': return structuredClone(libraries.get(scope()) ?? [])
+      case 'research_save': {
+        const items = libraries.get(scope()) ?? []
+        if (items.length >= 100) throw new DesktopFailure('research_limit')
+        const check = decodeSavedCheck({ ...(args?.check as object), id: hex(`saved:${++revisions}`, 32), saved_at: Math.floor(Date.now() / 1000) })
+        libraries.set(scope(), [structuredClone(check), ...items])
+        return structuredClone(check)
+      }
+      case 'research_delete': {
+        const items = libraries.get(scope()) ?? []
+        const kept = items.filter(item => item.id !== args?.id)
+        libraries.set(scope(), kept)
+        return kept.length !== items.length
+      }
+      case 'research_export': {
+        const contents = String(args?.contents ?? ''), filename = String(args?.filename ?? '')
+        if (typeof document !== 'undefined' && typeof URL.createObjectURL === 'function') {
+          const url = URL.createObjectURL(new Blob([contents], { type: filename.endsWith('.html') ? 'text/html;charset=utf-8' : 'application/json' }))
+          const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+        }
+        return true
+      }
 
       case 'configure_setup':
       case 'replace_credentials':
@@ -607,7 +655,7 @@ export function createMockInvoke(options: { setup?: boolean; lookupDelayMs?: num
         // avatar or banner hash, and this provider supplies every other one.
         const fields: Fields = {}
         for (const name of LOOKUP_FIELDS) fields[name] = latest[name] ?? null
-        spend(2)
+        spend(1)
         return envelope('lookup_profile', {
           target_pk: account.pk,
           access: latest.is_private === true ? 'private' : 'public',

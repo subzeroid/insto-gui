@@ -72,7 +72,6 @@ impl Fixture {
         )
     }
     fn script(&mut self, extra: &str, version: &str) {
-        use sha2::{Digest, Sha256};
         let caps = format!(
             "[{}]",
             crate::protocol::CAPABILITIES
@@ -82,6 +81,10 @@ impl Fixture {
                 .join(",")
         );
         let script=format!("#!/usr/bin/python3\nimport sys,json,os\nr=json.load(sys.stdin)\n{extra}\nprint(json.dumps(dict(protocol_version=1,request_id=r['request_id'],result=dict(core_version='{version}',schema_version_supported=2,capabilities={caps}))))\n");
+        self.executable(&script);
+    }
+    fn executable(&mut self, script: &str) {
+        use sha2::{Digest, Sha256};
         std::fs::write(self.bundle.join("python/bin/python3"), script.as_bytes()).unwrap();
         let path = self.bundle.join("manifest.json");
         let mut value: serde_json::Value =
@@ -94,6 +97,68 @@ impl Fixture {
         value["build_id"] = serde_json::json!(self.id);
         std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
     }
+}
+
+#[test]
+fn copying_flushes_each_file_and_directory_then_orders_atomic_publication() {
+    use super::super::filesystem::{SyncOperation, SYNC_EVENTS};
+    use SyncOperation::{Barrier, Fsync};
+    let fixture = Fixture::new();
+    SYNC_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
+    let candidate = fixture.prepare().unwrap();
+    let calls = SYNC_EVENTS.with(|events| events.borrow_mut().take().unwrap());
+    assert_eq!(
+        calls,
+        [
+            (Fsync, false), // copied interpreter
+            (Fsync, true),  // bin
+            (Fsync, true),  // python
+            (Fsync, false), // staged manifest
+            (Fsync, true),  // stage
+            (Fsync, true),  // runtimes
+            (Fsync, true),  // application root
+            (Barrier, false),
+        ]
+    );
+    assert!(!fixture.root.join("runtimes").join(&fixture.id).exists());
+    SYNC_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
+    finish(candidate).unwrap();
+    let calls = SYNC_EVENTS.with(|events| events.borrow_mut().take().unwrap());
+    assert_eq!(calls, [(Fsync, true)]);
+}
+
+#[test]
+fn failed_write_ordering_barrier_keeps_stage_unpublished_and_old_runtime_untouched() {
+    use super::super::filesystem::FAIL_BARRIER;
+    let fixture = Fixture::new();
+    let old = fixture.root.join("runtimes/old");
+    std::fs::create_dir_all(&old).unwrap();
+    for directory in [&fixture.root, &fixture.root.join("runtimes"), &old] {
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::fs::write(old.join("sentinel"), b"unchanged").unwrap();
+    FAIL_BARRIER.with(|fail| fail.set(true));
+    let result = fixture.prepare();
+    FAIL_BARRIER.with(|fail| fail.set(false));
+    assert_eq!(result.err(), Some(RuntimeError::Storage));
+    assert!(!fixture.root.join("runtimes").join(&fixture.id).exists());
+    assert_eq!(std::fs::read(old.join("sentinel")).unwrap(), b"unchanged");
+    let stage = std::fs::read_dir(fixture.root.join("runtimes"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".stage-")
+        })
+        .unwrap();
+    assert_eq!(
+        std::fs::read(stage.join("python/bin/python3")).unwrap(),
+        b"hello"
+    );
+    assert!(stage.join("manifest.json").is_file());
+    finish(fixture.prepare().unwrap()).unwrap();
 }
 
 #[test]
@@ -184,10 +249,9 @@ async fn false_hello_and_mutation_during_hello_never_publish() {
 #[tokio::test]
 async fn hello_uses_remaining_transaction_deadline_and_drains_owned_child() {
     let mut fixture = Fixture::new();
-    fixture.script(
-        "open('child-pid','w').write(str(os.getpid()))\nimport time\ntime.sleep(30)",
-        crate::protocol::CORE_VERSION,
-    );
+    // This test exercises the host deadline and owned-child drain, so avoid
+    // making its readiness depend on a cold Python interpreter startup.
+    fixture.executable("#!/bin/sh\nprintf '%s' \"$$\" > child-pid\nexec /bin/sleep 30\n");
     let start = Instant::now();
     let result = publish_until(
         fixture.bundle.clone(),

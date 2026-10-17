@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { MIN_INTERVAL, canonicalUsername, validInterval } from '../desktop/client'
+import { forecastRequests } from '../desktop/workbench'
+import { formatCount } from '../desktop/format'
 import { t } from '../i18n'
 const props = defineProps<{ busy: boolean; add: (user: string, interval: number) => Promise<boolean> }>()
 const user = ref('')
@@ -24,6 +26,7 @@ async function submit() {
     <input id="watch-user" v-model="user" name="user" autocomplete="off" autocapitalize="off" autocorrect="off" :spellcheck="false" :disabled="busy" maxlength="257" placeholder="@username" @input="localError = ''" />
     <label for="watch-interval">{{ t('watches.interval_label') }}</label>
     <input id="watch-interval" v-model="interval" name="interval" type="number" inputmode="numeric" :min="MIN_INTERVAL" step="1" :disabled="busy" @input="localError = ''" />
+    <p v-if="validInterval(Number(interval))" class="fine-print" data-note="interval-forecast">{{ t('usage.interval_forecast', { count: formatCount(forecastRequests([{ status: 'active', interval_seconds: Number(interval) }])) }) }}</p>
     <p v-if="localError" role="alert" class="notice danger">{{ localError }}</p>
     <button type="submit" class="primary" :disabled="busy">{{ pending ? t('watches.adding') : t('watches.add_action') }}</button>
     <p class="fine-print">{{ t('watches.add_note', { seconds: MIN_INTERVAL }) }}</p>
